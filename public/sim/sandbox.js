@@ -3328,39 +3328,44 @@ const chkVowel = (t) => { const v = (String(t).match(/[aeiouy]+/gi) || ['a']).po
 /* singing in the natural (neural) voice: each word is generated in the character's own matched voice, slowed to fill its beats, then
    tuned onto the melody (pitch glides between syllables, vibrato blooms on held notes), with soft note envelopes and a little room */
 async function chkSingNeural(c, o, m, v) { const ac = mac(); if (!ac || !NV || !NV.ready()) return null;
-  /* singing in the character's own natural voice: each word is generated at a natural pace, then reshaped in the voice worker with
-     formant-preserving pitch shifting (PSOLA): every syllable lands exactly on its note and is held for its beats, with smooth glides
-     and gentle vibrato on held notes, while the voice keeps its own timbre (no chipmunk / slowed-tape effect) */
+  /* singing in the character's own natural voice. Each lyric LINE is spoken by the model in one take (so every word is pronounced
+     correctly and flows into the next), then, in the voice worker, its syllables are found and each one is tuned onto its note and
+     held for its beats with formant-preserving pitch shifting: smooth glides, a little of the words' natural rise and fall, late
+     vibrato, gentle swells and a natural release. If a line's syllables cannot be found, that line is sung word by word instead. */
   const key = c === ollo ? (ALT.on ? 'caine' : 'ollo') : c.id; const pick = NV.match(v, key, (c.ch && c.ch.name) || '');
   const style = String(o.style || 'happy').toLowerCase(); const words = String(o.lyrics || o.text || 'la la la').replace(/[~_]+/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean).slice(0, 80); if (!words.length) return null;
   const bpm = clamp(+o.bpm || (/sad|lullaby|slow|ballad|spooky/.test(style) ? 72 : /rock|rap|fast|punk|hype/.test(style) ? 140 : /opera/.test(style) ? 80 : 110), 40, 220), beat = 60 / bpm, slowK = /opera|lullaby|ballad/.test(style) ? 1.3 : 1;
-  const nSyl = (w) => (w.includes('-') ? w.split('-').filter(Boolean).length : Math.max(1, (w.match(/[aeiouy]+/gi) || []).length));
-  const clips = words.map((w) => { const ns = nSyl(w), end = /[,.!?;:]$/.test(w); return { w: w.replace(/-/g, '').replace(/[^\w'!?,.]/g, '') || 'la', ns, end, target: (ns + (end ? 1 : 0)) * beat * slowK }; });
-  const total = clips.reduce((s, cl) => s + cl.ns, 0);
-  /* this voice's own speaking pitch, so the melody sits where the character naturally sounds best */
-  let vf0 = 0; try { const probe = await NV.gen(clips[0].w, pick.voice, pick.pace, { ratio: 1, trim: true }); vf0 = probe.f0 || NV.f0(probe.pcm, probe.sr); } catch (e) { return null; }
+  const opera = /opera/.test(style), sadS = /sad|lullaby|ballad|blues|spooky/.test(style), vibDepth = opera ? 34 : sadS ? 22 : 16, vibRate = (opera ? 5.8 : sadS ? 4.8 : 5.2) + Math.random() * 0.4;
+  /* syllables per word: vowel groups, minus a silent final "e" (are, love, time), "-" marks syllables by hand */
+  const nSyl = (w0) => { if (w0.includes('-')) return w0.split('-').filter(Boolean).length; let w = w0.toLowerCase().replace(/[^a-z]/g, ''); if (!w) return 1; if (w.length > 2 && /[^aeiouy]e$/.test(w) && !/[^aeiouy]le$/.test(w) && (w.slice(0, -1).match(/[aeiouy]+/g) || []).length >= 1) w = w.slice(0, -1); if (/[^aeiouy]es$|[^aeiouy]ed$/.test(w) && !/(t|d)ed$|(s|z|x|ch|sh)es$/.test(w) && (w.slice(0, -2).match(/[aeiouy]+/g) || []).length >= 1) w = w.slice(0, -2); return Math.max(1, (w.match(/[aeiouy]+/g) || []).length); };
+  const W = words.map((w) => ({ w: w.replace(/-/g, ''), ns: nSyl(w), end: /[,.!?;:]$/.test(w) }));
+  const total = W.reduce((s, x) => s + x.ns, 0);
+  let vf0 = 0; try { const probe = await NV.gen(W[0].w.replace(/[^\w']/g, '') || 'la', pick.voice, pick.pace, { ratio: 1, trim: true }); vf0 = probe.f0 || NV.f0(probe.pcm, probe.sr); } catch (e) { return null; }
   if (!(vf0 > 60)) vf0 = v.gender === 'female' || v.gender === 'child' ? 210 : 120;
   let notes = (Array.isArray(o.notes) ? o.notes : String(o.notes || '').split(/[\s,]+/).filter(Boolean)).map(chkNoteHz).filter(Boolean);
-  /* keep a written melody exactly, moved by whole octaves into this voice's comfortable range (about -5..+7 semitones) */
   if (notes.length) { const med = notes.slice().sort((a, b) => a - b)[notes.length >> 1]; let oct = 0; while (med * 2 ** oct > vf0 * 1.5 && oct > -3) oct--; while (med * 2 ** oct < vf0 / 1.34 && oct < 3) oct++; notes = notes.map((n) => n * 2 ** oct); }
-  else { const minor = /sad|spooky|minor|blues|lullaby/.test(style), sc = minor ? [0, 2, 3, 5, 7, 8, 10, 12] : [0, 2, 4, 5, 7, 9, 11, 12], rap = /rap/.test(style); let d = 2, i = 0; for (const cl of clips) for (let s = 0; s < cl.ns; s++, i++) { if (rap) { notes.push(vf0 * 2 ** ((i % 4 === 3 ? 2 : 0) / 12)); continue; } d = clamp(d + Math.round((Math.random() - 0.45) * 3) + (cl.end && s === cl.ns - 1 ? -1 : 0), 0, sc.length - 1); notes.push(vf0 * 2 ** ((sc[d] - 3 + (/opera|showtune/.test(style) ? 2 : 0)) / 12)); } }
-  /* request every word at once (the worker makes them in order); each is sung as soon as it is ready */
-  let ni = 0; const gens = clips.map((cl) => { const ns = []; for (let s = 0; s < cl.ns; s++) ns.push(notes[(ni + s) % notes.length]); ni += cl.ns; const opera = /opera/.test(style);
-    const sadS = /sad|lullaby|ballad|blues|spooky/.test(style); /* sung words are spoken a little slower first, so the vowels need less stretching and stay natural */ const pr = NV.gen(cl.w, pick.voice, clamp(pick.pace * (sadS ? 0.78 : 0.85), 0.6, 1.1), { notes: ns, target: cl.target * 0.97, vib: cl.end || cl.target > beat * 1.6, vibDepth: opera ? 34 : sadS ? 22 : 16, vibRate: (opera ? 5.8 : sadS ? 4.8 : 5.2) + Math.random() * 0.4, style, phraseEnd: cl.end || cl === clips[clips.length - 1], trim: true }); pr.catch(() => {}); return pr; });
+  else { const minor = /sad|spooky|minor|blues|lullaby/.test(style), sc = minor ? [0, 2, 3, 5, 7, 8, 10, 12] : [0, 2, 4, 5, 7, 9, 11, 12], rap = /rap/.test(style); let d = 2, i = 0; for (const x of W) for (let s = 0; s < x.ns; s++, i++) { if (rap) { notes.push(vf0 * 2 ** ((i % 4 === 3 ? 2 : 0) / 12)); continue; } d = clamp(d + Math.round((Math.random() - 0.45) * 3) + (x.end && s === x.ns - 1 ? -1 : 0), 0, sc.length - 1); notes.push(vf0 * 2 ** ((sc[d] - 3 + (opera || /showtune/.test(style) ? 2 : 0)) / 12)); } }
+  /* lines: break after punctuation, or every 8 words */
+  const lines = []; let cur = []; W.forEach((x, i) => { cur.push(x); if (x.end || cur.length >= 8 || i === W.length - 1) { lines.push(cur); cur = []; } });
+  let ni = 0; const speed = clamp(pick.pace * (sadS ? 0.8 : 0.88), 0.6, 1.1);
+  const jobs = lines.map((ln) => { const syl = []; for (const x of ln) for (let s = 0; s < x.ns; s++) { const last = s === x.ns - 1, dur = beat * slowK * (x.end && last ? 2 : 1); syl.push({ hz: notes[ni++ % notes.length], dur: dur * 0.97, vib: dur > beat * 1.6 }); }
+    const text = ln.map((x) => x.w).join(' '); const pr = NV.gen(text, pick.voice, speed, { phrase: true, syl, style, vibDepth, vibRate }); pr.catch(() => {}); return { ln, syl, pr }; });
+  /* word-by-word backup for a line whose syllables could not be found */
+  const wordByWord = async (job) => { const parts = []; let k = 0; for (const x of job.ln) { const ns = job.syl.slice(k, k + x.ns); k += x.ns; const tgt = ns.reduce((s, q) => s + q.dur, 0); try { const a = await NV.gen(x.w.replace(/[^\w'!?,.]/g, '') || 'la', pick.voice, speed, { notes: ns.map((q) => q.hz), target: tgt, vib: ns.some((q) => q.vib), vibDepth, vibRate, style, phraseEnd: x.end, trim: true }); parts.push({ a, tgt }); } catch (e) { parts.push({ a: null, tgt }); } } return parts; };
   const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 75; const warm = ac.createBiquadFilter(); warm.type = 'peaking'; warm.frequency.value = v.gender === 'female' ? 300 : 210; warm.Q.value = 0.8; warm.gain.value = 2;
   const cmp = ac.createDynamicsCompressor(); cmp.threshold.value = -20; cmp.ratio.value = 2.5; cmp.knee.value = 12;
   const g = ac.createGain(); g.gain.value = 1.2; hp.connect(warm); warm.connect(cmp); cmp.connect(g); g.connect(ac.destination);
   const rvD = ac.createDelay(1); rvD.delayTime.value = /opera|spooky|ballad/.test(style) ? 0.11 : 0.075; const rvF = ac.createGain(); rvF.gain.value = /opera|spooky/.test(style) ? 0.3 : 0.18; const rvL = ac.createBiquadFilter(); rvL.type = 'lowpass'; rvL.frequency.value = 2600; const rvW = ac.createGain(); rvW.gain.value = 0.22; cmp.connect(rvD); rvD.connect(rvL); rvL.connect(rvF); rvF.connect(rvD); rvL.connect(rvW); rvW.connect(g);
-  chkLog('Singing — ' + (c.ch.name || c.id) + ' sings (' + style + ', natural voice ' + pick.voice + ', ' + total + ' syllables)');
+  chkLog('Singing — ' + (c.ch.name || c.id) + ' sings (' + style + ', natural voice ' + pick.voice + ', ' + total + ' syllables in ' + lines.length + ' lines)');
   const gen0 = VOICE.gen; let t = 0, t0 = 0;
-  for (let wi = 0; wi < clips.length; wi++) { const cl = clips[wi]; let a = null; try { a = await gens[wi]; } catch (e) { a = null; } if (gen0 !== VOICE.gen) break;
-    if (!t) t = t0 = ac.currentTime + 0.12; t = Math.max(t, ac.currentTime + 0.04); /* a late word makes the song wait, never skip */
-    if (!a || !a.pcm || !a.pcm.length) { t += cl.target; continue; }
-    const buf = ac.createBuffer(1, a.pcm.length, a.sr); buf.copyToChannel(a.pcm, 0); const src = ac.createBufferSource(); src.buffer = buf;
-    const env = ac.createGain(); const nEnd = t + buf.duration; env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(1, t + 0.015); env.gain.setValueAtTime(1, Math.max(t + 0.02, nEnd - 0.04)); env.gain.linearRampToValueAtTime(0, nEnd);
+  const play = (a, txt, minDur) => { if (!t) t = t0 = ac.currentTime + 0.12; t = Math.max(t, ac.currentTime + 0.04); if (!a || !a.pcm || !a.pcm.length) { t += minDur; return; }
+    const buf = ac.createBuffer(1, a.pcm.length, a.sr); buf.copyToChannel(a.pcm, 0); const src = ac.createBufferSource(); src.buffer = buf; const env = ac.createGain(); const nEnd = t + buf.duration; env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(1, t + 0.015); env.gain.setValueAtTime(1, Math.max(t + 0.02, nEnd - 0.04)); env.gain.linearRampToValueAtTime(0, nEnd);
     src.connect(env); env.connect(hp); src.start(t); NSRC.add(src); src.onended = () => NSRC.delete(src); const st = t;
-    setTimeout(() => { try { let lip = null; try { lip = RPC.lipsync.analyzeBuffer(buf); } catch (e) { lip = null; } if (!lip || !lip.v) lip = RPC.lipsync.fromText(cl.w, buf.duration); lipStart(c, lip, () => ac.currentTime - st); } catch (e) { /* ok */ } }, Math.max(0, (st - ac.currentTime) * 1000));
-    t += Math.max(cl.target, buf.duration); }
+    setTimeout(() => { try { let lip = null; try { lip = RPC.lipsync.analyzeBuffer(buf); } catch (e) { lip = null; } if (!lip || !lip.v) lip = RPC.lipsync.fromText(txt, buf.duration); lipStart(c, lip, () => ac.currentTime - st); } catch (e) { /* ok */ } }, Math.max(0, (st - ac.currentTime) * 1000));
+    t += Math.max(minDur, buf.duration); };
+  for (const job of jobs) { let a = null; try { a = await job.pr; } catch (e) { a = null; } if (gen0 !== VOICE.gen) break; const lineDur = job.syl.reduce((s, q) => s + q.dur, 0), txt = job.ln.map((x) => x.w).join(' ');
+    if (a && !a.failed) play(a, txt, lineDur * 0.9); else { const parts = await wordByWord(job); if (gen0 !== VOICE.gen) break; for (const p of parts) play(p.a, txt, p.tgt); }
+    t += beat * 0.15; /* a breath between lines */ }
   setTimeout(() => { try { lipEnd(c); rvF.disconnect(); g.disconnect(); } catch (e) { /* ok */ } }, Math.max(0, t - ac.currentTime + 1.2) * 1000);
   return 'singing ' + total + ' syllables in a natural voice for ' + (t - t0).toFixed(1) + ' s'; }
 async function chkSing(c, o = {}) { const api = CAST.studio && CAST.studio.api, ac = mac(); if (!api || !api.samPcm || !ac) return 'no singing voice is available here'; if (!c) return 'no such character';

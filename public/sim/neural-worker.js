@@ -155,6 +155,85 @@ function shape(x, sr, sh) {
   return { pcm: out, f0 };
 }
 
+// ---------------------------------------------------------------- phrase singing
+// A whole lyric line is spoken by the model in one go (so every word is pronounced correctly, with natural flow between words),
+// then its syllables are found inside the recording (the loud voiced "nuclei" between quieter consonant dips), and each syllable
+// is tuned to its note and held for its own length with the same formant-preserving PSOLA, all in one continuous take.
+// sp = { syl: [{ hz, dur, vib }], style, vibDepth, vibRate }
+function singPhrase(x0, sr, sp) {
+  const x = trimSilence(x0, sr), N = x.length, K = sp.syl.length; if (!K || N < sr * 0.1) return null;
+  const hop = Math.round(sr * 0.005), f = pitchTrack(x, sr, hop), nF = f.length, med = median(f) || 0;
+  // loudness envelope (25 ms), voiced frames only count as syllable centres
+  const env = new Float32Array(nF); for (let i = 0; i < nF; i++) { const c = i * hop, w = Math.round(sr * 0.0125); let s = 0, n = 0; for (let k = Math.max(0, c - w); k < Math.min(N, c + w); k++) { s += x[k] * x[k]; n++; } env[i] = n ? Math.sqrt(s / n) : 0; }
+  const sm = new Float32Array(nF); for (let i = 0; i < nF; i++) { let s = 0, n = 0; for (let k = i - 3; k <= i + 3; k++) if (k >= 0 && k < nF) { s += env[k]; n++; } sm[i] = s / n; }
+  let peaks = []; const minGap = Math.round(0.07 * sr / hop), gmax = Math.max(...sm);
+  for (let i = 1; i < nF - 1; i++) if (f[i] > 0 && sm[i] >= sm[i - 1] && sm[i] > sm[i + 1] && sm[i] > gmax * 0.12) { if (peaks.length && i - peaks[peaks.length - 1] < minGap) { if (sm[i] > sm[peaks[peaks.length - 1]]) peaks[peaks.length - 1] = i; } else peaks.push(i); }
+  if (!peaks.length || peaks.length < Math.ceil(K * 0.6)) return null; // far too few syllables found: the caller sings this line word by word
+  const dipBetween = (a, b) => { let m = a, mv = Infinity; for (let i = a; i <= b; i++) if (sm[i] < mv) { mv = sm[i]; m = i; } return { m, mv }; };
+  while (peaks.length > K) { // merge the two neighbouring centres with the shallowest dip between them (they are one syllable)
+    let bi = 0, bs = -Infinity; for (let i = 0; i + 1 < peaks.length; i++) { const d = dipBetween(peaks[i], peaks[i + 1]).mv / Math.min(sm[peaks[i]], sm[peaks[i + 1]]); if (d > bs) { bs = d; bi = i; } }
+    const keep = sm[peaks[bi]] >= sm[peaks[bi + 1]] ? peaks[bi] : peaks[bi + 1]; peaks.splice(bi, 2, keep);
+  }
+  const bF = [0]; for (let i = 0; i + 1 < peaks.length; i++) bF.push(dipBetween(peaks[i], peaks[i + 1]).m); bF.push(nF);
+  // gliding syllables (how-I, you-are) have no dip between them: split the longest voiced stretch at its weakest point until every syllable has its own piece
+  while (bF.length - 1 < K) { let bi = -1, bl = 0; for (let k = 0; k + 1 < bF.length; k++) { let v = 0; for (let i = bF[k]; i < bF[k + 1]; i++) if (f[i] > 0) v++; if (v > bl) { bl = v; bi = k; } } if (bi < 0 || bl < 8) return null; const a = bF[bi], b = bF[bi + 1], q = Math.round((b - a) / 4); let m = Math.round((a + b) / 2), mv = Infinity; for (let i = a + q; i <= b - q; i++) if (sm[i] < mv) { mv = sm[i]; m = i; } bF.splice(bi + 1, 0, m); }
+  // per-syllable time map: consonants keep their own length, the voiced part of each syllable stretches to fill its note
+  const segOf = new Int32Array(nF); for (let k = 0; k < K; k++) for (let i = bF[k]; i < bF[k + 1]; i++) segOf[i] = k;
+  const rate = new Float32Array(K);
+  for (let k = 0; k < K; k++) { let V = 0, U = 0; for (let i = bF[k]; i < bF[k + 1]; i++) (f[i] > 0 ? (V += hop) : (U += hop)); const T = sp.syl[k].dur * sr; rate[k] = V > 0 ? Math.max(0.45, (T - Math.min(U, T * 0.6)) / V) : Math.max(0.5, T / Math.max(hop, U)); }
+  const oF = new Float64Array(nF + 1); for (let i = 0; i < nF; i++) { const k = segOf[i]; oF[i + 1] = oF[i] + hop * (f[i] > 0 || !rate[k] ? rate[k] : Math.min(1, rate[k])); }
+  const L = Math.max(1, Math.round(oF[nF])); const segO = []; for (let k = 0; k <= K; k++) segO.push(k < K ? oF[bF[k]] : L);
+  let fi = 0; const A = (ts) => { while (fi + 1 < nF && oF[fi + 1] <= ts) fi++; while (fi > 0 && oF[fi] > ts) fi--; const span = oF[fi + 1] - oF[fi] || 1; return fi * hop + ((ts - oF[fi]) / span) * hop; };
+  const per = (i) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(i / hop)))]; return v > 0 ? sr / v : 0; };
+  const marks = pitchMarks(x, sr, per);
+  const style = String(sp.style || ''), sad = /sad|lullaby|ballad|blues|spooky/.test(style), opera = /opera/.test(style), rock = /rock|punk|hype/.test(style);
+  const rnd = mkRnd(K * 7919 + Math.round(N / 97)); let drift = 0, driftV = 0, sk = 0;
+  const targetHz = (ts) => {
+    while (sk + 1 < K && segO[sk + 1] <= ts) sk++; while (sk > 0 && segO[sk] > ts) sk--;
+    const s = sp.syl[sk], into = ts - segO[sk], len = Math.max(1, segO[sk + 1] - segO[sk]), gl = Math.min(0.07 * sr, len * 0.35);
+    let hz = s.hz;
+    if (into < gl) { const a = into / gl, e = a * a * (3 - 2 * a); const from = sk > 0 ? sp.syl[sk - 1].hz : s.hz * Math.pow(2, -(opera ? 25 : sad ? 45 : rock ? 60 : 35) / 1200); hz = from * Math.pow(hz / from, e); }
+    if (s.vib) { const held = Math.max(0, Math.min(1, (into / len - 0.3) / 0.45)), tt = ts / sr; hz *= Math.pow(2, (held * (sp.vibDepth || 20) * Math.sin(2 * Math.PI * (sp.vibRate || 5.2) * (1 + 0.04 * Math.sin(tt * 1.7)) * tt)) / 1200); }
+    if (sad && sk === K - 1 && into > len * 0.8) hz *= Math.pow(2, (-35 * ((into / len - 0.8) / 0.2)) / 1200);
+    // keep a little of the spoken melody inside each note: the natural rise and fall of the words makes it sound sung by a person
+    const of = f[Math.min(nF - 1, Math.round(A(ts) / hop))]; if (of > 0 && med > 0) hz *= Math.pow(of / med, 0.18);
+    return hz * Math.pow(2, drift / 1200);
+  };
+  const y = psolaOLA(x, sr, marks, L, A, (ts, pa) => { driftV += (rnd() - 0.5) * 0.8 - drift * 0.03; driftV *= 0.92; drift = Math.max(-7, Math.min(7, drift + driftV)); return targetHz(ts) / (sr / pa); }, rnd, true);
+  // phrasing: each held syllable swells gently; the line releases naturally at its end
+  for (let k = 0; k < K; k++) { const a0 = Math.round(segO[k]), a1 = Math.round(segO[k + 1]), len = Math.max(1, a1 - a0); for (let i = a0; i < a1; i++) { const a = (i - a0) / len; let g = 1; if (sp.syl[k].vib) g *= 0.9 + 0.1 * Math.min(1, a / 0.35); if (k === K - 1 && a > 0.8) g *= 1 - ((a - 0.8) / 0.2) * 0.55; y[i] *= g; } }
+  let nb = 0; const br = sad ? 0.05 : 0.03; for (let i = 0; i < L; i++) { nb = 0.96 * nb + 0.04 * (rnd() * 2 - 1); y[i] += nb * Math.abs(y[i]) * br * 6; }
+  const fd = Math.min(L >> 2, Math.round(sr * 0.012)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[L - 1 - i] *= a; }
+  return { pcm: y, f0: med, starts: segO.slice(0, K).map((v) => v / sr) };
+}
+function mkRnd(seed) { let s = (seed >>> 0) || 1; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+function pitchMarks(x, sr, per) {
+  const N = x.length, lp = new Float32Array(N); { let s = 0; const a = Math.exp((-2 * Math.PI * 900) / sr); for (let i = 0; i < N; i++) { s = a * s + (1 - a) * x[i]; lp[i] = s; } }
+  const marks = [], mper = [];
+  for (let t = 0; t < N;) {
+    const p = per(t);
+    if (p) { const guess = marks.length && mper[marks.length - 1] ? marks[marks.length - 1] + mper[marks.length - 1] : t; const c = Math.round(Math.max(t, guess)), r = Math.round(p * (marks.length && mper[marks.length - 1] ? 0.18 : 0.5)); let b = c, bv = -Infinity; for (let k = Math.max(0, c - r); k <= Math.min(N - 1, c + r); k++) if (lp[k] > bv) { bv = lp[k]; b = k; } if (!marks.length || b > marks[marks.length - 1] + p * 0.5) { marks.push(b); mper.push(p); } t = b + Math.max(16, Math.round(p * 0.8)); }
+    else { marks.push(t); mper.push(0); t += Math.round(sr * 0.005); }
+  }
+  return { marks, mper };
+}
+// overlap-add: blend of the two analysis periods around the read position (continuous, no buzz/ring), natural jitter + shimmer
+function psolaOLA(x, sr, mk, L, A, ratioAt, rnd, human) {
+  const { marks, mper } = mk, N = x.length, y = new Float32Array(L + 4096); let mi = 0;
+  for (let ts = 0; ts < L;) {
+    const ta = A(ts); while (mi + 1 < marks.length && marks[mi + 1] <= ta) mi++; while (mi > 0 && marks[mi] > ta) mi--;
+    const m0 = marks[mi], p0 = mper[mi], m1 = mi + 1 < marks.length ? marks[mi + 1] : m0, p1 = mi + 1 < marks.length ? mper[mi + 1] : p0; let step;
+    if (p0 && p1) {
+      const fr = m1 > m0 ? Math.max(0, Math.min(1, (ta - m0) / (m1 - m0))) : 0, pa = p0 + (p1 - p0) * fr;
+      const ratio = Math.max(0.5, Math.min(2.2, ratioAt(ts, pa) || 1));
+      step = (pa / ratio) * (human ? 1 + (rnd() - 0.5) * 0.01 : 1); const half = Math.round(pa), w0 = Math.min(1, step / pa) * (human ? 1 + (rnd() - 0.5) * 0.04 : 1), d0 = Math.round(ts);
+      for (let k = -half; k <= half; k++) { const di = d0 + k; if (di < 0 || di >= y.length) continue; const a0 = m0 + k, a1 = m1 + k; const v0 = a0 >= 0 && a0 < N ? x[a0] : 0, v1 = a1 >= 0 && a1 < N ? x[a1] : 0; y[di] += (v0 * (1 - fr) + v1 * fr) * w0 * (0.5 + 0.5 * Math.cos((Math.PI * k) / half)); }
+    } else { const half = Math.round(sr * 0.005); step = half; for (let k = -half; k <= half; k++) { const si = Math.round(ta) + k, di = Math.round(ts) + k; if (si < 0 || si >= N || di < 0 || di >= y.length) continue; y[di] += x[si] * (0.5 + 0.5 * Math.cos((Math.PI * k) / half)); } }
+    ts += Math.max(8, step);
+  }
+  return y.slice(0, L);
+}
+
 // one request at a time (the model is not re-entrant); requests queue in order
 let chain = Promise.resolve();
 self.onmessage = (ev) => {
@@ -180,8 +259,10 @@ self.onmessage = (ev) => {
         let pcm = out.audio instanceof Float32Array ? out.audio : new Float32Array(out.audio);
         const sr = out.sampling_rate || 24000;
         let f0 = 0;
-        if (msg.shape) { const r = shape(pcm, sr, msg.shape); pcm = r.pcm; f0 = r.f0; }
-        postMessage({ type: 'audio', id: msg.id, pcm, sr, f0 }, [pcm.buffer]);
+        let starts = null, failed = false;
+        if (msg.shape && msg.shape.phrase) { const r = singPhrase(pcm, sr, msg.shape); if (r) { pcm = r.pcm; f0 = r.f0; starts = r.starts; } else failed = true; }
+        else if (msg.shape) { const r = shape(pcm, sr, msg.shape); pcm = r.pcm; f0 = r.f0; }
+        postMessage({ type: 'audio', id: msg.id, pcm, sr, f0, starts, failed }, [pcm.buffer]);
       } catch (e) {
         postMessage({ type: 'error', id: msg.id, text: String((e && e.message) || e) });
       }

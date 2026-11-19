@@ -139,7 +139,20 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     if (/haiku/i.test(m || '')) return 'claude-3-5-haiku-latest';
     return 'claude-sonnet-4-20250514';
   }
+  // Anthropic answers 429 (rate limited) / 529 (overloaded) for short bursts even when the account still has credits:
+  // wait (honouring retry-after) and try again instead of failing the character's turn
   async function call(body, signal) {
+    var e0 = null;
+    for (var attempt = 0; attempt < 5; attempt++) {
+      try { return await call1(body, signal); } catch (e) {
+        e0 = e; if (e.code !== 'rate_limited' || (signal && signal.aborted)) throw e;
+        var wait = Math.min(20000, (e.retryAfter ? e.retryAfter * 1000 : 2000 * Math.pow(2, attempt)));
+        await new Promise(function (r) { setTimeout(r, wait); });
+      }
+    }
+    throw e0;
+  }
+  async function call1(body, signal) {
     if (MODE === 'custom' && KEY) {
       var r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: HDR(KEY), body: JSON.stringify(body), signal: signal });
       if (r.status === 404 && body && body.model) {
@@ -148,18 +161,18 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
           r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: HDR(KEY), body: JSON.stringify(Object.assign({}, body, { model: fb })), signal: signal });
         }
       }
-      if (!r.ok) { var t = ''; try { t = await r.text(); } catch (e) { /* ok */ } throw err(r.status === 429 || r.status === 529 ? 'rate_limited' : r.status === 401 || r.status === 403 ? 'not_granted' : 'api_error', 'Claude API ' + r.status + ': ' + t.slice(0, 300)); }
+      if (!r.ok) { var t = ''; try { t = await r.text(); } catch (e) { /* ok */ } var ra1 = Number(r.headers.get('retry-after')) || 0; throw Object.assign(err(r.status === 429 || r.status === 529 ? 'rate_limited' : r.status === 401 || r.status === 403 ? 'not_granted' : 'api_error', 'Claude API ' + r.status + ': ' + t.slice(0, 300)), { retryAfter: ra1 }); }
       return r.json();
     }
     if (MODE === 'shared') {
-      var payload = Object.assign({}, body, { max_tokens: Math.min(Number(body && body.max_tokens) || 4096, 4096) });
+      var payload = body;
       var rs = await fetch('/api/claude', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: signal });
       if (!rs.ok) {
         var ts = ''; try { ts = await rs.text(); } catch (e) { /* ok */ }
         var code = rs.status === 429 || rs.status === 529 ? 'rate_limited' : rs.status === 401 || rs.status === 403 || rs.status === 503 ? 'not_granted' : 'api_error';
         var msg = 'Shared Claude API ' + rs.status + ': ' + ts.slice(0, 300);
         try { var parsed = JSON.parse(ts); if (parsed && parsed.error && parsed.error.message) msg = parsed.error.message; } catch (e) { /* ok */ }
-        throw err(code, msg);
+        throw Object.assign(err(code, msg), { retryAfter: Number(rs.headers.get('retry-after')) || 0 });
       }
       SHARED_USED++;
       return rs.json();
@@ -179,10 +192,10 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var msgs = await toMsgs(messages, opt.images); var tools = (opt.tools || []).map(function (t) { return { name: t.name, description: String(t.description || '').slice(0, 4000), input_schema: t.inputSchema || t.input_schema || { type: 'object', properties: {} } }; });
     var byName = {}; (opt.tools || []).forEach(function (t) { byName[t.name] = t; });
     var text = '', model = opt.model || 'claude-sonnet-5-5';
-    var maxTurns = MODE === 'shared' ? 16 : 40;
+    var maxTurns = 40;
     for (var turn = 0; turn < maxTurns; turn++) {
       if (opt.signal && opt.signal.aborted) throw err('cancelled', 'cancelled', text);
-      var body = { model: model, max_tokens: MODE === 'shared' ? 4096 : 8192, messages: msgs }; if (tools.length) body.tools = tools;
+      var body = { model: model, max_tokens: 8192, messages: msgs }; if (tools.length) body.tools = tools;
       var res; try { res = await call(body, opt.signal); } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
       var tu = []; for (var c of res.content || []) { if (c.type === 'text') { text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
       msgs.push({ role: 'assistant', content: res.content });
@@ -199,7 +212,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var s = t.indexOf('{'), a = t.indexOf('['); var i = s < 0 ? a : a < 0 ? s : Math.min(s, a); var j = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
     try { return JSON.parse(i >= 0 && j > i ? t.slice(i, j + 1) : t); } catch (e) { return null; }
   };
-  sample.limits = async function () { return { images: true, shared: MODE === 'shared', remaining: MODE === 'shared' ? Math.max(0, SHARED_SOFT_LIMIT - SHARED_USED) : null }; };
+  sample.limits = async function () { return { images: true, shared: MODE === 'shared', remaining: null }; };
 
   window.claude = {
     use: async function (name) {

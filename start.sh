@@ -25,6 +25,6 @@ if [ "${LOCAL_AI_TUNNEL:-1}" != "0" ]; then
   echo $! > tunnel.pid
   printf 'Open this once on each device to use your local AI from anywhere (keep it private):
 %s/?key=%s
-' "${LOCAL_AI_SITE:-https://YOUR-SITE.vercel.app}" "$(cat .ai_key)" > DEVICE_LINK.txt
+' "${LOCAL_AI_SITE:-https://the-amazing-simulation.vercel.app}" "$(cat .ai_key)" > DEVICE_LINK.txt
   echo "Public tunnel starting. Device link: local-ai/DEVICE_LINK.txt"
 fi

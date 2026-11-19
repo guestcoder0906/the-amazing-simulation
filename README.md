@@ -19,6 +19,8 @@ Characters speak and sing with natural, human-quality voices generated entirely 
 (Kokoro-82M via kokoro-js, in a Web Worker; WebGPU when available, otherwise WebAssembly). The model (~90 MB)
 downloads once when voices are switched on and is then cached. Each character gets its own matched voice, pitch and pace.
 Devices that can't run it smoothly automatically use the best browser voices instead. No server is involved.
+`vercel.json` sends cross-origin isolation headers (COOP same-origin + COEP credentialless) so the model can use
+all CPU cores on devices without WebGPU.
 
 ## Run locally
 

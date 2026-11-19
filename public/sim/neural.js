@@ -53,6 +53,7 @@
       worker.postMessage({ type: 'load', device: dev });
     };
     // WebGPU only on roomy desktops (its fp32 model is larger); everyone else gets the compact WASM model
+    var forced = (/[?&]nvdevice=(wasm|webgpu)/.exec(location.search) || [])[1]; if (forced) { go(forced); return; } // debug override
     var roomy = !(navigator.deviceMemory < 8) && !/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
     if (roomy && navigator.gpu && navigator.gpu.requestAdapter) {
       navigator.gpu.requestAdapter().then(function (a) { go(a ? 'webgpu' : 'wasm'); }, function () { go('wasm'); });

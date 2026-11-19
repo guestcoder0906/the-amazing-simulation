@@ -11,6 +11,13 @@ Interactive 3D world and character sandbox powered by Claude.
 3. Visitors can also paste their own Claude API key (stored only in their browser),
    which calls the Claude API directly. Keys: https://platform.claude.com/settings/keys
 
+## Voices
+
+Characters speak and sing with natural, human-quality voices generated entirely in the visitor's browser
+(Kokoro-82M via kokoro-js, in a Web Worker; WebGPU when available, otherwise WebAssembly). The model (~90 MB)
+downloads once when voices are switched on and is then cached. Each character gets its own matched voice, pitch and pace.
+Devices that can't run it smoothly automatically use the best browser voices instead. No server is involved.
+
 ## Run locally
 
 ```

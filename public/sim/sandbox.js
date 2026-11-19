@@ -1823,20 +1823,21 @@ function olloProsody(part, i, n) { const t = String(part).trim(); let p = 1.0, r
 if (SYN) { pickSynVoice(); try { SYN.onvoiceschanged = pickSynVoice; } catch (e) { /* ok */ } }
 // the browser's speech queue outlives the page (a reload keeps reading what the last session queued): clear it on start, and stop
 // every voice when the page goes away or is switched off, so old lines never play later
-const hushAll = () => { VOICE.gen++; try { SYN && SYN.cancel(); } catch (e) { /* ok */ } try { tts && tts.stop && tts.stop(); } catch (e) { /* ok */ } try { for (const m of (typeof MINDS !== 'undefined' ? MINDS.values() : [])) { try { m.voiceSrc && m.voiceSrc.stop(); } catch (e) { /* ok */ } m.voiceSrc = null; } } catch (e) { /* ok */ } try { for (const c of [...LIPS.keys()]) lipEnd(c); } catch (e) { /* ok */ } VOICE.speaking = false; };
+const hushAll = () => { VOICE.gen++; try { neuStop(); } catch (e) { /* ok */ } try { SYN && SYN.cancel(); } catch (e) { /* ok */ } try { tts && tts.stop && tts.stop(); } catch (e) { /* ok */ } try { for (const m of (typeof MINDS !== 'undefined' ? MINDS.values() : [])) { try { m.voiceSrc && m.voiceSrc.stop(); } catch (e) { /* ok */ } m.voiceSrc = null; } } catch (e) { /* ok */ } try { for (const c of [...LIPS.keys()]) lipEnd(c); } catch (e) { /* ok */ } VOICE.speaking = false; };
 SBX.hushAll = hushAll; try { if (!window.__spoke) SYN && SYN.cancel(); } catch (e) { /* ok */ } (async () => { try { const t0 = await window.claude?.use?.('tts'); if (t0 && t0.stop && !window.__spoke) t0.stop(); } catch (e) { /* ok */ } })();
 addEventListener('pagehide', hushAll); addEventListener('beforeunload', hushAll);
 document.addEventListener('visibilitychange', () => { if (document.hidden) { hushAll(); try { MAC && MAC.suspend(); } catch (e) { /* ok */ } } else { try { MAC && MAC.resume(); } catch (e) { /* ok */ } } });
 const earDist = () => camera.position.distanceTo(new THREE.Vector3(0, 0.5, 0).applyMatrix4(ollo.group.matrixWorld));
 const earVol = () => { const d = earDist(); return d <= VOICE.full ? 1 : clamp(1 - (d - VOICE.full) / (VOICE.range - VOICE.full), 0, 1) ** 1.6; };
 const voiceOK = () => !!(SYN || tts);
-function olloVoice(text) { window.__spoke = true; const gen = ++VOICE.gen; const parts = String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)];
+function olloVoice(text) { let spec = null, key = 'ollo', hint = 'friendly felt star sprite'; try { if (ALT.on) { spec = caineM().voiceP; key = 'caine'; hint = 'ringmaster showman'; } } catch (e) { spec = null; } if (!spec) spec = { gender: 'male', timbre: 'bright', preset: 'small cute', np: 1.02, nr: 1 }; window.__spoke = true; if (neuralSpeak(ollo, text, spec, '', key, hint, () => olloVoiceLegacy(text))) return; olloVoiceLegacy(text); }
+function olloVoiceLegacy(text) { window.__spoke = true; const gen = ++VOICE.gen; const parts = String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)];
   VOICE.speaking = true; // (no cancel: the browser has one speech queue, shared with the other characters' voices)
   const done = () => { if (gen === VOICE.gen) { VOICE.speaking = false; VOICE.until = performance.now() + 600; } };
   if (SYN) { let i = 0; const next = () => { if (gen !== VOICE.gen || i >= parts.length) return done(); const v = earVol(); const u = new SpeechSynthesisUtterance(parts[i++]); if (SYNV) u.voice = SYNV; { const pr = olloProsody(parts[i - 1], i - 1, parts.length); u.pitch = pr.pitch; u.rate = pr.rate; } u.volume = v; u.onend = u.onerror = next; if (v < 0.03) { lipStart(ollo, RPC.lipsync.fromText(parts[i - 1], parts[i - 1].length / 13.5), wallClock()); setTimeout(next, parts[i - 1].length * 74); return; } speakSynced(ollo, u, parts[i - 1]); try { SYN.speak(u); } catch (e) { next(); } }; next(); return; }
   if (tts && earVol() > 0.08 && !(typeof dictOn !== 'undefined' && dictOn)) { lipStart(ollo, RPC.lipsync.fromText(String(text)), wallClock(0.25)); tts.speak(String(text).slice(0, 1900), { voice: 'buttery' }).catch(() => {}).finally(() => { lipEnd(ollo); done(); }); return; }
   lipStart(ollo, RPC.lipsync.fromText(String(text)), wallClock()); setTimeout(done, String(text).length * 74); }
-async function ensureVoice() { if (!SYN && !tts) { try { tts = await window.claude?.use?.('tts'); } catch (e) { tts = null; } } return voiceOK(); }
+async function ensureVoice() { try { neuStart(); } catch (e) { /* ok */ } if (!SYN && !tts) { try { tts = await window.claude?.use?.('tts'); } catch (e) { tts = null; } } return voiceOK(); }
 // ---------------------------------------------------------------- 9b. Smart Ollo: an optional live mind. Ollo moves, looks, talks and
 // acts on his own in real time, hears the player by text or voice (the controlled character speaks; with nobody controlled the camera
 // is the player), and keeps a small rolling memory. All movement goes through the hover controller (same collisions as always).
@@ -2026,6 +2027,37 @@ const MINDS = new Map(); // character id -> mind
 const MIND_SAVE = () => { try { localStorage.setItem('sbx_minds', JSON.stringify([...MINDS.values()].map((m) => ({ id: m.c.id, personality: m.personality, pitch: m.pitch, voice: m.voiceP, code: m.code || '', locked: m.locked, log: m.log.slice(-20), notes: m.notes })))); } catch (e) { /* ok */ } };
 function mindLog(m, who, text) { m.log.push({ t: Date.now(), who, text: String(text).slice(0, 300) }); if (m.log.length > 30) m.log.shift(); MIND_SAVE(); }
 let MAC = null; const mac = () => { try { if (!MAC) MAC = new (window.AudioContext || window.webkitAudioContext)(); if (MAC.state !== 'running') MAC.resume().catch(() => {}); } catch (e) { MAC = null; } return MAC; };
+
+// ---------------------------------------------------------------- 9a. neural voices: human-quality speech generated IN the browser
+// (Kokoro-82M in a Web Worker, see sim/neural.js). Every character gets its own matched voice (base voice by gender / accent /
+// personality, plus its own pitch and pace). Lines are synthesised sentence by sentence (the next one is made while the current one
+// plays), played through Web Audio with distance falloff and stereo position, and the mouth reads the exact audio it plays.
+// If the device cannot run the model (or it is still downloading), the matched browser voices / built-in synth take over.
+const NV = window.NeuralVoice || null; const NSRC = new Set(); let nvToast = false;
+function neuStop() { for (const s of NSRC) { try { s.stop(); } catch (e) { /* ok */ } } NSRC.clear(); }
+function neuStart() { if (!NV) return; const st = NV.status().state; if (st !== 'off') return; NV.onStatus((s) => { if (s.state === 'ready' && !nvToast) { nvToast = true; try { toast('Natural voices ready'); } catch (e) { /* ok */ } } else if (s.state === 'loading' && s.pct && !nvToast && s.pct % 25 === 0) { try { toast('Downloading natural voices… ' + s.pct + '%'); } catch (e) { /* ok */ } } else if ((s.state === 'failed' || s.state === 'unsupported') && !nvToast) { nvToast = true; console.info('[voice] natural voice model unavailable on this device (' + s.state + '); using the best built-in voices'); } }); NV.start(); }
+function neuPlay(c, a, k, text) { return new Promise((res) => { const ac = mac(); if (!ac || !a || !a.pcm || !a.pcm.length) { res(); return; }
+  const buf = ac.createBuffer(1, a.pcm.length, a.sr); buf.copyToChannel(a.pcm, 0); const src = ac.createBufferSource(); src.buffer = buf; src.playbackRate.value = k;
+  const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 70; const cmp = ac.createDynamicsCompressor(); cmp.threshold.value = -20; cmp.knee.value = 12; cmp.ratio.value = 2.5; cmp.attack.value = 0.005; cmp.release.value = 0.15;
+  const g = ac.createGain(); const pan = ac.createStereoPanner ? ac.createStereoPanner() : null; src.connect(hp); hp.connect(cmp); cmp.connect(g); if (pan) { g.connect(pan); pan.connect(ac.destination); } else g.connect(ac.destination);
+  const P = new THREE.Vector3(); const vol = () => { c.group.getWorldPosition(P); const d = camera.position.distanceTo(P); return (d <= 4 ? 1 : clamp(1 - (d - 4) / 36, 0, 1) ** 1.6) * 1.2; };
+  const upd = () => { try { g.gain.setTargetAtTime(vol(), ac.currentTime, 0.05); if (pan) { const rel = P.clone().applyMatrix4(camera.matrixWorldInverse); pan.pan.setTargetAtTime(clamp(rel.x / Math.max(1, Math.hypot(rel.x, rel.z)), -0.9, 0.9), ac.currentTime, 0.05); } } catch (e) { /* ok */ } };
+  g.gain.value = vol(); upd(); const iv = setInterval(upd, 100);
+  let lip = null; try { lip = RPC.lipsync.analyzeBuffer(buf); } catch (e) { lip = null; } if (!lip || !lip.v) lip = RPC.lipsync.fromText(String(text), buf.duration);
+  const lid = LIPID++, at = ac.currentTime + 0.03, lat = (ac.outputLatency || 0) + (ac.baseLatency || 0); VOICE.speaking = true; NSRC.add(src);
+  src.onended = () => { clearInterval(iv); NSRC.delete(src); lipEnd(c, lid); VOICE.speaking = false; VOICE.until = performance.now() + 600; try { g.disconnect(); } catch (e) { /* ok */ } res(); };
+  src.start(at); lipStart(c, lip, () => (ac.currentTime - at - lat) * k, { id: lid }); }); }
+/* returns true when the neural voice took the line (it calls onFail itself if synthesis then fails) */
+function neuralSpeak(c, text, spec, mood, key, hint, onFail) { if (!NV || !c || !c.group) return false; neuStart(); if (!NV.ready()) return false; const ac = mac(); if (!ac) return false;
+  const pick = NV.match(spec || {}, key || c.id || 'x', hint || ''); const gen = VOICE.gen; window.__spoke = true;
+  const parts = (String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)]).map((s) => s.trim()).filter(Boolean); if (!parts.length) return true;
+  const md = String(mood || ''), show = !!(spec && (spec.showman || spec.timbre === 'showman'));
+  const moodS = /Excited|Happy|Surprised|Scared|Terrified/i.test(md) ? 1.05 : /Sad|Tired|Sigh|Asleep/i.test(md) ? 0.9 : 1, moodK = /Sad|Tired|Asleep/i.test(md) ? 0.97 : 1;
+  const reqs = parts.map((p) => { const ex = /!\s*$/.test(p), q = /\?\s*$/.test(p), tr = /(…|\.\.\.)\s*$/.test(p), caps = /\b[A-Z]{3,}\b/.test(p); const k = clamp(pick.k * moodK * (ex ? 1.015 : 1) * (q ? 1.01 : 1), 0.82, show ? 1.0 : 1.2); const sp = pick.pace * moodS * (show && (ex || caps) ? 1.07 : 1) * (tr ? 0.9 : 1); return { p, k, sp }; });
+  const proms = reqs.map((r) => { const pr = NV.gen(r.p, pick.voice, r.sp / r.k); pr.catch(() => {}); return pr; });
+  c._nq = (c._nq || Promise.resolve()).then(async () => { for (let i = 0; i < reqs.length; i++) { if (gen !== VOICE.gen) return; let a; try { a = await proms[i]; } catch (e) { if (i === 0) throw e; return; } if (gen !== VOICE.gen) return; await neuPlay(c, a, reqs[i].k, reqs[i].p); } })
+    .catch((e) => { console.warn('[voice] natural voice failed for this line, using fallback:', e && e.message); try { onFail && onFail(); } catch (e2) { /* ok */ } });
+  return true; }
 addEventListener('pointerdown', () => { if (MAC && MAC.state !== 'running') MAC.resume().catch(() => {}); }, true);
 // a distinct toy voice per character: the AI designs it (SAM synth: pitch 18–130, LOWER = higher voice; mouth / throat ~90–190
 // shape the vowels; speed 50–140, LARGER = slower; lp/hp: brightness; pres: crispness dB; warm: body dB). No voice given: one is
@@ -2145,7 +2177,8 @@ function mindVoiceNatural(m, text, v) { const vol = () => { const d = camera.pos
     u.onend = u.onerror = () => { VOICE.speaking = false; VOICE.until = performance.now() + 600; };
     speakSynced(m.c, u, cleanPart); try { SYN.speak(u); } catch (e) { return false; } }
   return true; }
-async function mindVoice(m, text) { window.__spoke = true; if (!ttsOn) { lipStart(m.c, RPC.lipsync.fromText(String(text)), wallClock()); return; } const v0 = voiceFor(m); if (v0.engine !== 'toy' && SYN && mindVoiceNatural(m, text, v0)) return; const api = CAST.studio && CAST.studio.api; const ac = mac();
+async function mindVoice(m, text) { if (ttsOn) { const v = voiceFor(m); if (v.engine !== 'toy') { const key = (typeof CAINE_M !== 'undefined' && m === CAINE_M) ? 'caine' : m.c.id; const hint = ((m.c.ch && ((m.c.ch.name || '') + ' ' + (m.c.ch.description || ''))) || '') + ' ' + (m.personality || ''); window.__spoke = true; if (neuralSpeak(m.c, text, v, m.mood, key, hint, () => mindVoiceLegacy(m, text))) return; } } return mindVoiceLegacy(m, text); }
+async function mindVoiceLegacy(m, text) { window.__spoke = true; if (!ttsOn) { lipStart(m.c, RPC.lipsync.fromText(String(text)), wallClock()); return; } const v0 = voiceFor(m); if (v0.engine !== 'toy' && SYN && mindVoiceNatural(m, text, v0)) return; const api = CAST.studio && CAST.studio.api; const ac = mac();
   if (api && api.samPcm && ac) { try { const v = voiceFor(m); const pcm = await api.samPcm(String(text).slice(0, 500), v, m.mood || ''); if (pcm && pcm.length) {
         const buf = ac.createBuffer(1, pcm.length, 22050); buf.copyToChannel(pcm, 0); const src = ac.createBufferSource(); src.buffer = buf;
         const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = v.hp; const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = v.lp;
@@ -3275,8 +3308,45 @@ function chkBrainNote() { try { const me = chkFind(ALT.on && ALT.root ? ALT.root
 const chkNoteHz = (n) => { if (typeof n === 'number') return 440 * 2 ** ((n - 69) / 12); const m = String(n).trim().match(/^([A-Ga-g])([#b]?)(-?\d)$/); if (!m) return null; const base = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }[m[1].toLowerCase()] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0); return 440 * 2 ** ((base + (+m[3] + 1) * 12 - 69) / 12); };
 const chkSyll = (w) => { const s = String(w).replace(/[^A-Za-z'~-]/g, ''); const m = s.match(/[^aeiouyAEIOUY~]*[aeiouyAEIOUY]+~*(?:[^aeiouyAEIOUY~]+~*$)?/g); return m && m.join('') === s ? m : [s || w]; }; /* split a word into sung syllables */
 const chkVowel = (t) => { const v = (String(t).match(/[aeiouy]+/gi) || ['a']).pop().toLowerCase()[0]; return { a: 'ah', e: 'eh', i: 'ee', o: 'oh', u: 'oo', y: 'ee' }[v] || 'ah'; }; /* the vowel a held syllable keeps singing */
+/* singing in the natural (neural) voice: each word is generated in the character's own matched voice, slowed to fill its beats, then
+   tuned onto the melody (pitch glides between syllables, vibrato blooms on held notes), with soft note envelopes and a little room */
+async function chkSingNeural(c, o, m, v) { const ac = mac(); if (!ac || !NV || !NV.ready()) return null;
+  const key = c === ollo ? (ALT.on ? 'caine' : 'ollo') : c.id; const pick = NV.match(v, key, (c.ch && c.ch.name) || '');
+  const style = String(o.style || 'happy').toLowerCase(); const words = String(o.lyrics || o.text || 'la la la').replace(/[~_]+/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean).slice(0, 80); if (!words.length) return null;
+  const bpm = clamp(+o.bpm || (/sad|lullaby|slow|ballad|spooky/.test(style) ? 72 : /rock|rap|fast|punk|hype/.test(style) ? 140 : /opera/.test(style) ? 80 : 110), 40, 220), beat = 60 / bpm, slowK = /opera|lullaby|ballad/.test(style) ? 1.3 : 1;
+  const nSyl = (w) => (w.includes('-') ? w.split('-').filter(Boolean).length : Math.max(1, (w.match(/[aeiouy]+/gi) || []).length));
+  const clips = words.map((w) => { const ns = nSyl(w), end = /[,.!?;:]$/.test(w); return { w: w.replace(/-/g, '').replace(/[^\w'!?,.]/g, '') || 'la', ns, end, target: (ns + (end ? 1 : 0)) * beat * slowK }; });
+  const total = clips.reduce((s, cl) => s + cl.ns, 0);
+  /* trim the silence the model leaves around a single word, so every word lands right on its beat */
+  const trim = (a) => { const p = a.pcm; let s = 0, e = p.length - 1; while (s < e && Math.abs(p[s]) < 0.012) s++; while (e > s && Math.abs(p[e]) < 0.012) e--; s = Math.max(0, s - Math.round(a.sr * 0.01)); e = Math.min(p.length - 1, e + Math.round(a.sr * 0.03)); return { pcm: p.slice(s, e + 1), sr: a.sr }; };
+  /* every word is requested at once (the worker makes them in order) and each is sung as soon as it is ready */
+  const gens = clips.map((cl) => { const natural = 0.12 + 0.17 * cl.ns; const pr = NV.gen(cl.w, pick.voice, clamp((natural / cl.target) * pick.pace * 1.15, 0.6, 1.2)).then(trim); pr.catch(() => {}); return pr; });
+  let first; try { first = await gens[0]; } catch (e) { return null; }
+  const vf0 = NV.f0(first.pcm, first.sr) || (v.gender === 'female' || v.gender === 'child' ? 210 : 120);
+  let notes = (Array.isArray(o.notes) ? o.notes : String(o.notes || '').split(/[\s,]+/).filter(Boolean)).map(chkNoteHz).filter(Boolean);
+  if (notes.length) { /* keep the written melody, moved by whole octaves into this voice's comfortable range */ const med = notes.slice().sort((a, b) => a - b)[notes.length >> 1]; let oct = 0; while (med * 2 ** oct > vf0 * 1.42 && oct > -3) oct--; while (med * 2 ** oct < vf0 / 1.42 && oct < 3) oct++; notes = notes.map((n) => n * 2 ** oct); }
+  else { const minor = /sad|spooky|minor|blues|lullaby/.test(style), sc = minor ? [0, 2, 3, 5, 7, 8, 10, 12] : [0, 2, 4, 5, 7, 9, 11, 12], rap = /rap/.test(style); let d = 2, i = 0; for (const cl of clips) for (let s = 0; s < cl.ns; s++, i++) { if (rap) { notes.push(vf0 * 2 ** ((i % 4 === 3 ? 2 : 0) / 12)); continue; } d = clamp(d + Math.round((Math.random() - 0.45) * 3) + (cl.end && s === cl.ns - 1 ? -1 : 0), 0, sc.length - 1); notes.push(vf0 * 2 ** ((sc[d] - 4 + (/opera|showtune/.test(style) ? 2 : 0)) / 12)); } }
+  const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 80; const warm = ac.createBiquadFilter(); warm.type = 'peaking'; warm.frequency.value = v.gender === 'female' ? 300 : 210; warm.Q.value = 0.8; warm.gain.value = 2.5;
+  const g = ac.createGain(); g.gain.value = 1.25; hp.connect(warm); warm.connect(g); g.connect(ac.destination);
+  const rvD = ac.createDelay(1); rvD.delayTime.value = /opera|spooky|ballad/.test(style) ? 0.11 : 0.075; const rvF = ac.createGain(); rvF.gain.value = /opera|spooky/.test(style) ? 0.32 : 0.2; const rvL = ac.createBiquadFilter(); rvL.type = 'lowpass'; rvL.frequency.value = 2600; const rvW = ac.createGain(); rvW.gain.value = 0.25; warm.connect(rvD); rvD.connect(rvL); rvL.connect(rvF); rvF.connect(rvD); rvL.connect(rvW); rvW.connect(g);
+  chkLog('Singing — ' + (c.ch.name || c.id) + ' sings (' + style + ', natural voice ' + pick.voice + ', ' + total + ' syllables)');
+  const gen0 = VOICE.gen; let t = ac.currentTime + 0.15; const t0 = t; let ni = 0;
+  for (let wi = 0; wi < clips.length; wi++) { const cl = clips[wi]; let a = null; try { a = wi === 0 ? first : await gens[wi]; } catch (e) { a = null; } if (gen0 !== VOICE.gen) break;
+    t = Math.max(t, ac.currentTime + 0.05); /* if a word arrives late, the song waits for it instead of skipping */
+    if (!a || !a.pcm || !a.pcm.length) { t += cl.target; ni += cl.ns; continue; }
+    const buf = ac.createBuffer(1, a.pcm.length, a.sr); buf.copyToChannel(a.pcm, 0); const src = ac.createBufferSource(); src.buffer = buf; const f = NV.f0(a.pcm, a.sr), base = f > 60 ? f : vf0;
+    const rates = []; for (let s = 0; s < cl.ns; s++) rates.push(clamp(notes[(ni + s) % notes.length] / base, 0.62, 1.6)); ni += cl.ns;
+    const dur = buf.duration / rates[0]; src.playbackRate.setValueAtTime(rates[0], t);
+    for (let s = 1; s < rates.length; s++) { const ts = t + (dur * s) / rates.length; src.playbackRate.setValueAtTime(rates[s - 1], ts - 0.05); src.playbackRate.linearRampToValueAtTime(rates[s], ts + 0.03); }
+    const env = ac.createGain(); env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(1, t + 0.02); const nEnd = t + dur; env.gain.setValueAtTime(1, Math.max(t + 0.03, nEnd - 0.06)); env.gain.linearRampToValueAtTime(0, nEnd + 0.01);
+    if (cl.end && dur > 0.3) { const lfo = ac.createOscillator(), lg = ac.createGain(); lfo.frequency.value = (/opera/.test(style) ? 5.8 : 5) + Math.random() * 0.5; lg.gain.setValueAtTime(0, t + dur * 0.35); lg.gain.linearRampToValueAtTime(/opera/.test(style) ? 36 : 16, t + dur * 0.8); lfo.connect(lg); lg.connect(src.detune); lfo.start(t); lfo.stop(nEnd + 0.1); }
+    src.connect(env); env.connect(hp); src.start(t); src.stop(nEnd + 0.05); NSRC.add(src); src.onended = () => NSRC.delete(src); const st = t, r0 = rates[0];
+    setTimeout(() => { try { let lip = null; try { lip = RPC.lipsync.analyzeBuffer(buf); } catch (e) { lip = null; } if (!lip || !lip.v) lip = RPC.lipsync.fromText(cl.w, buf.duration); lipStart(c, lip, () => (ac.currentTime - st) * r0); } catch (e) { /* ok */ } }, Math.max(0, (st - ac.currentTime) * 1000));
+    t += Math.max(cl.target, dur * 0.97); }
+  setTimeout(() => { try { lipEnd(c); rvF.disconnect(); g.disconnect(); } catch (e) { /* ok */ } }, Math.max(0, t - ac.currentTime + 1.2) * 1000);
+  return 'singing ' + total + ' syllables in a natural voice for ' + (t - t0).toFixed(1) + ' s'; }
 async function chkSing(c, o = {}) { const api = CAST.studio && CAST.studio.api, ac = mac(); if (!api || !api.samPcm || !ac) return 'no singing voice is available here'; if (!c) return 'no such character';
-  const isMe = c === ollo, m = isMe ? (ALT.on ? caineM() : { c: ollo, voiceP: null }) : (MINDS.get(c.id) || c._vm || (c._vm = { c, log: [], notes: [], mood: '' })); const v = { ...(m.voiceP || voiceFor(m)) };
+  const isMe = c === ollo, m = isMe ? (ALT.on ? caineM() : { c: ollo, voiceP: null }) : (MINDS.get(c.id) || c._vm || (c._vm = { c, log: [], notes: [], mood: '' })); const v = { ...(m.voiceP || voiceFor(m)) }; if (NV && NV.ready() && v.engine !== 'toy') { try { const r = await chkSingNeural(c, o, m, v); if (r) return r; } catch (e) { console.warn('[sing] natural voice failed, using the synth singer:', e && e.message); } }
   const style = String(o.style || 'happy').toLowerCase(), words = String(o.lyrics || o.text || 'la la la').replace(/\s+/g, ' ').trim().split(' ').slice(0, 120);
   /* syllables, not words: a long word spreads over several notes; "hel-lo" marks syllables yourself, "lo~ve" or a lone "_" holds the vowel on to the next note (melisma) */
   const units = []; for (const w0 of words) { if (/^[_~]+$/.test(w0)) { for (let x = 0; x < w0.length; x++) units.push({ t: null, ext: true }); continue; } const parts = w0.includes('-') ? w0.split('-').filter(Boolean) : chkSyll(w0); parts.forEach((p, k) => { const ext = (p.match(/~/g) || []).length; units.push({ t: p.replace(/[~]/g, ''), end: k === parts.length - 1 && /[,.!?;:]$/.test(w0) }); for (let x = 0; x < ext; x++) units.push({ t: null, ext: true }); }); } const bpm = clamp(+o.bpm || (/sad|lullaby|slow|ballad|spooky/.test(style) ? 72 : /rock|rap|fast|punk|hype/.test(style) ? 140 : /opera/.test(style) ? 80 : 110), 40, 220), beat = 60 / bpm;

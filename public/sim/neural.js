@@ -1,0 +1,139 @@
+// NeuralVoice: human-quality, fully in-browser character voices (Kokoro-82M, runs in a Web Worker on the visitor's device).
+// No server and no API: the model downloads once (about 90 MB, then cached by the browser) and every line is synthesised locally.
+// Each character gets its own matched voice: a base neural voice chosen from its gender, accent and personality, plus its own
+// pitch and pace, so two characters never sound the same. If the device cannot run it, the game falls back to the best voices
+// the browser has (then to the built-in synth), so speech always works.
+(function () {
+  'use strict';
+  var BASE = (document.currentScript && document.currentScript.src) || new URL('sim/neural.js', location.href).href;
+  var state = 'off'; // off | loading | ready | failed | unsupported
+  var worker = null, slow = 0, busyUntil = 0, nextId = 1, pending = new Map(), listeners = [], progress = {}, device = 'wasm', lastErr = '';
+
+  // ---------------------------------------------------------------- device support
+  function supported() {
+    try {
+      if (typeof Worker === 'undefined' || typeof WebAssembly !== 'object') return false;
+      var nav = navigator || {};
+      if (nav.connection && nav.connection.saveData) return false; // the visitor asked to save data: don't pull a 90 MB model
+      if (typeof nav.deviceMemory === 'number' && nav.deviceMemory < 3) return false; // too little RAM to run the model smoothly
+      if (typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency < 2) return false;
+      // module workers (needed to import the model runtime inside the worker)
+      var ok = false;
+      try { var blob = new Blob([''], { type: 'text/javascript' }); var u = URL.createObjectURL(blob); var w = new Worker(u, { get type() { ok = true; return 'module'; } }); w.terminate(); URL.revokeObjectURL(u); } catch (e) { ok = false; }
+      return ok;
+    } catch (e) { return false; }
+  }
+
+  function emit() { var s = status(); listeners.forEach(function (f) { try { f(s); } catch (e) { /* ok */ } }); }
+  function status() {
+    var l = 0, t = 0; Object.keys(progress).forEach(function (k) { l += progress[k].loaded; t += progress[k].total; });
+    return { state: state, device: device, pct: t ? Math.min(100, Math.round((l / t) * 100)) : 0, error: lastErr };
+  }
+
+  function start() {
+    if (state === 'loading' || state === 'ready') return;
+    if (!supported()) { state = 'unsupported'; emit(); return; }
+    state = 'loading'; emit();
+    var go = function (dev) {
+      device = dev;
+      try { worker = new Worker(new URL('./neural-worker.js', BASE), { type: 'module' }); }
+      catch (e) { state = 'failed'; lastErr = String(e && e.message || e); emit(); return; }
+      worker.onmessage = function (ev) {
+        var m = ev.data || {};
+        if (m.type === 'progress') { progress[m.file] = { loaded: m.loaded, total: m.total }; emit(); }
+        else if (m.type === 'ready') { if (m.rtf && m.rtf > 1.3) { state = 'failed'; lastErr = 'device too slow for natural voices (x' + m.rtf.toFixed(2) + ' real time)'; console.info('[neural voice] ' + lastErr + '; using fallback voices'); try { worker.terminate(); } catch (e) { /* ok */ } } else state = 'ready'; emit(); }
+        else if (m.type === 'log') { console.info('[neural voice]', m.text); }
+        else if (m.type === 'audio') { var p = pending.get(m.id); if (p) { pending.delete(m.id); var secs = m.pcm.length / (m.sr || 24000), took = (performance.now() - Math.max(p.t, busyUntil)) / 1000; slow = secs > 0.4 && took > secs * 2.2 ? slow + 1 : Math.max(0, slow - 1); if (slow >= 3) { state = 'failed'; lastErr = 'device too slow for natural voices'; console.info('[neural voice] ' + lastErr + '; using fallback voices'); emit(); } p.res({ pcm: m.pcm, sr: m.sr }); } busyUntil = performance.now(); }
+        else if (m.type === 'error') {
+          if (m.id === -1) { state = 'failed'; lastErr = m.text; console.warn('[neural voice] could not load, using fallback voices:', m.text); emit(); pending.forEach(function (p) { p.rej(new Error(m.text)); }); pending.clear(); }
+          else { var q = pending.get(m.id); if (q) { pending.delete(m.id); q.rej(new Error(m.text)); } }
+        }
+      };
+      worker.onerror = function (e) { state = 'failed'; lastErr = String(e && e.message || 'worker error'); emit(); pending.forEach(function (p) { p.rej(new Error(lastErr)); }); pending.clear(); };
+      worker.postMessage({ type: 'load', device: dev });
+    };
+    // WebGPU only on roomy desktops (its fp32 model is larger); everyone else gets the compact WASM model
+    var roomy = !(navigator.deviceMemory < 8) && !/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
+    if (roomy && navigator.gpu && navigator.gpu.requestAdapter) {
+      navigator.gpu.requestAdapter().then(function (a) { go(a ? 'webgpu' : 'wasm'); }, function () { go('wasm'); });
+    } else go('wasm');
+  }
+
+  function gen(text, voice, speed) {
+    if (state !== 'ready' || !worker) return Promise.reject(new Error('neural voice not ready'));
+    var id = nextId++;
+    return new Promise(function (res, rej) {
+      var now = performance.now(); if (!pending.size) busyUntil = now; pending.set(id, { res: res, rej: rej, t: now });
+      worker.postMessage({ type: 'gen', id: id, text: text, voice: voice, speed: Math.max(0.5, Math.min(2, speed || 1)), device: device });
+      setTimeout(function () { if (pending.has(id)) { pending.delete(id); rej(new Error('neural voice timeout')); } }, 45000);
+    });
+  }
+
+  // ---------------------------------------------------------------- character -> voice matcher
+  // Kokoro v1.0 English voices, best quality first inside each group
+  var V = {
+    usM: ['am_michael', 'am_fenrir', 'am_puck', 'am_eric', 'am_liam', 'am_onyx', 'am_echo'],
+    usF: ['af_heart', 'af_bella', 'af_nicole', 'af_aoede', 'af_kore', 'af_sarah', 'af_nova', 'af_sky', 'af_jessica', 'af_river', 'af_alloy'],
+    gbM: ['bm_george', 'bm_fable', 'bm_lewis', 'bm_daniel'],
+    gbF: ['bf_emma', 'bf_isabella', 'bf_alice', 'bf_lily']
+  };
+  // personality -> preferred voices and a pitch factor (1 = the voice's own pitch); factors stay in a natural range
+  var PERSONA = [
+    { re: /showman|ringmaster|announcer|host|theatrical|circus/, m: ['am_puck', 'am_michael', 'am_fenrir'], f: ['af_bella', 'af_nova'], k: 0.97, s: 1.08 },
+    { re: /deep|booming|giant|ogre|titan|golem|dragon|monster/, m: ['am_onyx', 'am_fenrir', 'bm_george'], f: ['af_kore', 'af_alloy'], k: 0.88, s: 0.94 },
+    { re: /gruff|grumpy|tough|pirate|knight|guard|raspy/, m: ['am_fenrir', 'am_onyx', 'bm_lewis'], f: ['af_kore', 'af_jessica'], k: 0.93, s: 0.98 },
+    { re: /sly|smooth|villain|cool|detective/, m: ['am_eric', 'am_liam', 'bm_fable'], f: ['bf_isabella', 'af_river'], k: 0.97, s: 0.97 },
+    { re: /soft|shy|gentle|quiet|timid|whisper|ghost/, m: ['am_echo', 'am_liam'], f: ['af_nicole', 'af_sky'], k: 1.02, s: 0.92 },
+    { re: /calm|warm|kind|friendly|mentor|gentleman/, m: ['am_michael', 'bm_george'], f: ['af_heart', 'bf_emma'], k: 1, s: 0.98 },
+    { re: /bright|cheerful|bubbly|happy|fairy|princess/, m: ['am_puck', 'am_liam'], f: ['af_bella', 'af_heart', 'af_nova'], k: 1.04, s: 1.05 },
+    { re: /small|cute|tiny|child|kid|baby|plush|youth|squeak/, m: ['am_puck', 'am_echo'], f: ['af_sky', 'af_nova'], k: 1.12, s: 1.04 }
+  ];
+  var used = new Map(); // character key -> voice, so different characters get different voices where possible
+  function hash(s) { var h = 2166136261; s = String(s || ''); for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  function match(spec, key, hint) {
+    spec = spec || {}; key = String(key || 'x');
+    if (used.has(key) && used.get(key).spec === spec) return used.get(key).pick;
+    var desc = [spec.preset, spec.timbre, spec.label, hint].join(' ').toLowerCase();
+    var g = spec.gender === 'female' ? 'f' : spec.gender === 'child' ? 'c' : 'm';
+    var gb = /^en-(gb|au|ie|nz)/i.test(spec.accent || '') && !spec.showman && spec.timbre !== 'showman';
+    var persona = null; for (var i = 0; i < PERSONA.length; i++) if (PERSONA[i].re.test(desc)) { persona = PERSONA[i]; break; }
+    var prefs = persona ? (g === 'f' || g === 'c' ? persona.f : persona.m) : [];
+    if (g === 'c' && !persona) prefs = ['af_sky', 'am_puck'];
+    var pool = gb ? (g === 'f' || g === 'c' ? V.gbF : V.gbM) : (g === 'f' || g === 'c' ? V.usF : V.usM);
+    var order = prefs.filter(function (v) { return gb ? /^b/.test(v) : /^a/.test(v); }).concat(prefs, pool);
+    var taken = new Set(); used.forEach(function (v, k) { if (k !== key) taken.add(v.pick.voice); });
+    var h = hash(key), voice = null;
+    for (var j = 0; j < order.length && !voice; j++) if (!taken.has(order[j])) voice = order[j];
+    if (!voice) voice = order[h % Math.max(1, Math.min(order.length, 4))] || 'af_heart';
+    // personal pitch / pace: persona base x the character's own natural-pitch setting x a tiny per-character offset
+    var np = typeof spec.np === 'number' ? spec.np : 1, nr = typeof spec.nr === 'number' ? spec.nr : 1;
+    var jit = (((h >>> 9) % 7) - 3) * 0.008;
+    var k = (persona ? persona.k : 1) * (0.55 + 0.45 * np) + jit;
+    if (g === 'c') k += 0.06;
+    k = Math.max(0.84, Math.min(1.18, k));
+    if (spec.showman || spec.timbre === 'showman') k = Math.min(k, 1.0); // energetic, never squeaky
+    var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
+    var pick = { voice: voice, k: k, pace: pace };
+    used.set(key, { spec: spec, pick: pick });
+    return pick;
+  }
+
+  // a rough fundamental-frequency estimate of a voiced clip (autocorrelation over the loudest frames)
+  function f0(pcm, sr) {
+    var N = 1024, best = [];
+    for (var off = 0; off + N * 2 < pcm.length; off += N) {
+      var e = 0; for (var i = 0; i < N; i++) e += pcm[off + i] * pcm[off + i];
+      if (e / N < 1e-4) continue;
+      var lo = Math.floor(sr / 400), hi = Math.floor(sr / 70), bl = 0, bv = 0;
+      for (var lag = lo; lag <= hi; lag++) { var s = 0; for (var q = 0; q < N; q++) s += pcm[off + q] * pcm[off + q + lag]; if (s > bv) { bv = s; bl = lag; } }
+      if (bl && bv / e > 0.4) best.push(sr / bl);
+    }
+    if (!best.length) return 0; best.sort(function (a, b) { return a - b; }); return best[Math.floor(best.length / 2)];
+  }
+
+  window.NeuralVoice = {
+    supported: supported, start: start, gen: gen, match: match, f0: f0,
+    status: status, ready: function () { return state === 'ready'; },
+    onStatus: function (f) { listeners.push(f); try { f(status()); } catch (e) { /* ok */ } }
+  };
+})();

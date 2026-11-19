@@ -41,9 +41,31 @@ app = FastAPI(title="The Amazing Simulation - local AI", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], max_age=86400)
 
 
+def _load_key() -> str:
+    k = os.environ.get("LOCAL_AI_TOKEN", "").strip()
+    if not k:
+        f = Path(__file__).resolve().parent / ".ai_key"
+        if f.exists():
+            k = f.read_text(encoding="utf-8").strip()
+    return k
+
+
+AI_KEY = _load_key()
+
+
 @app.middleware("http")
 async def private_network_access(request: Request, call_next):
-    """Lets the website (served from Vercel over https) reach this server on 127.0.0.1 in Chromium browsers."""
+    """Lets the website (served from Vercel over https) reach this server on 127.0.0.1 in Chromium browsers, and
+    requires the private access key on requests that arrive through the public tunnel (they carry Cloudflare headers)."""
+    via_tunnel = "cf-ray" in request.headers or "cf-connecting-ip" in request.headers
+    if via_tunnel and AI_KEY and request.method != "OPTIONS" and request.url.path not in ("/health", "/"):
+        given = request.headers.get("x-ai-key") or request.query_params.get("key") or ""
+        if given != AI_KEY:
+            resp = JSONResponse({"type": "error", "error": {"type": "authentication_error", "code": "not_granted",
+                                 "message": "This local AI needs its access key. Open the site once with ?key=YOUR_KEY (see local-ai/DEVICE_LINK.txt on the AI's computer)."}},
+                                status_code=401)
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
     resp = await call_next(request)
     resp.headers["Access-Control-Allow-Private-Network"] = "true"
     resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
@@ -60,8 +82,12 @@ def _truthy(v) -> bool:
 
 @app.get("/")
 @app.get("/health")
-async def health():
-    return {"ok": True, **get_engine().status()}
+async def health(request: Request):
+    via_tunnel = "cf-ray" in request.headers or "cf-connecting-ip" in request.headers
+    key_ok = (not AI_KEY) or (request.headers.get("x-ai-key") or request.query_params.get("key") or "") == AI_KEY
+    if via_tunnel and not key_ok:  # public health check: only says it is up and that a key is needed
+        return {"ok": True, "needs_key": True}
+    return {"ok": True, "needs_key": False, **get_engine().status()}
 
 
 @app.post("/unload")

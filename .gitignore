@@ -16,3 +16,7 @@ local-ai/data/*
 local-ai/*.log
 local-ai/*.pid
 __pycache__/
+local-ai/.ai_key
+local-ai/.tunnel.json
+local-ai/tunnel_url.txt
+local-ai/DEVICE_LINK.txt

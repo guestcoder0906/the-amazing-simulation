@@ -25,5 +25,10 @@ if not exist "%LOCAL_AI_VENV%\installed.ok" (
   "%VPY%" -m pip install -r requirements.txt || exit /b 1
   echo ok> "%LOCAL_AI_VENV%\installed.ok"
 )
+rem private access key for requests through the public tunnel (made once, kept in local-ai\.ai_key)
+if not exist .ai_key powershell -NoProfile -Command "Set-Content -Path '.ai_key' -Value ([guid]::NewGuid().ToString('N')) -NoNewline -Encoding ascii"
 powershell -NoProfile -Command "$p = Start-Process -FilePath $env:VPY -ArgumentList 'api.py' -WindowStyle Hidden -RedirectStandardOutput 'api.out.log' -RedirectStandardError 'api.log' -PassThru; Set-Content -Path 'api.pid' -Value $p.Id -Encoding ascii; Write-Host ('Local AI started on http://127.0.0.1:8000 (PID ' + $p.Id + '). Logs: local-ai\api.log')"
+if /i not "%LOCAL_AI_TUNNEL%"=="0" (
+  powershell -NoProfile -Command "$p = Start-Process -FilePath $env:VPY -ArgumentList 'tunnel.py' -WindowStyle Hidden -RedirectStandardOutput 'tunnel.log' -RedirectStandardError 'tunnel.err.log' -PassThru; Set-Content -Path 'tunnel.pid' -Value $p.Id -Encoding ascii; $k = (Get-Content '.ai_key' -Raw).Trim(); $site = if ($env:LOCAL_AI_SITE) { $env:LOCAL_AI_SITE } else { 'https://YOUR-SITE.vercel.app' }; $link = $site.TrimEnd('/') + '/?key=' + $k; Set-Content -Path 'DEVICE_LINK.txt' -Value ('Open this once on each phone / tablet / computer to use your local AI from anywhere (keep it private):' + [Environment]::NewLine + $link) -Encoding utf8; Write-Host ('Public tunnel starting (address appears in local-ai\tunnel_url.txt). Device link: local-ai\DEVICE_LINK.txt')"
+)
 endlocal

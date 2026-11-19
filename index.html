@@ -112,14 +112,49 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
 // It speaks the same Messages format as before (messages, tools, tool_use / tool_result, images), so the game code
 // is unchanged. Use another address with ?ai=http://host:port (remembered in this browser).
 (function () {
-  var AI_URL = (function () {
+  var LOCAL_URL = 'http://127.0.0.1:8000';
+  var GIST_USER = window.LOCAL_AI_GIST_USER || 'guestcoder0906'; // GitHub account whose start.bat publishes the tunnel address
+  var OVERRIDE = (function () {
     try {
       var q = new URLSearchParams(location.search).get('ai');
+      if (q === 'auto') { localStorage.removeItem('sbx_local_ai_url'); return ''; }
       if (q) { localStorage.setItem('sbx_local_ai_url', q); return q.replace(/\/+$/, ''); }
-      var s = localStorage.getItem('sbx_local_ai_url'); if (s) return s.replace(/\/+$/, '');
-    } catch (e) { /* storage blocked */ }
-    return String(window.LOCAL_AI_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+      return (localStorage.getItem('sbx_local_ai_url') || '').replace(/\/+$/, '');
+    } catch (e) { return ''; }
   })();
+  // private access key for the public tunnel: open the site once with ?key=... on each device (it is remembered)
+  var AI_KEY = (function () {
+    try {
+      var k = new URLSearchParams(location.search).get('key');
+      if (k) { localStorage.setItem('sbx_local_ai_key', k); try { var u = new URL(location.href); u.searchParams.delete('key'); history.replaceState(null, '', u.toString()); } catch (e) { /* ok */ } return k; }
+      return localStorage.getItem('sbx_local_ai_key') || '';
+    } catch (e) { return ''; }
+  })();
+  var AI_URL = OVERRIDE || LOCAL_URL;
+  function hdr(extra) { var h = Object.assign({}, extra || {}); if (AI_KEY) h['x-ai-key'] = AI_KEY; return h; }
+  async function ping(u) { try { var c = new AbortController(); var tm = setTimeout(function () { c.abort(); }, 4000); var r = await fetch(u + '/health', { cache: 'no-store', headers: hdr(), signal: c.signal }); clearTimeout(tm); return r.ok; } catch (e) { return false; } }
+  async function tunnelAddress() {
+    try {
+      var r = await fetch('https://api.github.com/users/' + encodeURIComponent(GIST_USER) + '/gists?per_page=100', { cache: 'no-store' });
+      if (!r.ok) return '';
+      var list = await r.json();
+      for (var g of list) { var f = g.files && g.files['ai-url.json']; if (f && f.raw_url) { var j = await (await fetch(f.raw_url, { cache: 'no-store' })).json(); return j && j.url ? String(j.url).replace(/\/+$/, '') : ''; } }
+    } catch (e) { /* GitHub unreachable */ }
+    return '';
+  }
+  var resolving = null;
+  function resolveUrl(force) {
+    if (OVERRIDE) return Promise.resolve(OVERRIDE);
+    if (resolving && !force) return resolving;
+    resolving = (async function () {
+      var tun = await tunnelAddress();
+      if (tun && await ping(tun)) { AI_URL = tun; }
+      else if (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || !tun) { AI_URL = LOCAL_URL; }
+      else { AI_URL = (await ping(LOCAL_URL)) ? LOCAL_URL : tun; }
+      window.LOCAL_AI_URL = AI_URL; return AI_URL;
+    })();
+    return resolving;
+  }
   window.LOCAL_AI_URL = AI_URL;
   var READY = Promise.resolve(); window.__LOCAL_READY = READY;
   var OFFLINE_MSG = 'Your local AI is not running. Start it with start.bat (Windows) or ./start.sh (Mac/Linux) in the project folder, then try again.';
@@ -131,8 +166,10 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var last = null;
     for (var attempt = 0; attempt < 4; attempt++) {
       var r;
-      try { r = await fetch(AI_URL + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal }); }
-      catch (e) { if (e && e.name === 'AbortError') throw e; setStatus(false); throw err('ai_offline', OFFLINE_MSG); }
+      await resolveUrl();
+      try { r = await fetch(AI_URL + '/v1/messages', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify(body), signal: signal }); }
+      catch (e) { if (e && e.name === 'AbortError') throw e; if (attempt === 0) { await resolveUrl(true); continue; } setStatus(false); throw err('ai_offline', OFFLINE_MSG); }
+      if (r.status === 401) { setStatus(true); throw err('not_granted', 'Your local AI needs its access key: open this site once with ?key=YOUR_KEY (the link is in local-ai/DEVICE_LINK.txt on the AI computer).'); }
       setStatus(true);
       if (r.ok) return r.json();
       var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
@@ -180,8 +217,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     try { return JSON.parse(i >= 0 && j > i ? t.slice(i, j + 1) : t); } catch (e) { return null; }
   };
   sample.limits = async function () { return { images: true, maxCount: 4, local: true, remaining: null }; };
-  sample.url = AI_URL;
-  window.localAI = { url: AI_URL, sample: sample, health: function () { return fetch(AI_URL + '/health').then(function (r) { return r.json(); }); } };
+  window.localAI = { get url() { return AI_URL; }, resolve: resolveUrl, sample: sample, health: async function () { await resolveUrl(); return fetch(AI_URL + '/health', { headers: hdr() }).then(function (r) { return r.json(); }); } };
   // the game asks for capabilities by name; only 'sample' (the AI) is provided here
   // local listening: the microphone is recorded phrase by phrase (voice activity detection) and each phrase is sent to the
   // local AI's /hear, which listens to the sound itself and returns the words plus how they were said (emotion, tone,
@@ -194,7 +230,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       if (!blob || blob.size < 2000) return;
       emit('p', { text: '' });
       try {
-        var r = await fetch(AI_URL + '/hear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audio: await b64(blob) }) });
+        await resolveUrl(); var r = await fetch(AI_URL + '/hear', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: await b64(blob) }) });
         setStatus(true); if (!r.ok) return;
         var j = await r.json(); emit('f', { text: String(j.transcript || '').trim(), analysis: j });
       } catch (e) { setStatus(false); }
@@ -257,7 +293,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       mr.onstop = async function () {
         try {
           var blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-          var r = await fetch(AI_URL + '/hear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audio: await b64(blob), context: 'This is live sound playing inside a 3D game world right now (music, sound effects, character voices, ambience). Describe the music (genre, mood, instruments, tempo) and every sound you can identify.' }) });
+          await resolveUrl(); var r = await fetch(AI_URL + '/hear', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: await b64(blob), context: 'This is live sound playing inside a 3D game world right now (music, sound effects, character voices, ambience). Describe the music (genre, mood, instruments, tempo) and every sound you can identify.' }) });
           if (r.ok) { var j = await r.json(); if (window.__onSimHeard) window.__onSimHeard(j); }
         } catch (e) { /* local AI offline: try again later */ }
         EARS.busy = false;
@@ -276,12 +312,12 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     if (note || !document.body) return;
     note = document.createElement('div'); note.setAttribute('role', 'status');
     note.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:max(12px,env(safe-area-inset-bottom));z-index:10000;max-width:min(560px,calc(100% - 24px));background:rgba(15,26,34,.94);color:#f1e7cf;border:1px solid rgba(241,231,207,.2);border-radius:10px;padding:10px 12px;font:13px/1.45 "IBM Plex Sans",system-ui,sans-serif;display:flex;gap:10px;align-items:flex-start;box-shadow:0 8px 24px rgba(0,0,0,.3)';
-    note.innerHTML = '<span style="flex:1"><b style="color:#f2b632">Local AI offline.</b> Start it with <code>start.bat</code> (Windows) or <code>./start.sh</code> (Mac/Linux), then press Retry. Looking for it at <code></code>.</span><button type="button" style="background:#f2b632;color:#0f1a22;border:0;border-radius:6px;padding:5px 10px;font:600 12px system-ui;cursor:pointer">Retry</button><button type="button" aria-label="Dismiss" style="background:none;border:0;color:#9db0b0;font-size:16px;cursor:pointer;line-height:1">&times;</button>';
+    note.innerHTML = '<span style="flex:1"><b style="color:#f2b632">Local AI offline.</b> Start it with <code>start.bat</code> (Windows) or <code>./start.sh</code> (Mac/Linux) on the AI computer, then press Retry. Last tried: <code></code>.</span><button type="button" style="background:#f2b632;color:#0f1a22;border:0;border-radius:6px;padding:5px 10px;font:600 12px system-ui;cursor:pointer">Retry</button><button type="button" aria-label="Dismiss" style="background:none;border:0;color:#9db0b0;font-size:16px;cursor:pointer;line-height:1">&times;</button>';
     note.querySelector('code:last-of-type').textContent = AI_URL;
     var bs = note.querySelectorAll('button'); bs[0].onclick = function () { check(); }; bs[1].onclick = function () { if (note) { note.remove(); note = null; } };
     document.body.appendChild(note);
   }
-  function check() { fetch(AI_URL + '/health', { cache: 'no-store' }).then(function (r) { setStatus(r.ok); }, function () { setStatus(false); }); }
+  function check() { resolveUrl(true).then(function () { return fetch(AI_URL + '/health', { cache: 'no-store', headers: hdr() }); }).then(function (r) { setStatus(r.ok); }, function () { setStatus(false); }); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', check); else check();
 })();
 </script>

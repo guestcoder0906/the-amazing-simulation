@@ -38,12 +38,13 @@ function pitchTrack(x, sr, hop) {
     const c = i * hop - (W >> 1); if (c < 0 || c + W + maxLag >= x.length) continue;
     let e0 = 0; for (let k = 0; k < W; k++) e0 += x[c + k] * x[c + k];
     if (e0 / W < 2e-5) continue;
-    let best = 0, bl = 0;
+    let best = 0; const rr = new Float32Array(maxLag + 2);
     for (let lag = minLag; lag <= maxLag; lag++) {
       let s = 0, e1 = 0; for (let k = 0; k < W; k += 2) { s += x[c + k] * x[c + k + lag]; e1 += x[c + k + lag] * x[c + k + lag]; }
-      const r = s / Math.sqrt((e0 / 2) * e1 + 1e-12); if (r > best) { best = r; bl = lag; }
+      rr[lag] = s / Math.sqrt((e0 / 2) * e1 + 1e-12); if (rr[lag] > best) best = rr[lag];
     }
-    if (best > 0.5 && bl) f[i] = sr / bl;
+    // the shortest lag nearly as periodic as the best is the true period (a longer one would be an octave-down error)
+    if (best > 0.5) for (let lag = minLag + 1; lag < maxLag; lag++) if (rr[lag] >= best * 0.92 && rr[lag] >= rr[lag - 1] && rr[lag] >= rr[lag + 1]) { f[i] = sr / lag; break; }
   }
   // smooth: median of 5, drop octave jumps
   const g = new Float32Array(n);
@@ -55,51 +56,102 @@ function trimSilence(x, sr) {
   let s = 0, e = x.length - 1; while (s < e && Math.abs(x[s]) < 0.012) s++; while (e > s && Math.abs(x[e]) < 0.012) e--;
   s = Math.max(0, s - Math.round(sr * 0.01)); e = Math.min(x.length - 1, e + Math.round(sr * 0.03)); return x.slice(s, e + 1);
 }
-// shape = { ratio } (constant pitch factor, speech) or { notes:[Hz per syllable], target:seconds, vib:bool, trim:bool } (singing)
+// shape = { ratio } (constant pitch factor, speech)
+//      or { notes:[Hz per syllable], target:seconds, vib, vibDepth, vibRate, style, phraseEnd, trim } (singing)
 function shape(x, sr, sh) {
   if (sh.trim) x = trimSilence(x, sr);
   const hop = Math.round(sr * 0.005), f = pitchTrack(x, sr, hop), f0 = median(f) || 0;
   const sing = Array.isArray(sh.notes) && sh.notes.length;
   if (!sing && (!sh.ratio || Math.abs(sh.ratio - 1) < 0.004)) return { pcm: x, f0 };
-  const N = x.length, stretch = sing && sh.target ? Math.max(0.5, Math.min(4, (sh.target * sr) / N)) : 1, L = Math.round(N * stretch);
-  const per = (i) => { const v = f[Math.min(f.length - 1, Math.max(0, Math.round(i / hop)))]; return v > 0 ? sr / v : 0; };
-  // analysis marks: one per pitch period in voiced parts (snapped to the local peak), every 5 ms elsewhere
+  const N = x.length, nF = f.length;
+  const voicedF = (i) => f[Math.min(nF - 1, Math.max(0, i))] > 0;
+  const per = (i) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(i / hop)))]; return v > 0 ? sr / v : 0; };
+
+  // ---- time map: consonants keep their natural length, only voiced sound (the vowels) is stretched to fill the note
+  let L = N, aFrameStart = null, oFrameStart = null, vRate = 1;
+  if (sing && sh.target) {
+    const want = Math.round(sh.target * sr); let V = 0; for (let i = 0; i < nF; i++) if (voicedF(i)) V += hop; const U = Math.max(0, N - V);
+    vRate = V > 0 ? Math.max(0.45, (want - U) / V) : 1; // output samples per input sample in voiced frames
+    const uRate = V > 0 ? 1 : Math.max(0.5, want / Math.max(1, N));
+    oFrameStart = new Float64Array(nF + 1); aFrameStart = new Float64Array(nF + 1);
+    for (let i = 0; i < nF; i++) { aFrameStart[i] = i * hop; oFrameStart[i + 1] = oFrameStart[i] + hop * (voicedF(i) ? vRate : uRate); }
+    aFrameStart[nF] = nF * hop; L = Math.max(1, Math.round(oFrameStart[nF]));
+  } else if (sh.target) L = Math.round(sh.target * sr);
+  let fi = 0;
+  const A = (ts) => { // output sample -> analysis sample
+    if (!oFrameStart) return ts * (N / L);
+    while (fi + 1 < nF && oFrameStart[fi + 1] <= ts) fi++; while (fi > 0 && oFrameStart[fi] > ts) fi--;
+    const span = oFrameStart[fi + 1] - oFrameStart[fi] || 1; return aFrameStart[fi] + ((ts - oFrameStart[fi]) / span) * hop;
+  };
+
+  // ---- pitch marks: one per glottal period, tracked period-to-period on a smoothed copy so they stay phase-consistent (no phasiness)
+  const lp = new Float32Array(N); { let s = 0; const a = Math.exp((-2 * Math.PI * 900) / sr); for (let i = 0; i < N; i++) { s = a * s + (1 - a) * x[i]; lp[i] = s; } }
   const marks = [], mper = [];
   for (let t = 0; t < N;) {
     const p = per(t);
-    if (p) { let b = t, bv = -1; const r = Math.round(p * 0.4); for (let k = Math.max(0, t - r); k <= Math.min(N - 1, t + r); k++) if (Math.abs(x[k]) > bv) { bv = Math.abs(x[k]); b = k; } if (!marks.length || b > marks[marks.length - 1]) { marks.push(b); mper.push(p); } t = b + Math.max(16, Math.round(p)); }
-    else { marks.push(t); mper.push(0); t += Math.round(sr * 0.005); }
+    if (p) {
+      const guess = marks.length && mper[marks.length - 1] ? marks[marks.length - 1] + mper[marks.length - 1] : t;
+      const c = Math.round(Math.max(t, guess)), r = Math.round(p * (marks.length && mper[marks.length - 1] ? 0.18 : 0.5));
+      let b = c, bv = -Infinity; for (let k = Math.max(0, c - r); k <= Math.min(N - 1, c + r); k++) if (lp[k] > bv) { bv = lp[k]; b = k; }
+      if (!marks.length || b > marks[marks.length - 1] + p * 0.5) { marks.push(b); mper.push(p); }
+      t = b + Math.max(16, Math.round(p * 0.8));
+    } else { marks.push(t); mper.push(0); t += Math.round(sr * 0.005); }
   }
-  // target pitch over output time
-  const ns = sing ? sh.notes.length : 1, glide = 0.045 * sr;
+
+  // ---- the sung pitch over time: notes with smooth glides, a small human scoop into each note, natural drift, vibrato that blooms
+  const ns = sing ? sh.notes.length : 1, glide = 0.06 * sr, style = String(sh.style || '');
+  const sad = /sad|lullaby|ballad|blues|spooky/.test(style), opera = /opera/.test(style), rock = /rock|punk|hype/.test(style);
+  const scoopC = opera ? 25 : sad ? 45 : rock ? 60 : 35;
+  let drift = 0, driftV = 0; const seed = (sh.notes[0] || 1) * 7.3;
+  const rnd = (() => { let s = Math.floor(seed * 1000) >>> 0 || 1; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); })();
   const targetHz = (ts) => {
-    if (!sing) return 0;
     const pos = (ts / L) * ns, k = Math.min(ns - 1, Math.floor(pos)); let hz = sh.notes[k];
-    const into = (pos - k) * (L / ns); if (k > 0 && into < glide) { const a = into / glide, prev = sh.notes[k - 1]; hz = prev * Math.pow(hz / prev, a * a * (3 - 2 * a)); }
-    if (sh.vib) { const tt = ts / sr, held = Math.max(0, Math.min(1, (ts / L - 0.35) / 0.4)); hz *= Math.pow(2, (held * (sh.vibDepth || 22) * Math.sin(2 * Math.PI * (sh.vibRate || 5.3) * tt)) / 1200); }
-    return hz;
+    const into = (pos - k) * (L / ns);
+    if (k > 0 && into < glide) { const a = into / glide, prev = sh.notes[k - 1]; hz = prev * Math.pow(hz / prev, a * a * (3 - 2 * a)); }
+    else if (k === 0 && into < glide) { const a = into / glide; hz *= Math.pow(2, (-scoopC * (1 - a * a * (3 - 2 * a))) / 1200); }
+    const tt = ts / sr;
+    if (sh.vib) { const held = Math.max(0, Math.min(1, (ts / L - 0.3) / 0.45)); const depth = (sh.vibDepth || 20) * held, rate = (sh.vibRate || 5.2) * (1 + 0.04 * Math.sin(tt * 1.7)); hz *= Math.pow(2, (depth * Math.sin(2 * Math.PI * rate * tt)) / 1200); }
+    if (sh.phraseEnd && sad && ts > L * 0.8) hz *= Math.pow(2, (-35 * ((ts / L - 0.8) / 0.2)) / 1200); // a soft sigh down at a sad phrase end
+    return hz * Math.pow(2, drift / 1200);
   };
-  const y = new Float32Array(L + 2048), wsum = new Float32Array(L + 2048);
+
+  // ---- overlap-add resynthesis
+  // Each output grain is a smooth blend of the two analysis periods around the current read position (aligned at their pitch
+  // marks), so a held vowel evolves continuously instead of repeating or hopping between cycles: no buzz, ring, flutter or phasing.
+  const y = new Float32Array(L + 4096);
   let mi = 0;
   for (let ts = 0; ts < L;) {
-    const ta = ts / stretch; while (mi + 1 < marks.length && Math.abs(marks[mi + 1] - ta) <= Math.abs(marks[mi] - ta)) mi++;
-    const m = marks[mi], pa = mper[mi];
+    const ta = A(ts);
+    while (mi + 1 < marks.length && marks[mi + 1] <= ta) mi++;
+    while (mi > 0 && marks[mi] > ta) mi--;
+    const m0 = marks[mi], p0 = mper[mi], m1 = mi + 1 < marks.length ? marks[mi + 1] : m0, p1 = mi + 1 < marks.length ? mper[mi + 1] : p0;
     let step;
-    if (pa) {
+    if (p0 && p1) {
+      const fr = m1 > m0 ? Math.max(0, Math.min(1, (ta - m0) / (m1 - m0))) : 0, pa = p0 + (p1 - p0) * fr;
+      if (sing) { driftV += (rnd() - 0.5) * 0.8 - drift * 0.03; driftV *= 0.92; drift = Math.max(-7, Math.min(7, drift + driftV)); }
       let ratio = sing ? targetHz(ts) / (sr / pa) : sh.ratio; ratio = Math.max(0.5, Math.min(2.2, ratio || 1));
-      step = pa / ratio; const half = Math.round(pa);
-      for (let k = -half; k <= half; k++) { const si = m + k, di = Math.round(ts) + k; if (si < 0 || si >= N || di < 0 || di >= y.length) continue; const w = 0.5 + 0.5 * Math.cos((Math.PI * k) / (half + 1)); y[di] += x[si] * w; wsum[di] += w; }
+      /* real voices are never machine-perfect: ~0.5% cycle-to-cycle timing jitter and ~2% loudness shimmer while singing */
+      step = (pa / ratio) * (sing ? 1 + (rnd() - 0.5) * 0.01 : 1); const half = Math.round(pa), w0 = Math.min(1, step / pa) * (sing ? 1 + (rnd() - 0.5) * 0.04 : 1), d0 = Math.round(ts);
+      for (let k = -half; k <= half; k++) {
+        const di = d0 + k; if (di < 0 || di >= y.length) continue;
+        const a0 = m0 + k, a1 = m1 + k; const v0 = a0 >= 0 && a0 < N ? x[a0] : 0, v1 = a1 >= 0 && a1 < N ? x[a1] : 0;
+        y[di] += (v0 * (1 - fr) + v1 * fr) * w0 * (0.5 + 0.5 * Math.cos((Math.PI * k) / half));
+      }
     } else {
-      // unvoiced (s, f, t...): copy short overlapping noise grains at the original rate
-      const half = Math.round(sr * 0.005); step = half;
-      for (let k = -half; k <= half; k++) { const si = Math.round(ta) + k, di = Math.round(ts) + k; if (si < 0 || si >= N || di < 0 || di >= y.length) continue; const w = 0.5 + 0.5 * Math.cos((Math.PI * k) / (half + 1)); y[di] += x[si] * w; wsum[di] += w; }
+      const half = Math.round(sr * 0.005); step = half; // unvoiced (s, f, t...): copied at its own pace
+      for (let k = -half; k <= half; k++) { const si = Math.round(ta) + k, di = Math.round(ts) + k; if (si < 0 || si >= N || di < 0 || di >= y.length) continue; y[di] += x[si] * (0.5 + 0.5 * Math.cos((Math.PI * k) / half)); }
     }
     ts += Math.max(8, step);
   }
-  const out = new Float32Array(L);
-  for (let i = 0; i < L; i++) out[i] = wsum[i] > 0.15 ? y[i] / wsum[i] : y[i];
-  // short fades so every clip starts and ends without a click
-  const fd = Math.min(L >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; out[i] *= a; out[L - 1 - i] *= a; }
+  const out = y.slice(0, L);
+  if (sing) {
+    // phrasing: a gentle swell into held notes and a natural release at the end (emotion comes from dynamics as much as pitch)
+    const sw = Math.round(L * 0.35);
+    for (let i = 0; i < L; i++) { const a = i / L; let g = 1; if (sh.vib) g *= 0.9 + 0.1 * Math.min(1, i / Math.max(1, sw)); if (a > 0.82) g *= 1 - ((a - 0.82) / 0.18) * (sh.phraseEnd ? 0.55 : 0.25); out[i] *= g; }
+    // a little air: very soft breath noise shaped by the voice itself keeps long notes from sounding synthetic
+    let nb = 0; const br = sad ? 0.06 : 0.035; for (let i = 0; i < L; i++) { nb = 0.96 * nb + 0.04 * (rnd() * 2 - 1); out[i] += nb * Math.abs(out[i]) * br * 6; }
+  }
+  const fd = Math.min(L >> 2, Math.round(sr * 0.01)); for (let i = 0; i < fd; i++) { const a = i / fd; out[i] *= a; out[L - 1 - i] *= a; }
   return { pcm: out, f0 };
 }
 

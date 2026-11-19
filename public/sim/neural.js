@@ -120,17 +120,18 @@
 
   // a rough fundamental-frequency estimate of a voiced clip (autocorrelation over the loudest frames)
   function f0(pcm, sr) {
-    var N = 1024, best = [];
-    for (var off = 0; off + N * 2 < pcm.length; off += N) {
-      var e = 0; for (var i = 0; i < N; i++) e += pcm[off + i] * pcm[off + i];
-      if (e / N < 1e-4) continue;
-      var lo = Math.floor(sr / 400), hi = Math.floor(sr / 70), bl = 0, bv = 0;
-      for (var lag = lo; lag <= hi; lag++) { var s = 0; for (var q = 0; q < N; q++) s += pcm[off + q] * pcm[off + q + lag]; if (s > bv) { bv = s; bl = lag; } }
-      if (bl && bv / e > 0.4) best.push(sr / bl);
+    var N = 1024, lo = Math.floor(sr / 420), hi = Math.floor(sr / 65), best = [];
+    for (var off = 0; off + N + hi < pcm.length; off += N) {
+      var e0 = 0; for (var i = 0; i < N; i++) e0 += pcm[off + i] * pcm[off + i];
+      if (e0 / N < 1e-4) continue;
+      var r = new Float32Array(hi + 1), rmax = 0;
+      for (var lag = lo; lag <= hi; lag++) { var s = 0, e1 = 0; for (var q = 0; q < N; q += 2) { s += pcm[off + q] * pcm[off + q + lag]; e1 += pcm[off + q + lag] * pcm[off + q + lag]; } r[lag] = s / Math.sqrt((e0 / 2) * e1 + 1e-12); if (r[lag] > rmax) rmax = r[lag]; }
+      if (rmax < 0.5) continue;
+      // the shortest lag that is (nearly) as periodic as the best one is the true period (avoids octave-down errors)
+      for (var l2 = lo + 1; l2 < hi; l2++) if (r[l2] >= rmax * 0.92 && r[l2] >= r[l2 - 1] && r[l2] >= r[l2 + 1]) { best.push(sr / l2); break; }
     }
     if (!best.length) return 0; best.sort(function (a, b) { return a - b; }); return best[Math.floor(best.length / 2)];
   }
-
   window.NeuralVoice = {
     supported: supported, start: start, gen: gen, match: match, f0: f0,
     status: status, ready: function () { return state === 'ready'; },

@@ -187,6 +187,23 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     if (merged[0] && merged[0].role !== 'user') merged.unshift({ role: 'user', content: [{ type: 'text', text: '(continue)' }] });
     return merged;
   }
+  // ---- prompt caching (saves most of the cost of repeated context): Anthropic re-reads a cached prefix at ~10% of the price.
+  // Breakpoints (max 4 allowed, we use 3): the tool list, the first message (the long, fixed instructions), and the newest
+  // message, so every extra tool-loop turn only pays full price for what is new. Too-short prefixes are simply not cached.
+  var CC = { type: 'ephemeral' };
+  function cacheTools(tools) { return tools.map(function (t, i) { return i === tools.length - 1 ? Object.assign({}, t, { cache_control: CC }) : t; }); }
+  function markLast(m) {
+    if (!m || !Array.isArray(m.content) || !m.content.length) return m;
+    var c = m.content.slice(); var k = c.length - 1;
+    while (k >= 0 && (c[k].type === 'thinking' || c[k].type === 'redacted_thinking' || (c[k].type === 'text' && !String(c[k].text || '').trim()))) k--;
+    if (k < 0) return m; c[k] = Object.assign({}, c[k], { cache_control: CC }); return { role: m.role, content: c };
+  }
+  function cacheMarks(msgs) {
+    var out = msgs.map(function (m) { if (!Array.isArray(m.content)) return m; return { role: m.role, content: m.content.map(function (b) { if (b && b.cache_control) { var x = Object.assign({}, b); delete x.cache_control; return x; } return b; }) }; });
+    if (out.length > 1) out[0] = markLast(out[0]);
+    out[out.length - 1] = markLast(out[out.length - 1]);
+    return out;
+  }
   async function sample(messages, opt) {
     opt = opt || {}; if (MODE === 'none' || (MODE === 'custom' && !KEY)) throw err('not_granted', 'No API key');
     var msgs = await toMsgs(messages, opt.images); var tools = (opt.tools || []).map(function (t) { return { name: t.name, description: String(t.description || '').slice(0, 4000), input_schema: t.inputSchema || t.input_schema || { type: 'object', properties: {} } }; });
@@ -195,7 +212,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var maxTurns = 40;
     for (var turn = 0; turn < maxTurns; turn++) {
       if (opt.signal && opt.signal.aborted) throw err('cancelled', 'cancelled', text);
-      var body = { model: model, max_tokens: 8192, messages: msgs }; if (tools.length) body.tools = tools;
+      var body = { model: model, max_tokens: 8192, messages: cacheMarks(msgs) }; if (tools.length) body.tools = cacheTools(tools);
       var res; try { res = await call(body, opt.signal); } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
       var tu = []; for (var c of res.content || []) { if (c.type === 'text') { text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
       msgs.push({ role: 'assistant', content: res.content });

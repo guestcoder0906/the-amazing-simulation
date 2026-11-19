@@ -2108,7 +2108,10 @@ function natVoice(m, v) { if (!NATV.length) loadNat(); if (!NATV.length) return 
     // Timbre / personality match
     const tb = v.timbre || '';
     if ((tb === 'deep' || tb === 'warm' || tb === 'raspy') && DEEP_M.test(nm)) sc += 4;
-    if ((tb === 'theatrical' || v.preset === 'ringmaster') && (LIVELY_M.test(nm) || DEEP_M.test(nm))) sc += 5;
+    const showman = v.showman || tb === 'showman' || v.preset === 'ringmaster';
+    /* showman (Caine): an energetic AMERICAN announcer, never a British narrator: strong en-US preference, lively US voices first */
+    if (showman) { if (lg === 'en-us') sc += 10; else if (/^en-(gb|au|ie|nz|za|in|sc)/.test(lg) || /\b(uk|british|australia|ireland|india)\b/i.test(nm)) sc -= 14; if (LIVELY_M.test(nm)) sc += 7; else if (DEEP_M.test(nm) && lg === 'en-us') sc += 3; }
+    else if (tb === 'theatrical' && (LIVELY_M.test(nm) || DEEP_M.test(nm))) sc += 5;
     if (tb === 'gentle' && WARM_F.test(nm)) sc += 4;
     if ((tb === 'bright' || tb === 'youth') && BRIGHT_F.test(nm)) sc += 4;
     return sc;
@@ -2134,8 +2137,10 @@ function mindVoiceNatural(m, text, v) { const vol = () => { const d = camera.pos
     const ex = /!\s*$/.test(cleanPart), q = /\?\s*$/.test(cleanPart), caps = (cleanPart.match(/\b[A-Z]{3,}\b/g) || []).length, trail = /(…|\.\.\.)\s*$/.test(cleanPart), lastP = pi === parts.length - 1; pi++;
     // Subtle, natural human prosody (avoids unnatural pitch warping on neural voices)
     const contour = (ex ? 1.05 : 1) * (q ? 1.04 : 1) * (caps ? 1.04 : 1) * (trail ? 0.96 : 1) * (lastP && !ex && !q ? 0.97 : 1) * (0.985 + Math.random() * 0.03);
-    u.pitch = clamp(v.np * moodK[0] * contour, 0.72, 1.35);
-    u.rate = clamp(v.nr * moodK[1] * (ex || caps ? 1.04 : 1) * (trail ? 0.92 : 1), 0.74, 1.32);
+    const show = v.showman || v.timbre === 'showman';
+    /* showman delivery: punchier pace and bigger lifts on exclamations / CAPS, but the pitch ceiling stays low so it never turns squeaky */
+    u.pitch = show ? clamp(v.np * contour * (ex ? 1.03 : 1), 0.84, 1.04) : clamp(v.np * moodK[0] * contour, 0.72, 1.35);
+    u.rate = show ? clamp(v.nr * (ex || caps ? 1.08 : 1) * (q ? 1.03 : 1) * (trail ? 0.9 : 1), 0.9, 1.3) : clamp(v.nr * moodK[1] * (ex || caps ? 1.04 : 1) * (trail ? 0.92 : 1), 0.74, 1.32);
     u.onstart = () => { u.volume = vol(); VOICE.speaking = true; }; u.volume = vol(); if (u.volume < 0.03) continue;
     u.onend = u.onerror = () => { VOICE.speaking = false; VOICE.until = performance.now() + 600; };
     speakSynced(m.c, u, cleanPart); try { SYN.speak(u); } catch (e) { return false; } }
@@ -3170,7 +3175,7 @@ SBX.aiCommands = chkAICommands;
 // Caine's own voice, made with the same procedural voice system the AI uses for new characters: a bright, fast, bombastic American
 // ringmaster (wide, sudden pitch swings, punchy stresses, a little rasp), used for everything he says while copyright safe is off
 VOICE_PRESETS['ringmaster'] = { pitch: 66, mouth: 134, throat: 130, speed: 70, pres: 2.5, warm: 2.5, gender: 'male', accent: 'en-US', np: 1.02, nr: 1.12, vol: 1.08, hp: 90, lp: 7200 };
-const CAINE_VOICE = { preset: 'ringmaster', label: 'Caine (ringmaster)', engine: 'natural', gender: 'male', accent: 'en-US', pitch: 66, mouth: 134, throat: 130, speed: 70, pres: 2.5, warm: 2.5, hp: 90, lp: 7200, natural_pitch: 1.02, natural_rate: 1.12, volume: 1.08 };
+const CAINE_VOICE = { preset: 'ringmaster', label: 'Caine (ringmaster)', engine: 'natural', gender: 'male', accent: 'en-US', pitch: 66, mouth: 134, throat: 130, speed: 70, pres: 2.5, warm: 2.5, hp: 90, lp: 7200, natural_pitch: 0.93, natural_rate: 1.15, timbre: 'showman', showman: true, volume: 1.08 };
 let CAINE_M = null;
 function caineM() { if (!CAINE_M) { const vp = cleanVoice(CAINE_VOICE); CAINE_M = { c: ollo, log: [], notes: [], mood: 'Excited', voiceP: vp }; chkLog('Voice — Caine: ' + vp.label + ' (' + vp.engine + ', male, ' + vp.accent + ', pitch x' + vp.np + ', pace x' + vp.nr + ')'); } return CAINE_M; }
 /* EVERY line Ollo says while Caine is shown is spoken in Caine's voice, whatever path it took to get here: each spoken line passes through

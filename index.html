@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Amazing Simulation</title>
+<meta name="description" content="The Amazing Simulation — interactive 3D world and character sandbox." />
+<meta property="og:title" content="The Amazing Simulation" />
+<meta property="og:description" content="The Amazing Simulation — interactive 3D world and character sandbox." />
+<meta property="og:type" content="website" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+[hidden]:not([hidden=until-found i]){display:none!important}
+:root {
+  /* layout: full-bleed 3D view, one sun-bleached signage panel docked left (bottom sheet on phones) */
+  --ink: #0f1a22;
+  --panel: rgba(13, 22, 30, 0.88);
+  --cream: #f1e7cf;
+  --muted: #9db0b0;
+  --marigold: #f2b632;
+  --teal: #5cbcae;
+  --rust: #e0704a;
+  --line: rgba(241, 231, 207, 0.16);
+  --display: "Bungee", "Arial Black", Impact, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--ink); color: var(--cream); font: 14px/1.4 var(--body); overflow: hidden; }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+#loading { position: absolute; inset: 0; display: grid; place-items: center; background: var(--ink); font: 18px var(--display); color: var(--marigold); letter-spacing: 0.04em; text-align: center; padding: 24px; z-index: 5; }
+#labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#labels span { position: absolute; left: 0; top: 0; font: 500 10.5px var(--mono); color: var(--ink); background: var(--marigold); padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+#labels span::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: 8px; background: var(--marigold); }
+#panel { position: absolute; left: 12px; top: 12px; width: 304px; max-height: calc(100% - 24px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); display: flex; flex-direction: column; }
+#panel header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px 10px; position: sticky; top: 0; background: rgba(13, 22, 30, 0.96); z-index: 1; border-radius: 10px 10px 0 0; }
+h1 { margin: 0; font: 17px/1 var(--display); color: var(--marigold); letter-spacing: 0.02em; }
+h1 small { display: block; margin-top: 5px; font: 500 11px var(--body); color: var(--muted); letter-spacing: 0.02em; }
+#panel.closed { overflow: hidden; }
+#panel.closed section, #panel.closed footer { display: none; }
+#panel.closed header { border-radius: 10px; }
+section { padding: 12px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; }
+h2 { margin: 0; font: 600 11px var(--body); letter-spacing: 0.09em; text-transform: uppercase; color: var(--teal); }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.between { justify-content: space-between; }
+#clock { font: 500 30px/1 var(--mono); font-variant-numeric: tabular-nums; }
+#phase { font: 600 11px var(--body); color: var(--ink); background: var(--marigold); border-radius: 99px; padding: 3px 10px; }
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+dt { color: var(--muted); } dd { margin: 0; }
+label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; flex: 1 1 120px; }
+label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--cream); flex: 0 0 auto; }
+input[type="range"] { width: 100%; accent-color: var(--marigold); margin: 0; height: 22px; }
+select, input[type="date"] { width: 100%; background: #16242e; color: var(--cream); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; font: 13px var(--body); }
+button { font: 600 12px var(--body); color: var(--cream); background: #1b2c37; border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; cursor: pointer; }
+button:hover { border-color: var(--marigold); }
+button[aria-pressed="true"] { background: var(--teal); color: var(--ink); }
+button.primary { background: var(--marigold); color: var(--ink); border-color: var(--marigold); padding: 10px 12px; font-size: 13px; width: 100%; }
+button.primary:disabled { opacity: 0.6; cursor: progress; }
+:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+#note { margin: 0; font-size: 12px; color: var(--muted); min-height: 1.4em; }
+#note.bad { color: var(--rust); }
+p.hint { margin: 0; font-size: 12px; color: var(--muted); }
+footer { padding: 10px 14px 12px; border-top: 1px solid var(--line); font: 11px/1.5 var(--mono); color: var(--muted); }
+@media (max-width: 560px) {
+  #panel { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; max-height: 54%; }
+}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/","three-mesh-bvh":"https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js"}}</script>
+</head>
+<body>
+<canvas id="view" tabindex="0" aria-label="3D view of The Amazing Simulation"></canvas>
+<div id="labels" hidden></div>
+<div id="loading" style="display:none!important"></div>
+<style>
+#sbxLoad{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background:#8fb8d8;background:linear-gradient(#7fb0dc,#cfe3f2 70%,#e9f1f6);color:#0f1a24;font:15px/1.4 "IBM Plex Sans",system-ui,sans-serif;transition:opacity .5s ease;padding:24px}
+#sbxLoad.out{opacity:0;pointer-events:none}
+#sbxLoad .box{width:min(360px,100%);text-align:center}
+#sbxLoad h1{margin:0 0 4px;font:700 26px "Bungee","Arial Black",sans-serif;letter-spacing:.03em;color:#16212b}
+#sbxLoad .sub{margin:0 0 20px;color:#3a4a58;font-size:13px}
+#sbxLoad .bar{height:8px;border-radius:99px;background:rgba(15,26,36,.15);overflow:hidden}
+#sbxLoad .bar i{display:block;height:100%;width:3%;background:#16212b;border-radius:99px;transition:width .35s ease}
+#sbxLoad .msg{margin-top:12px;font-size:13px;color:#2a3946;min-height:1.4em}
+#sbxLoad .orb{width:44px;height:44px;margin:0 auto 14px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#bcd6ea 55%,#7fa6c6);box-shadow:0 8px 18px rgba(20,40,60,.25);animation:sbxf 1.8s ease-in-out infinite}
+@keyframes sbxf{50%{transform:translateY(-8px)}}
+@media (prefers-reduced-motion:reduce){#sbxLoad .orb{animation:none}}
+</style>
+<div id="sbxLoad" role="status" aria-live="polite"><div class="box"><div class="orb"></div><h1>The Amazing Simulation</h1><p class="sub">Getting your world ready</p><div class="bar"><i></i></div><div class="msg">Loading…</div></div></div>
+<script>
+// before anything else loads: silence whatever an earlier session left in the browser's speech queue, and keep clearing it until
+// this session itself starts speaking (some browsers resume a leftover queue a moment after a reload)
+(function(){window.__spoke=false;function hush(){try{if(!window.__spoke&&window.speechSynthesis)speechSynthesis.cancel();}catch(e){}}hush();var n=0,iv=setInterval(function(){hush();if(window.__spoke||++n>40)clearInterval(iv);},250);
+addEventListener('pagehide',function(){try{speechSynthesis.cancel();}catch(e){}});})();
+</script>
+<script>
+(function(){var el=document.getElementById('sbxLoad'),bar=el.querySelector('i'),msg=el.querySelector('.msg'),pct=3,done=false;
+function set(p,t){if(done)return;if(p>pct){pct=p;bar.style.width=pct+'%';}if(t)msg.textContent=t;}
+window.__loadStage=set;
+var iv=setInterval(function(){if(pct<33)set(pct+1.5);},250);
+window.__loadDone=function(){if(done)return;done=true;clearInterval(iv);bar.style.width='100%';msg.textContent='Ready';setTimeout(function(){el.classList.add('out');setTimeout(function(){el.remove();},600);},250);};
+setTimeout(function(){if(!done)msg.textContent='Still loading… this can take a little while on a slow connection.';},20000);
+window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObserver/.test(e.message))return;/* one failed step (a slow file, an optional model) is not fatal: loading carries on; only a load that has truly stalled asks for a reload */console.warn('[load] non-fatal:',e.message);var at=pct;setTimeout(function(){if(!done&&pct<=at)msg.textContent='This is taking longer than usual. If nothing changes, please reload the page.';},45000);});
+})();
+</script>
+<script>
+// ===================== DIRECT BROWSER CLAUDE API KEY + SHARED ENV KEY PROXY =====================
+// Supports either a user-supplied Claude API key (direct browser calls, unlimited app-side usage)
+// or "Continue without custom key (limits apply)" routed through /api/claude using CLAUDE_API_KEY.
+(function () {
+  if (window.claude && typeof window.claude.use === 'function') return;
+  var STORAGE_KEY = 'sbx_claude_api_key';
+  var KEY = null;
+  var MODE = 'none'; // 'custom' | 'shared' | 'none'
+  var SHARED_USED = 0;
+  var SHARED_SOFT_LIMIT = 15;
+  var readyRes;
+  var READY = new Promise(function (r) { readyRes = r; });
+  window.__LOCAL_READY = READY;
+
+  function readSaved() {
+    try { return localStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; }
+  }
+  function saveKey(k) {
+    try {
+      if (k) localStorage.setItem(STORAGE_KEY, k);
+      else localStorage.removeItem(STORAGE_KEY);
+    } catch (e) { /* ignore storage restrictions */ }
+  }
+
+  function HDR(k) { return { 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', 'content-type': 'application/json' }; }
+  var b64 = function (blob) { return new Promise(function (res, rej) { var fr = new FileReader(); fr.onload = function () { res(String(fr.result).split(',')[1]); }; fr.onerror = rej; fr.readAsDataURL(blob); }); };
+  function err(code, message, text) { var e = new Error(message); e.code = code; if (text) e.text = text; return e; }
+  function fallbackModel(m) {
+    if (/opus/i.test(m || '')) return 'claude-opus-4-20250514';
+    if (/haiku/i.test(m || '')) return 'claude-3-5-haiku-latest';
+    return 'claude-sonnet-4-20250514';
+  }
+  async function call(body, signal) {
+    if (MODE === 'custom' && KEY) {
+      var r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: HDR(KEY), body: JSON.stringify(body), signal: signal });
+      if (r.status === 404 && body && body.model) {
+        var fb = fallbackModel(body.model);
+        if (fb && fb !== body.model) {
+          r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: HDR(KEY), body: JSON.stringify(Object.assign({}, body, { model: fb })), signal: signal });
+        }
+      }
+      if (!r.ok) { var t = ''; try { t = await r.text(); } catch (e) { /* ok */ } throw err(r.status === 429 || r.status === 529 ? 'rate_limited' : r.status === 401 || r.status === 403 ? 'not_granted' : 'api_error', 'Claude API ' + r.status + ': ' + t.slice(0, 300)); }
+      return r.json();
+    }
+    if (MODE === 'shared') {
+      var payload = Object.assign({}, body, { max_tokens: Math.min(Number(body && body.max_tokens) || 4096, 4096) });
+      var rs = await fetch('/api/claude', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: signal });
+      if (!rs.ok) {
+        var ts = ''; try { ts = await rs.text(); } catch (e) { /* ok */ }
+        var code = rs.status === 429 || rs.status === 529 ? 'rate_limited' : rs.status === 401 || rs.status === 403 || rs.status === 503 ? 'not_granted' : 'api_error';
+        var msg = 'Shared Claude API ' + rs.status + ': ' + ts.slice(0, 300);
+        try { var parsed = JSON.parse(ts); if (parsed && parsed.error && parsed.error.message) msg = parsed.error.message; } catch (e) { /* ok */ }
+        throw err(code, msg);
+      }
+      SHARED_USED++;
+      return rs.json();
+    }
+    throw err('not_granted', 'No Claude API key configured');
+  }
+  async function toMsgs(messages, images) {
+    var out = (messages || []).map(function (m) { return { role: m.role === 'assistant' ? 'assistant' : 'user', content: typeof m.content === 'string' ? [{ type: 'text', text: m.content || ' ' }] : (m.content || []) }; });
+    // the API wants turns to alternate: merge neighbours with the same role
+    var merged = []; for (var m of out) { var last = merged[merged.length - 1]; if (last && last.role === m.role) last.content = last.content.concat(m.content); else merged.push(m); }
+    if (images && images.length && merged.length) { var lu = merged[merged.length - 1]; for (var im of images) { try { var blob = im instanceof Blob ? im : await (await fetch(im)).blob(); lu.content.push({ type: 'image', source: { type: 'base64', media_type: blob.type || 'image/jpeg', data: await b64(blob) } }); } catch (e) { /* skip */ } } }
+    if (merged[0] && merged[0].role !== 'user') merged.unshift({ role: 'user', content: [{ type: 'text', text: '(continue)' }] });
+    return merged;
+  }
+  async function sample(messages, opt) {
+    opt = opt || {}; if (MODE === 'none' || (MODE === 'custom' && !KEY)) throw err('not_granted', 'No API key');
+    var msgs = await toMsgs(messages, opt.images); var tools = (opt.tools || []).map(function (t) { return { name: t.name, description: String(t.description || '').slice(0, 4000), input_schema: t.inputSchema || t.input_schema || { type: 'object', properties: {} } }; });
+    var byName = {}; (opt.tools || []).forEach(function (t) { byName[t.name] = t; });
+    var text = '', model = opt.model || 'claude-sonnet-5-5';
+    var maxTurns = MODE === 'shared' ? 16 : 40;
+    for (var turn = 0; turn < maxTurns; turn++) {
+      if (opt.signal && opt.signal.aborted) throw err('cancelled', 'cancelled', text);
+      var body = { model: model, max_tokens: MODE === 'shared' ? 4096 : 8192, messages: msgs }; if (tools.length) body.tools = tools;
+      var res; try { res = await call(body, opt.signal); } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
+      var tu = []; for (var c of res.content || []) { if (c.type === 'text') { text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
+      msgs.push({ role: 'assistant', content: res.content });
+      if (res.stop_reason !== 'tool_use' || !tu.length) break;
+      var results = []; for (var u of tu) { var out; try { var t = byName[u.name]; out = t && t.execute ? await t.execute(u.input || {}) : 'unknown tool'; } catch (e) { out = 'error: ' + (e.message || e); } results.push({ type: 'tool_result', tool_use_id: u.id, content: typeof out === 'string' ? out.slice(0, 20000) : JSON.stringify(out === undefined ? 'ok' : out).slice(0, 20000) }); }
+      msgs.push({ role: 'user', content: results });
+    }
+    return { text: text, modelApplied: true };
+  }
+  sample.json = async function (prompt, opt) {
+    var msgs = typeof prompt === 'string' ? [{ role: 'user', content: prompt }] : prompt;
+    msgs = msgs.concat([{ role: 'user', content: 'Reply with ONLY one JSON value (no prose, no code fence).' }]);
+    var r = await sample(msgs, Object.assign({}, opt || {}, { tools: [] })); var t = r.text || '';
+    var s = t.indexOf('{'), a = t.indexOf('['); var i = s < 0 ? a : a < 0 ? s : Math.min(s, a); var j = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
+    try { return JSON.parse(i >= 0 && j > i ? t.slice(i, j + 1) : t); } catch (e) { return null; }
+  };
+  sample.limits = async function () { return { images: true, shared: MODE === 'shared', remaining: MODE === 'shared' ? Math.max(0, SHARED_SOFT_LIMIT - SHARED_USED) : null }; };
+
+  window.claude = {
+    use: async function (name) {
+      if (name !== 'sample') return null;
+      await READY;
+      return (MODE === 'custom' && KEY) || MODE === 'shared' ? sample : null;
+    }
+  };
+
+  function promptKey(isReopen) {
+    var box = document.createElement('div');
+    box.style.cssText = 'position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:linear-gradient(#7fb0dc,#cfe3f2 70%,#e9f1f6);font:15px/1.45 "IBM Plex Sans",system-ui,sans-serif;color:#0f1a24;padding:24px';
+    box.innerHTML = '<div style="width:min(460px,100%);text-align:center;background:rgba(255,255,255,.86);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:16px;padding:26px 24px;box-shadow:0 12px 30px rgba(20,40,60,.18)">' +
+      '<h1 style="margin:0 0 8px;font:700 24px Bungee,\'Arial Black\',sans-serif;color:#16212b">The Amazing Simulation</h1>' +
+      '<p style="margin:0 0 16px;color:#33424f;font-size:13.5px;line-height:1.5">Optionally enter your own Claude api key to have infinite usage limits (your Claude plan &amp; rate limits still apply). You can see/get your Claude api key here: <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener noreferrer" style="color:#1e5684;text-decoration:underline;word-break:break-all">https://platform.claude.com/settings/keys</a></p>' +
+      '<form id="akForm" style="display:flex;flex-direction:column;gap:10px">' +
+      '<input id="akIn" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid rgba(22,33,43,.22);background:#fff;color:#0f1a24;font:13.5px \'IBM Plex Mono\',ui-monospace,Menlo,monospace;outline:none">' +
+      '<button id="akGo" type="submit" style="background:#16212b;color:#fff;border:0;border-radius:99px;padding:10px 20px;font:600 14px \'IBM Plex Sans\',system-ui,sans-serif;cursor:pointer">Start with Claude AI</button>' +
+      '</form>' +
+      '<p id="akMsg" style="margin:12px 0 0;font-size:13px;color:#2a3946;min-height:1.4em"></p>' +
+      '<button id="akSkip" type="button" style="margin-top:4px;background:none;border:0;color:#2a5b86;text-decoration:underline;cursor:pointer;font-size:12.5px">Continue without custom key (limits apply)</button></div>';
+    document.documentElement.appendChild(box);
+
+    var form = box.querySelector('#akForm');
+    var input = box.querySelector('#akIn');
+    var goBtn = box.querySelector('#akGo');
+    var skipBtn = box.querySelector('#akSkip');
+    var msg = box.querySelector('#akMsg');
+    var saved = readSaved();
+    if (saved) input.value = saved;
+    setTimeout(function () { try { input.focus(); } catch (e) {} }, 30);
+
+    skipBtn.onclick = async function () {
+      skipBtn.disabled = true;
+      msg.style.color = '#2a3946';
+      msg.textContent = 'Starting with shared limits…';
+      try {
+        var st = await fetch('/api/claude', { method: 'GET' });
+        if (st.ok) {
+          var info = await st.json();
+          if (info && info.configured) {
+            MODE = 'shared';
+            if (info.limits && info.limits.per10Min) SHARED_SOFT_LIMIT = info.limits.per10Min;
+          } else {
+            MODE = 'shared'; // still route through /api/claude so server reports clear status if env var is added later
+          }
+        } else {
+          MODE = 'shared';
+        }
+      } catch (e) {
+        MODE = 'shared';
+      }
+      box.remove();
+      if (!isReopen) readyRes();
+    };
+
+    form.onsubmit = async function (ev) {
+      ev.preventDefault();
+      var raw = String(input.value || '').trim();
+      var m = raw.match(/sk-ant-[A-Za-z0-9_\-]{20,}/);
+      var candidate = m ? m[0] : raw;
+      if (!candidate) {
+        msg.style.color = '#9a3412';
+        msg.textContent = 'Please paste a Claude API key (or choose Continue without custom key (limits apply)).';
+        return;
+      }
+      goBtn.disabled = true;
+      goBtn.style.opacity = '0.65';
+      msg.style.color = '#2a3946';
+      msg.textContent = 'Checking API key…';
+      try {
+        var r = await fetch('https://api.anthropic.com/v1/models?limit=1', { headers: HDR(candidate) });
+        if (r.ok) {
+          KEY = candidate;
+          MODE = 'custom';
+          saveKey(candidate);
+          msg.style.color = '#166534';
+          msg.textContent = 'API key accepted — starting…';
+          setTimeout(function () { box.remove(); if (!isReopen) readyRes(); }, 250);
+          return;
+        }
+        msg.style.color = '#9a3412';
+        msg.textContent = 'API key was not accepted (' + r.status + '). Please check it and try again.';
+      } catch (e) {
+        msg.style.color = '#9a3412';
+        msg.textContent = 'Could not reach Claude API (' + (e && e.message || e) + ').';
+      }
+      goBtn.disabled = false;
+      goBtn.style.opacity = '1';
+    };
+  }
+
+  window.__openClaudeKeyModal = function () { promptKey(true); };
+  promptKey(false);
+})();
+</script>
+<aside id="panel">
+  <header>
+    <h1>The Amazing Simulation<small>Episode 1 set map · full island</small></h1>
+    <button id="toggle" type="button" aria-expanded="true" aria-controls="panel">Hide</button>
+  </header>
+  <section>
+    <div class="row between"><span id="clock">15:30</span><span id="phase">Day</span></div>
+    <input id="time" type="range" min="0" max="23.99" step="0.05" value="15.5" aria-label="Time of day">
+    <div class="presets">
+      <button type="button" data-preset="5.9,clear">Dawn</button>
+      <button type="button" data-preset="12,clear">Midday</button>
+      <button type="button" data-preset="15.5,clear">Opening scene</button>
+      <button type="button" data-preset="18.1,clear">Sunset</button>
+      <button type="button" data-preset="18.45,storm">Storm dusk</button>
+      <button type="button" data-preset="22.5,clear">Moonlit night</button>
+    </div>
+    <dl><dt>Sun</dt><dd id="sunR">–</dd><dt>Moon</dt><dd id="moonR">–</dd></dl>
+    <div class="row">
+      <label for="date">Date on the island<input id="date" type="date" value="1998-08-07" min="1980-01-01" max="2010-12-31"></label>
+      <button id="play" type="button" aria-pressed="false">Play day</button>
+    </div>
+  </section>
+  <section>
+    <h2>Weather</h2>
+    <div class="row">
+      <label for="weather">Sky<select id="weather"><option value="clear">Clear</option><option value="fog">Fog rolling in</option><option value="storm">Tropical downpour</option></select></label>
+      <label for="fog">Haze<input id="fog" type="range" min="0" max="1" step="0.01" value="0.12"></label>
+    </div>
+  </section>
+  <section>
+    <h2>Shots</h2>
+    <select id="cam" aria-label="Jump to a camera"></select>
+    <label class="check" for="marks"><input id="marks" type="checkbox">Show character and prop marks</label>
+  </section>
+  <section>
+    <h2>Blender</h2>
+    <button id="export" class="primary" type="button">Export this lighting to Blender</button>
+    <p id="note">One .glb: every object, the sun and moon as set above, the glow lights and all shot cameras.</p>
+  </section>
+  <footer><span id="stats"></span><br>Drag to orbit · right-drag or two fingers to pan · scroll or pinch to zoom · double-click to refocus · WASD and Q/E to move</footer>
+</aside>
+<script>
+// Load simulation runtime scripts in strict execution order without bundler rewriting of importmap CDN modules
+(function () {
+  var queue = [
+    { src: './sim/sky.js', module: false },
+    { src: './sim/emb.js', module: false },
+    { src: './sim/park.js', module: true },
+    { src: './sim/cast.js', module: true },
+    { src: './sim/sandbox.js', module: true }
+  ];
+  function next(i) {
+    if (i >= queue.length) return;
+    var item = queue[i];
+    var s = document.createElement('script');
+    if (item.module) s.type = 'module';
+    s.src = item.src;
+    s.onload = function () { next(i + 1); };
+    s.onerror = function (e) { console.error('[sim] failed to load ' + item.src, e); };
+    document.body.appendChild(s);
+  }
+  next(0);
+})();
+</script>
+</body>
+</html>

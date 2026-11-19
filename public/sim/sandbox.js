@@ -1917,6 +1917,14 @@ function playerSays(text, via, meta) { text = String(text || '').trim(); if (!te
   if (!BR.on) { chatSys('Turn on Smart Ollo for him to answer.'); return; }
   if (BR.busy) { if (BR.kind === 'idle' && BR.ctl) BR.ctl.abort(); BR.pending = true; } else think('heard'); }
 SBX.playerSays = playerSays;
+/* world hearing: the page records live clips of everything playing in the simulation while an AI is listening, and the local AI
+   listens to them; Ollo / Caine and every character mind then know what music and sounds are around them */
+let SIM_HEARD = '';
+window.__simEarsWanted = () => !!(BR.on || (typeof MINDS !== 'undefined' && MINDS.size)) && !VOICE.speaking;
+window.__onSimHeard = (j) => { try { if (!j) return; const parts = []; if (j.sounds) parts.push(String(j.sounds)); if (j.summary) parts.push(String(j.summary)); if (j.emotion) parts.push('mood: ' + j.emotion);
+  const s = parts.join(' — ').slice(0, 400); if (!s || s === SIM_HEARD) return; SIM_HEARD = s;
+  const note = 'you hear around you right now (live sound your ears picked up): ' + s + (j.transcript ? ` (words in it: "${String(j.transcript).slice(0, 200)}")` : '');
+  if (BR.on) brainLog('event', note); for (const m of (typeof MINDS !== 'undefined' ? MINDS.values() : [])) { try { mindLog(m, 'event', note); } catch (e) { /* ok */ } } } catch (e) { /* ok */ } };
 // voice chat: dictation (start must run straight from the click, so the namespace is fetched when Smart Ollo turns on)
 let DICT = null, dictOn = false, dictBuf = '', dictTimer = 0, dictMeta = null;
 async function loadDict() { if (DICT) return DICT; try { DICT = await window.claude?.use?.('dictation'); } catch (e) { DICT = null; } if (!DICT) { micBtn.hidden = true; return null; }
@@ -3548,7 +3556,7 @@ try { const _ss = speakSynced; speakSynced = function (c, u, text, ...a) { try {
 // your microphone: how loudly you speak (for the falloff), and your words (claude.ai dictation, or the browser's own speech recognition)
 async function vcStart() { if (VC.on) return; VC.on = true; vcBtn.setAttribute('aria-pressed', 'true');
   try { VC.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); const ac = mac(); if (ac) { const src = ac.createMediaStreamSource(VC.stream), an = ac.createAnalyser(); an.fftSize = 512; src.connect(an); VC.an = an; const buf = new Float32Array(an.fftSize);
-      const tick = () => { if (!VC.on || !VC.an) return; VC.an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; const rms = Math.sqrt(s / buf.length); VC.peak = Math.max((VC.peak || 0) * 0.995, rms); requestAnimationFrame(tick); }; tick(); } } catch (e) { /* level unknown: normal */ }
+      const tick = () => { if (!VC.on || !VC.an) return; VC.an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; const rms = Math.sqrt(s / buf.length); VC.peak = Math.max((VC.peak || 0) * 0.995, rms); VC.floor = VC.floor === undefined ? rms : VC.floor * 0.995 + Math.min(rms, VC.floor * 2 + 0.002) * 0.005; const talking = rms > Math.max(0.012, VC.floor * 3.2); if (talking) VC.talkUntil = performance.now() + 250; try { vcBtn.classList.toggle('vc-talk', performance.now() < (VC.talkUntil || 0)); } catch (e) { /* ok */ } requestAnimationFrame(tick); }; tick(); } } catch (e) { /* level unknown: normal */ }
   const D = await loadDict().catch(() => null);
   if (D) { try { if (!dictOn) await D.start(); } catch (e) { /* fall back below */ } if (dictOn) return; }
   /* listening is done by the local AI only (no cloud speech recognition) */
@@ -3557,12 +3565,13 @@ async function vcStart() { if (VC.on) return; VC.on = true; vcBtn.setAttribute('
   const r = VC.rec = new SR(); r.continuous = true; r.interimResults = false; r.lang = navigator.language || 'en-US';
   r.onresult = (e) => { for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) { const t = e.results[i][0].transcript; if (VOICE.speaking) continue; VC.level = clamp((VC.peak || 0.05) / 0.06, 0.4, 2.2); VC.peak = 0; playerSays(t, 'voice'); } };
   r.onend = () => { if (VC.on && VC.rec === r) { try { r.start(); } catch (e) { /* ok */ } } }; try { r.start(); } catch (e) { toast('Could not start the microphone'); vcStop(); } }
-function vcStop() { VC.on = false; vcBtn.setAttribute('aria-pressed', 'false'); try { if (VC.rec) { const r = VC.rec; VC.rec = null; r.stop(); } } catch (e) { /* ok */ } try { if (DICT && dictOn) DICT.stop().catch(() => {}); } catch (e) { /* ok */ } try { VC.stream && VC.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ok */ } VC.stream = null; VC.an = null; }
+function vcStop() { VC.on = false; vcBtn.setAttribute('aria-pressed', 'false'); vcBtn.classList.remove('vc-talk'); try { if (VC.rec) { const r = VC.rec; VC.rec = null; r.stop(); } } catch (e) { /* ok */ } try { if (DICT && dictOn) DICT.stop().catch(() => {}); } catch (e) { /* ok */ } try { VC.stream && VC.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ok */ } VC.stream = null; VC.an = null; }
 { const _fl = flushDict; flushDict = function () { VC.level = clamp((VC.peak || 0.05) / 0.06, 0.4, 2.2); VC.peak = 0; return _fl(); }; }
 const vcBtn = h('button', { type: 'button', 'aria-pressed': 'false', title: 'Voice chat: talk out loud — every AI near you hears you (and each other) by distance, and remembers it' }, '🎙 Voice chat');
 vcBtn.id = 'vcBtn'; vcBtn.onclick = () => (VC.on ? vcStop() : vcStart()); root.append(vcBtn);
 /* the voice chat toggle is always on screen (hidden UI modes too): stacked just above the Create box, or at the bottom centre when that box is not there */
-style.textContent += `#vcBtn { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 59; pointer-events: auto; border-radius: 99px !important; padding: 8px 16px !important; box-shadow: 0 6px 18px rgba(0,0,0,.3); white-space: nowrap; } #vcBtn[aria-pressed="true"] { background: #ff6b5e !important; color: #fff !important; border-color: #ff6b5e !important; }
+style.textContent += `#vcBtn { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 59; pointer-events: auto; border-radius: 99px !important; padding: 8px 16px !important; box-shadow: 0 6px 18px rgba(0,0,0,.3); white-space: nowrap; } #vcBtn[aria-pressed="true"] { background: #ff6b5e !important; color: #fff !important; border-color: #ff6b5e !important; transition: background .12s, box-shadow .12s, border-color .12s; }
+#vcBtn.vc-talk[aria-pressed="true"] { background: #22b45e !important; border-color: #4ff28f !important; box-shadow: 0 0 0 3px rgba(79,242,143,.45), 0 0 22px rgba(79,242,143,.85), 0 6px 18px rgba(0,0,0,.3) !important; }
 body.uih1 #sbx > #vcBtn, body.uih2 #sbx > #vcBtn { display: inline-block !important; }
 .ctlpanel { position: fixed !important; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: min(720px, calc(100vw - 24px)); pointer-events: auto; z-index: 58; }`;
 function layoutUI() {

@@ -228,6 +228,44 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       onPartial: function (fn) { L.p.push(fn); }, onFinal: function (fn) { L.f.push(fn); }, onState: function (fn) { L.s.push(fn); }
     };
   }
+  // world hearing: everything the simulation plays (music, sound effects, voices) is also fed to a silent tap. While an AI is
+  // listening (Smart Ollo / Caine or any character mind), short live clips of whatever is audible are recorded and the local
+  // AI listens to them (/hear), so the minds know what music or sounds are playing around them right now.
+  var TAPS = new Map();
+  function tapFor(ctx) {
+    var t = TAPS.get(ctx); if (t) return t;
+    try { var out = ctx.createMediaStreamDestination(), an = ctx.createAnalyser(); an.fftSize = 1024; t = { out: out, an: an }; TAPS.set(ctx, t); return t; } catch (e) { return null; }
+  }
+  (function patchConnect() {
+    var AN = window.AudioNode; if (!AN || AN.prototype.__tapped) return; var orig = AN.prototype.connect; AN.prototype.__tapped = true;
+    AN.prototype.connect = function (dst) {
+      var r = orig.apply(this, arguments);
+      try { if (dst && this.context && dst === this.context.destination) { var t = tapFor(this.context); if (t) { orig.call(this, t.out); orig.call(this, t.an); } } } catch (e) { /* ok */ }
+      return r;
+    };
+  })();
+  var EARS = { busy: false, last: 0, every: 15000 };
+  function worldLevel() { var best = 0, buf = new Float32Array(1024); TAPS.forEach(function (t, ctx) { if (ctx.state !== 'running') return; t.an.getFloatTimeDomainData(buf); var s = 0; for (var i = 0; i < buf.length; i++) s += buf[i] * buf[i]; best = Math.max(best, Math.sqrt(s / buf.length)); }); return best; }
+  setInterval(function () {
+    try {
+      if (EARS.busy || document.hidden || !window.__simEarsWanted || !window.__simEarsWanted()) return;
+      if (performance.now() - EARS.last < EARS.every || worldLevel() < 0.01) return;
+      var t = null; TAPS.forEach(function (x, ctx) { if (!t && ctx.state === 'running') t = x; }); if (!t || !window.MediaRecorder) return;
+      EARS.busy = true; EARS.last = performance.now();
+      var chunks = [], mr = new MediaRecorder(t.out.stream);
+      mr.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      mr.onstop = async function () {
+        try {
+          var blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+          var r = await fetch(AI_URL + '/hear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audio: await b64(blob), context: 'This is live sound playing inside a 3D game world right now (music, sound effects, character voices, ambience). Describe the music (genre, mood, instruments, tempo) and every sound you can identify.' }) });
+          if (r.ok) { var j = await r.json(); if (window.__onSimHeard) window.__onSimHeard(j); }
+        } catch (e) { /* local AI offline: try again later */ }
+        EARS.busy = false;
+      };
+      mr.start(); setTimeout(function () { try { mr.stop(); } catch (e) { EARS.busy = false; } }, 5000);
+    } catch (e) { EARS.busy = false; }
+  }, 1000);
+  window.localAI.worldLevel = worldLevel;
   var DICTATION = null;
   window.claude = { use: async function (name) { if (name === 'sample') return sample; if (name === 'dictation') return DICTATION || (DICTATION = makeDictation()); return null; } };
 

@@ -6114,7 +6114,7 @@ function studioMain(A) {
   // editing aids (the Cast panel's posing handles and skeleton lines, the move gizmo) never show through the shot camera
   let aidsOn = null, tcGizmo = null;
   function editorAids(on) { if (on && aidsOn === true) return; aidsOn = on; const cs = castState || {}; rigOverlay.visible = on; if (!tcGizmo) { try { tcGizmo = tc && tc.getHelper ? tc.getHelper() : null; } catch (e) { tcGizmo = null; } } if (tcGizmo) tcGizmo.visible = on;
-    for (const c of CASTS) if (c.helper) c.helper.visible = on && c.group.visible && !!(cs.rig || (cs.tool === 'pose' && cs.sel === c)); }
+    for (const c of CASTS) if (c.helper) c.helper.visible = on && c.group.visible && !!(cs.rig || (cs.tool === 'pose' && cs.sel === c && (() => { const p = document.getElementById('cast'); return !!(p && !p.hidden && p.getClientRects().length && !p.classList.contains('closed')); })())); }
   function setView(v) {
     if (v === S.view) return; editorAids(v !== 'cam'); if (v !== 'cam') passRestore();
     if (v === 'cam') { ensureCam(); S.freeView = { p: camera.position.clone(), t: controls.target.clone(), fov: camera.fov, up: camera.up.clone() }; S.view = 'cam'; applyFrame(S.t, S.playing ? 'play' : 'scrub'); if (!S.camState) putMainCamera(evalCam(P.cams[0], S.t)); else putMainCamera(S.camState); }
@@ -8322,7 +8322,7 @@ function castMain() {
     Q('castNames').checked = castState.names; Q('castRig').checked = castState.rig;
     Q('castWho').innerHTML = c ? `<b>${c.name}</b> — ${c.ch.subtitle}. <span style="color:var(--muted)">${c.ch.start.note}.</span>` : 'Pick a character, or click one in the view.';
     const vb = panel.querySelector('[data-act="vis"]'); if (vb) vb.textContent = c && !c.group.visible ? 'Show' : 'Hide';
-    for (const k of CASTS) { k.helper.visible = k.group.visible && (castState.rig || (castState.tool === 'pose' && k === c)); k.updateHandles(true); }
+    for (const k of CASTS) { k.helper.visible = k.group.visible && (castState.rig || (castState.tool === 'pose' && k === c && (() => { const p = document.getElementById('cast'); return !!(p && !p.hidden && p.getClientRects().length && !p.classList.contains('closed')); })())); k.updateHandles(true); }
     if (c && castState.bone?.handle && !castState.bone.handle.visible) castState.bone = null;
     buildBoneList(); attachGizmo(); refreshSliders();
   }

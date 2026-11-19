@@ -2531,6 +2531,8 @@ const AUDIO_DESC = 'Music and sound. compose: write a song or sound effect as no
 let last = performance.now(); const sun = scene.getObjectByName('Sun'); const tmpV = new THREE.Vector3();
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  /* rig bones are an editing aid: hidden unless the Animator is on (or its "show rig" box is ticked) */
+  if (btnAnim.getAttribute('aria-pressed') !== 'true') { for (const c of CAST.CASTS) if (c.helper && c.helper.visible) c.helper.visible = false; }
   try { olloTick(dt); } catch (e) { console.error('ollo', e); }
   try { smartTick(dt); } catch (e) { console.error('smart ollo', e); }
   try { mindsTick(dt); } catch (e) { console.error('minds', e); }

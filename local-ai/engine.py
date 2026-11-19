@@ -452,6 +452,40 @@ class Engine:
         segs, _info = self.whisper.transcribe(audio, beam_size=5, vad_filter=True)
         return " ".join(s.text.strip() for s in segs).strip()
 
+    HEAR_PROMPT = (
+        "Listen to this audio clip carefully, the way a person with good ears would. Reply with ONLY one JSON object, no prose:\n"
+        '{"transcript": "the exact words spoken, empty if nobody speaks", "language": "language of the speech", '
+        '"emotion": "one or two words for the feeling in the voice", '
+        '"tone": "how it is said, e.g. excited, sarcastic, whispering, shouting, questioning, joking, pleading", '
+        '"energy": "low | medium | high", "voice": "short description of the speaker\'s voice (age, pitch, texture)", '
+        '"sounds": "other sounds besides speech (music, laughter, clapping, footsteps, noise...) or empty", '
+        '"summary": "one sentence on what is happening in this audio"}')
+
+    def hear(self, audio, context: str | None = None) -> dict:
+        """The local AI listens to an audio clip itself: words plus how they were said and what else is audible.
+        Native-audio models (Qwen2.5-Omni, Gemma 3n) hear the sound directly; others get the Whisper transcript."""
+        arr = load_audio(audio)
+        self.ensure_loaded()
+        ask = self.HEAR_PROMPT + (f"\nContext: {context}" if context else "")
+        if self.main[0] in NATIVE_AUDIO:
+            out = self.chat([{"role": "user", "content": [{"type": "audio", "audio": arr}, {"type": "text", "text": ask}]}],
+                            max_tokens=320, temperature=0.1)
+            heard_directly = True
+        else:
+            words = self.transcribe(arr)
+            out = self.chat([{"role": "user", "content": [{"type": "text", "text": ask + f"\n(You only have the transcript: {words!r}. "
+                                                           "Judge emotion and tone from the words.)"}]}], max_tokens=320, temperature=0.1)
+            heard_directly = False
+        data = _loads_lenient(out["text"]) or {}
+        if not isinstance(data, dict):
+            data = {}
+        if not data.get("transcript") and not heard_directly:
+            data["transcript"] = words
+        data.setdefault("transcript", "")
+        data["heard_directly"] = heard_directly
+        data["model"] = out["model"]
+        return data
+
     def complete(self, prompt: str, image=None, audio=None, use_web_search=False, system: str | None = None,
                  max_tokens: int = 1024, temperature: float = 0.6) -> dict:
         """Simple single-turn call: text + optional image + optional audio."""

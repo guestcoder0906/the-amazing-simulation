@@ -22,6 +22,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# plain HTTPS model downloads (the newer "xet" transfer can stall on some networks); no symlink nag on Windows
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -95,6 +99,30 @@ async def generate(request: Request):
             get_engine().complete, prompt, image, audio, _truthy(data.get("use_web_search")), data.get("system"),
             int(data.get("max_tokens") or 1024), float(data.get("temperature") if data.get("temperature") is not None else 0.6))
         return out
+    except Exception as e:
+        return _err(500, "api_error", f"{type(e).__name__}: {e}")
+
+
+@app.post("/hear")
+async def hear(request: Request):
+    """The local AI listens to audio: {"audio": base64|dataURL, "context"?} or multipart (audio file)
+    -> {"transcript", "language", "emotion", "tone", "energy", "voice", "sounds", "summary", "heard_directly", "model"}"""
+    ctype = request.headers.get("content-type", "")
+    try:
+        if "multipart/form-data" in ctype:
+            form = await request.form()
+            a = form.get("audio")
+            audio = await a.read() if a is not None and not isinstance(a, str) else a
+            context = form.get("context") if isinstance(form.get("context"), str) else None
+        else:
+            data = await request.json()
+            audio, context = data.get("audio"), data.get("context")
+    except Exception as e:
+        return _err(400, "invalid_request", f"could not read the request: {e}")
+    if not audio:
+        return _err(400, "invalid_request", "audio is required")
+    try:
+        return await run_in_threadpool(get_engine().hear, audio, context)
     except Exception as e:
         return _err(500, "api_error", f"{type(e).__name__}: {e}")
 

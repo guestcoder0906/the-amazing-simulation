@@ -12,7 +12,7 @@ start.bat        (Windows)      or   ./start.sh   (Mac / Linux)
 stop.bat                        or   ./stop.sh
 ```
 
-The first start creates `local-ai/.venv` and installs everything (PyTorch for CUDA 12.8 on NVIDIA, MLX on Apple Silicon),
+The first start creates a Python environment (Windows: `%LOCALAPPDATA%\AmazingSimAI\venv`, a short path so Windows' path-length limit never breaks installs; Mac/Linux: `local-ai/.venv`) and installs everything (PyTorch for CUDA 12.8 on NVIDIA, MLX on Apple Silicon),
 which takes a while. Models download on the first AI request and load into the GPU at 4-bit or 8-bit:
 
 | GPU memory | Models |
@@ -40,8 +40,9 @@ Drop examples into `local-ai/data` (see [its README](local-ai/data/README.md)), 
 
 ```
 cd local-ai
-.venv\Scripts\python -m pip install -r requirements-train.txt      (Mac: .venv/bin/python -m pip install -r requirements-train-mac.txt)
-.venv\Scripts\python train.py --minutes 40
+%LOCALAPPDATA%\AmazingSimAI\venv\Scripts\python -m pip install -r requirements-train.txt
+%LOCALAPPDATA%\AmazingSimAI\venv\Scripts\python train.py --minutes 40
+(Mac/Linux: .venv/bin/python -m pip install -r requirements-train-mac.txt, then .venv/bin/python train.py)
 ```
 
 The LoRA adapter is saved to `local-ai/my_adapter` and used automatically after `stop` + `start`.

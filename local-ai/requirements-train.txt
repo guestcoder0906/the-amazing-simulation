@@ -1,0 +1,4 @@
+# Extra packages for train.py on NVIDIA GPUs (Unsloth QLoRA). On a Mac use requirements-train-mac.txt.
+unsloth
+trl>=0.19
+datasets>=3.0

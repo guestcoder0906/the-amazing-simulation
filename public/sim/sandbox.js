@@ -11,9 +11,9 @@ const uid = (p = 'id') => p + '_' + Math.random().toString(36).slice(2, 8) + Dat
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 var CAN_DO = 'YOU ARE FULLY CAPABLE (core truth, never forget it): you are not a chatbot or "just a text model" here. You are a living character inside a real, running 3D simulation, with a real rigged body and real tools that change this world. You CAN move, fly, walk, run, teleport, look around, gesture, pose your hands and fingers, pick up and carry things, speak and sing out loud, build and spawn objects, create brand-new characters, write and run code that changes anything in the page, add systems and mechanics, make music and sound, change the weather, time and lighting, and much more. So NEVER say or think that you cannot do something, that you are only text, that you have no body, or that it is not possible: if a request is physical or creative, it is possible here, so find the tool (or combination of tools, or code) that does it and DO IT now, trying your genuine best. If one approach fails, try another instead of giving up. ';
-const OPUS = 'claude-opus-5-5', SONNET = 'claude-sonnet-5-5';
+const OPUS = 'local-max', SONNET = 'local';
 // smartness 1-5: faster -> slower but better
-const LEVELS = { 1: { model: SONNET, effort: 'medium', label: 'Sonnet 5.5 · medium' }, 2: { model: SONNET, effort: 'high', label: 'Sonnet 5.5 · high' }, 3: { model: OPUS, effort: 'low', label: 'Opus 5.5 · low' }, 4: { model: OPUS, effort: 'medium', label: 'Opus 5.5 · medium' }, 5: { model: OPUS, effort: 'high', label: 'Opus 5.5 · high' } };
+const LEVELS = { 1: { model: SONNET, effort: 'medium', label: 'Local AI · quick' }, 2: { model: SONNET, effort: 'high', label: 'Local AI · balanced' }, 3: { model: OPUS, effort: 'low', label: 'Local AI · careful' }, 4: { model: OPUS, effort: 'medium', label: 'Local AI · thorough' }, 5: { model: OPUS, effort: 'high', label: 'Local AI · max' } };
 const LEVEL0 = 3; // smartness bar hidden for now; always 3
 
 // ---------------------------------------------------------------- styles + DOM
@@ -994,7 +994,7 @@ function addFiles(files) { for (const f of files) { if (!/^image\//.test(f.type)
 function renderThumbs() { thumbsEl.textContent = ''; ATTACH.forEach((a, i) => { const x = h('button', { type: 'button', 'aria-label': 'Remove image' }, '×'); x.onclick = () => { URL.revokeObjectURL(a.url); ATTACH.splice(i, 1); renderThumbs(); }; thumbsEl.append(h('figure', {}, h('img', { src: a.url, alt: 'attached reference' }), x)); }); }
 attachBtn.onclick = () => fileIn.click(); fileIn.onchange = () => { addFiles(fileIn.files); fileIn.value = ''; };
 const miniBtn = h('button', { class: 'sbx-x', 'aria-label': 'Minimise the prompt', title: 'Minimise' }, '▾'); const pill = h('button', { class: 'pr-pill pri', 'aria-label': 'Open the prompt' }, '✨ Create');
-const promptEl = h('section', { id: 'sbxPrompt', class: 'sbx-panel docked' }, pill, h('div', { class: 'pr-head' }, h('span', {}, 'Tell the world what to make'), miniBtn), h('div', { class: 'intro' }, 'An empty platform under the sky, and Ollo. Type what the world should have; Claude builds it piece by piece while you watch.'), h('form', {}, attachBtn, inEl, goBtn, stopBtn), optsEl, progEl);
+const promptEl = h('section', { id: 'sbxPrompt', class: 'sbx-panel docked' }, pill, h('div', { class: 'pr-head' }, h('span', {}, 'Tell the world what to make'), miniBtn), h('div', { class: 'intro' }, 'An empty platform under the sky, and Ollo. Type what the world should have; your local AI builds it piece by piece while you watch.'), h('form', {}, attachBtn, inEl, goBtn, stopBtn), optsEl, progEl);
 root.append(promptEl);
 inEl.addEventListener('keydown', (ev) => { ev.stopPropagation(); if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); promptEl.querySelector('form').requestSubmit(); } });
 inEl.addEventListener('keyup', (ev) => ev.stopPropagation());
@@ -1452,7 +1452,7 @@ function selectStep(dt) { if (!SEL.root) return; if (!SEL.root.parent || (SEL.ca
 // ---------------------------------------------------------------- 9. the in-world AI: Claude Opus 5.5 (low effort), sees through Ollo's eyes, builds live with tools
 const AGENT = { busy: false, ctl: null, history: [], views: [], level: LEVEL0, fallbackAt: 0 };
 // the model that answers now: an Opus level drops to Sonnet (same ambition) while Opus is unavailable
-function agentCfg() { const L = LEVELS[AGENT.level]; if (L.model === OPUS && AGENT.fallbackAt && Date.now() - AGENT.fallbackAt < 5 * 60 * 1000) { const ef = AGENT.level === 3 ? 'medium' : 'high'; return { model: SONNET, effort: ef, label: 'Sonnet 5.5 · ' + ef, fell: true }; } return { ...L }; }
+function agentCfg() { const L = LEVELS[AGENT.level]; if (L.model === OPUS && AGENT.fallbackAt && Date.now() - AGENT.fallbackAt < 5 * 60 * 1000) { const ef = AGENT.level === 3 ? 'medium' : 'high'; return { model: SONNET, effort: ef, label: 'Local AI · ' + ef, fell: true }; } return { ...L }; }
 let SAMPLE = null; (async () => { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } })();
 const SYSTEM = (toy = false) => `You are the world-builder inside a live, real-time 3D sandbox (three.js r170, WebGL). You work exactly the way a senior 3D artist, technical animator and engineer would working directly in this scene: you can do essentially anything the page can do, through the tools below, and everything you do appears on the user's screen the moment you do it.
 
@@ -1700,7 +1700,7 @@ async function runAgentInner(userText, opt = {}) { AGENT.lastText = String(userT
   AGENT.busy = true; AGENT.userStopped = false; AGENT.viewReq = null; AGENT.charPending = false; AGENT.allowCam = wantsCam(userText); AGENT.allowOllo = wantsOllo(userText); AGENT.voiceSet = false; AGENT.ragdoll = false; AGENT.audio = false; AGENT.reviews = 0; AGENT.checkpoint = null; AGENT.lastProbs = null; AGENT.soundNudged = false; AGENT.ok = new Map(); AGENT.mutCalls = 0; AGENT.mindCode = false; AGENT.mindGiven = false; AGENT.nudges = 0; AGENT.errs = 0; AGENT.waits = 0; let stepErr = null; promptEl.classList.add('docked'); progEl.hidden = false; progBar.classList.remove('done'); stopBtn.hidden = false; goBtn.disabled = true; progTxt.textContent = 'Starting…'; progStep.textContent = '';
   if (feedEl.hidden) btnFeed.click(); feed('ok', '› ' + userText);
   if (!SAMPLE) { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } }
-  if (!SAMPLE) { feed('err', 'Claude is not available yet — enter a Claude API key or use shared limits.'); return finish('Claude unavailable'); }
+  if (!SAMPLE) { feed('err', 'The local AI is not available yet — start it with start.bat (Windows) or ./start.sh (Mac/Linux).'); return finish('Local AI unavailable'); }
   let limits = null; try { limits = await SAMPLE.limits(); } catch (e) { limits = null; }
   const canImg = !!(limits && limits.images); const AC = AGENT.ctl = new AbortController(); const notes = [];
   const ETA = { planned: 3, times: [], stepStart: performance.now(), s: 1 }; const fmt = (sec) => sec >= 60 ? Math.floor(sec / 60) + 'm ' + String(Math.round(sec % 60)).padStart(2, '0') + 's' : Math.max(1, Math.round(sec)) + 's';
@@ -1716,8 +1716,8 @@ async function runAgentInner(userText, opt = {}) { AGENT.lastText = String(userT
       const CFG = agentCfg(); modelEl.textContent = CFG.label;
       const res = await SAMPLE([{ role: 'user', content: SYSTEM(toyMode) }, ...AGENT.history.slice(-4), { role: 'user', content: msg }], { tools: cap16(makeTools(step), 'builder'), ...(imgs.length ? { images: imgs } : {}), model: CFG.model, effort: CFG.effort, modelTier: CFG.model === OPUS ? 'complex' : 'default', signal: AC.signal, onText: ({ text: t }) => { sayEl.textContent = t.slice(-900); progStep.textContent = 'writing'; } });
       text = res.text || '';
-      if (res.modelApplied === false && CFG.model === OPUS) { AGENT.fallbackAt = Date.now(); feed('ev', 'Opus 5.5 is not available right now — switching to Sonnet 5.5 (Opus is tried again in a few minutes).'); }
-      else if (res.modelApplied === false && CFG.model === SONNET && s === 1) feed('ev', '(Sonnet 5.5 was not available either; the closest Claude model answered.)');
+      if (res.modelApplied === false && CFG.model === OPUS) { AGENT.fallbackAt = Date.now(); feed('ev', 'The local AI could not run that at the highest level — retrying at a lighter level for a few minutes.'); }
+      else if (res.modelApplied === false && CFG.model === SONNET && s === 1) feed('ev', '(the local AI answered with its default model)');
       modelEl.textContent = agentCfg().label;
     } catch (e) { if (e.code === 'cancelled') { break; } sayEl.className = 'ev err'; sayEl.textContent = errCopy(e) + (e && (e.code || e.message) ? `\n(code: ${e.code || '-'} · ${String(e.message || '').slice(0, 400)})` : ''); if (e && e.code !== 'cancelled') console.error('Create step ' + s + ' error:', e); if (e.code === 'rate_limited' && (AGENT.waits = (AGENT.waits || 0) + 1) <= 2) { feed('ev', 'Busy — waiting 20 s and trying again…'); await sleep(20000); s--; continue; } if (['not_granted', 'sampling_disabled', 'tools_unavailable', 'rate_limited'].includes(e.code)) break; text = e.text || ''; stepErr = e; }
     if (AC.signal.aborted) { sayEl.textContent = text.replace(/\n?(CONTINUE|DONE):[\s\S]*$/, '').trim().slice(-900) || '(stopped)'; return stoppedByUser(); }
@@ -1755,7 +1755,7 @@ async function runAgentInner(userText, opt = {}) { AGENT.lastText = String(userT
 }
 function stoppedByUser() { if (!AGENT.busy) return; feed('err', 'Stopped manually by user — the request was not finished.'); AGENT.history.push({ role: 'user', content: 'Earlier request (STOPPED by the user before it was finished): ' + (AGENT.lastText || '') }); return finish('Stopped manually by user'); }
 function finish(label) { AGENT.busy = false; progEta.textContent = ''; progTxt.textContent = label; progStep.textContent = ''; progBar.classList.add('done'); stopBtn.hidden = true; goBtn.disabled = false; setTimeout(() => { if (!AGENT.busy) progEl.hidden = true; }, 4000); }
-function errCopy(e) { return ({ not_granted: 'Claude was not allowed for this page. Allow it to use the AI.', sampling_disabled: 'Claude is turned off for this account here.', rate_limited: 'Usage limit reached — try again a bit later.', tools_unavailable: 'This view cannot run the AI’s tools.', images_unavailable: 'This view cannot send images.', prompt_too_large: 'The request got too large — try a smaller ask.' })[e.code] || ('The AI hit an error: ' + (e.message || e.code)); }
+function errCopy(e) { return ({ ai_offline: e.message, not_granted: 'The local AI refused this page.', sampling_disabled: 'The local AI is turned off.', rate_limited: 'The local AI is busy or out of GPU memory — try again in a moment.', tools_unavailable: 'This view cannot run the AI’s tools.', images_unavailable: 'This view cannot send images.', prompt_too_large: 'The request got too large — try a smaller ask.' })[e.code] || ('The AI hit an error: ' + (e.message || e.code)); }
 SBX.runAgent = runAgent;
 // lookups the AI's code commonly reaches for: sbx.get('id' | 'cast:id' | name) -> the object / character group
 SBX.get = (id) => { if (id && id.isObject3D) return id; const s = String(id || ''); if (SBX.placed.has(s)) return SBX.placed.get(s); const cid = s.replace(/^cast:/, ''); const c = CAST.CASTS.find((k) => k.id === cid); if (c) return c.group; for (const [, ob] of SBX.placed) if ((ob.userData.sbx && ob.userData.sbx.name === s) || ob.name === s) return ob; return scene.getObjectByName(s) || null; };
@@ -1972,7 +1972,7 @@ async function think(...a) { const a0 = a; a = [...a]; /* thinkCore's argument i
 async function thinkCore(reason) {
   if (!BR.on) return; if (BR.busy) { BR.pending = true; return; }
   if (!SAMPLE) { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } }
-  if (!SAMPLE) { chatSys('Claude is not available in this view, so Ollo cannot think on his own. Open the artifact on claude.ai, signed in.'); setSmart(false); return; }
+  if (!SAMPLE) { chatSys('The local AI is not running, so Ollo cannot think on his own. Start it with start.bat (Windows) or ./start.sh (Mac/Linux).'); setSmart(false); return; }
   BR.busy = true; BR.kind = reason === 'idle' ? 'idle' : 'talk'; const ctl = BR.ctl = new AbortController(); const acts = []; setStatus('thinking…');
   try {
     if (BR.canImg === undefined) { try { const l = await SAMPLE.limits(); BR.canImg = !!(l && l.images); } catch (e) { BR.canImg = false; } }
@@ -2001,7 +2001,7 @@ ${AGENT.history.length ? 'RECENT BUILD REQUESTS: ' + AGENT.history.slice(-4).map
 
 THE WORLD RIGHT NOW:
 ${sceneSummary().slice(0, 5000)}`;
-    if (ctl.signal.aborted) return; await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(brainTools(acts), 'Smart Ollo'), ...((imgs = imgs.concat(BR.earImgs && BR.canImg ? BR.earImgs.splice(0) : [])).length ? { images: imgs } : {}), ...(reason === 'idle' ? { model: 'claude-haiku-5-5', modelTier: 'quick', effort: 'low' } : { modelTier: 'default' }), cache: false, signal: ctl.signal });
+    if (ctl.signal.aborted) return; await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(brainTools(acts), 'Smart Ollo'), ...((imgs = imgs.concat(BR.earImgs && BR.canImg ? BR.earImgs.splice(0) : [])).length ? { images: imgs } : {}), ...(reason === 'idle' ? { model: 'local-quick', modelTier: 'quick', effort: 'low' } : { modelTier: 'default' }), cache: false, signal: ctl.signal });
     // Safety net against lazy hallucination: if player explicitly asked to create/build/spawn something and AI only talked without calling build
     if (reason === 'heard' && lastHeardRaw && !AGENT.busy) {
       const askedBuild = /\b(make|create|build|spawn|summon|conjure|generate|design|add)\s+(a|an|the|me|us|some|my|\d+)/i.test(lastHeardRaw) && !/\b(don'?t|do not|never|stop)\s+(make|create|build|spawn|add)/i.test(lastHeardRaw);
@@ -2012,7 +2012,7 @@ ${sceneSummary().slice(0, 5000)}`;
       }
     }
     if (acts.length) brainLog('Ollo did', acts.filter((a) => !a.startsWith('say ')).join('; ').slice(0, 300) || 'spoke');
-  } catch (e) { if (e && e.code === 'rate_limited') { BR.next = performance.now() + 60000; chatSys((ALT.on ? 'Caine' : 'Ollo') + ' is resting a minute (usage limit).'); } else if (e && ['not_granted', 'sampling_disabled', 'tools_unavailable'].includes(e.code)) { chatSys(errCopy(e)); setSmart(false); } else if (!(e && ['cancelled', 'empty_completion'].includes(e.code))) console.warn('smart ollo', e); }
+  } catch (e) { if (e && e.code === 'rate_limited') { BR.next = performance.now() + 60000; chatSys((ALT.on ? 'Caine' : 'Ollo') + ' is resting a minute (usage limit).'); } else if (e && ['ai_offline', 'not_granted', 'sampling_disabled', 'tools_unavailable'].includes(e.code)) { chatSys(errCopy(e)); setSmart(false); } else if (!(e && ['cancelled', 'empty_completion'].includes(e.code))) console.warn('smart ollo', e); }
   finally { BR.busy = false; setStatus(''); /* cost saver: while nothing new happens, each idle thought waits longer (up to 2 min); any event, chat or the player moving resets it */ BR.idleN = /^idle/.test(String(reason)) ? (BR.idleN || 0) + 1 : 0; try { const pp = playerPos(); if (BR.idleP && pp.distanceTo(BR.idleP) > 3) BR.idleN = 0; BR.idleP = pp; } catch (e) { /* ok */ } BR.next = Math.max(BR.next, performance.now() + Math.min(120000, (9000 + Math.random() * 7000) * Math.pow(1.6, Math.min(BR.idleN, 6)))); if (BR.pending && BR.on) { BR.pending = false; setTimeout(() => think('heard'), 30); } }
 }
 SBX.smart = BR; SBX.setSmart = setSmart;
@@ -2263,8 +2263,8 @@ ${m.log.slice(-16).map((e) => `[${ago(e.t)} ago] ${e.who}: ${e.text}`).join('\n'
 
 THE WORLD:
 ${sceneSummary().slice(0, 3500)}`;
-  try { await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(mindTools(m, acts), 'mind'), ...(m.earImgs && m.earImgs.length ? { images: m.earImgs.splice(0) } : {}), ...(reason === 'heard' ? { modelTier: 'default' } : { model: 'claude-haiku-5-5', modelTier: 'quick', effort: 'low' }), cache: false }); if (acts.length) mindLog(m, 'event', 'you did: ' + acts.join(', ')); }
-  catch (e) { if (e && e.code === 'rate_limited') m.next = performance.now() + 90000; else if (e && ['not_granted', 'sampling_disabled', 'tools_unavailable'].includes(e.code)) m.next = performance.now() + 600000; }
+  try { await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(mindTools(m, acts), 'mind'), ...(m.earImgs && m.earImgs.length ? { images: m.earImgs.splice(0) } : {}), ...(reason === 'heard' ? { modelTier: 'default' } : { model: 'local-quick', modelTier: 'quick', effort: 'low' }), cache: false }); if (acts.length) mindLog(m, 'event', 'you did: ' + acts.join(', ')); }
+  catch (e) { if (e && e.code === 'rate_limited') m.next = performance.now() + 90000; else if (e && ['ai_offline', 'not_granted', 'sampling_disabled', 'tools_unavailable'].includes(e.code)) m.next = performance.now() + 600000; }
   finally { m.busy = false; m.idleN = /^idle/.test(String(reason)) ? (m.idleN || 0) + 1 : 0; try { const pp = playerPos(); if (m.idleP && pp.distanceTo(m.idleP) > 3) m.idleN = 0; m.idleP = pp; } catch (e) { /* ok */ } m.next = Math.max(m.next || 0, performance.now() + Math.min(150000, (14000 + Math.random() * 10000) * Math.pow(1.6, Math.min(m.idleN, 6)))); if (m.pending) { m.pending = false; setTimeout(() => mindThink(m, 'heard'), 30); } } }
 async function giveMind(id, o = {}) { const c = CAST.CASTS.find((k) => k.id === id); if (!c) throw new Error('Characters: ' + CAST.CASTS.map((k) => k.id).join(', ')); if (c === ollo) throw new Error('Ollo has his own mind (Smart Ollo)');
   if (PLAYER.c === c) { if (!o.take_over) return `the player is controlling ${id}; pass take_over: true to take it from them on purpose`; stopControl(); chatSys(`Ollo took ${c.ch.name || id} over from you!`); toast(`Ollo took over ${c.ch.name || id}`); }

@@ -107,114 +107,64 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
 })();
 </script>
 <script>
-// ===================== DIRECT BROWSER CLAUDE API KEY + SHARED ENV KEY PROXY =====================
-// Supports either a user-supplied Claude API key (direct browser calls, unlimited app-side usage)
-// or "Continue without custom key (limits apply)" routed through /api/claude using CLAUDE_API_KEY.
+// ===================== LOCAL AI CLIENT (your own model on this computer, see local-ai/) =====================
+// Every AI request goes to your local AI API (default http://127.0.0.1:8000, started with start.bat / start.sh).
+// It speaks the same Messages format as before (messages, tools, tool_use / tool_result, images), so the game code
+// is unchanged. Use another address with ?ai=http://host:port (remembered in this browser).
 (function () {
-  if (window.claude && typeof window.claude.use === 'function') return;
-  var STORAGE_KEY = 'sbx_claude_api_key';
-  var KEY = null;
-  var MODE = 'none'; // 'custom' | 'shared' | 'none'
-  var SHARED_USED = 0;
-  var SHARED_SOFT_LIMIT = 15;
-  var readyRes;
-  var READY = new Promise(function (r) { readyRes = r; });
-  window.__LOCAL_READY = READY;
-
-  function readSaved() {
-    try { return localStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; }
-  }
-  function saveKey(k) {
+  var AI_URL = (function () {
     try {
-      if (k) localStorage.setItem(STORAGE_KEY, k);
-      else localStorage.removeItem(STORAGE_KEY);
-    } catch (e) { /* ignore storage restrictions */ }
-  }
-
-  function HDR(k) { return { 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', 'content-type': 'application/json' }; }
+      var q = new URLSearchParams(location.search).get('ai');
+      if (q) { localStorage.setItem('sbx_local_ai_url', q); return q.replace(/\/+$/, ''); }
+      var s = localStorage.getItem('sbx_local_ai_url'); if (s) return s.replace(/\/+$/, '');
+    } catch (e) { /* storage blocked */ }
+    return String(window.LOCAL_AI_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+  })();
+  window.LOCAL_AI_URL = AI_URL;
+  var READY = Promise.resolve(); window.__LOCAL_READY = READY;
+  var OFFLINE_MSG = 'Your local AI is not running. Start it with start.bat (Windows) or ./start.sh (Mac/Linux) in the project folder, then try again.';
   var b64 = function (blob) { return new Promise(function (res, rej) { var fr = new FileReader(); fr.onload = function () { res(String(fr.result).split(',')[1]); }; fr.onerror = rej; fr.readAsDataURL(blob); }); };
   function err(code, message, text) { var e = new Error(message); e.code = code; if (text) e.text = text; return e; }
-  function fallbackModel(m) {
-    if (/opus/i.test(m || '')) return 'claude-opus-4-20250514';
-    if (/haiku/i.test(m || '')) return 'claude-3-5-haiku-latest';
-    return 'claude-sonnet-4-20250514';
-  }
-  // Anthropic answers 429 (rate limited) / 529 (overloaded) for short bursts even when the account still has credits:
-  // wait (honouring retry-after) and try again instead of failing the character's turn
+
+  // the first request after an idle unload waits while the model loads; 529 = the GPU was busy / out of memory
   async function call(body, signal) {
-    var e0 = null;
-    for (var attempt = 0; attempt < 5; attempt++) {
-      try { return await call1(body, signal); } catch (e) {
-        e0 = e; if (e.code !== 'rate_limited' || (signal && signal.aborted)) throw e;
-        var wait = Math.min(20000, (e.retryAfter ? e.retryAfter * 1000 : 2000 * Math.pow(2, attempt)));
-        await new Promise(function (r) { setTimeout(r, wait); });
-      }
+    var last = null;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      var r;
+      try { r = await fetch(AI_URL + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal }); }
+      catch (e) { if (e && e.name === 'AbortError') throw e; setStatus(false); throw err('ai_offline', OFFLINE_MSG); }
+      setStatus(true);
+      if (r.ok) return r.json();
+      var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
+      var msg = 'Local AI ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
+      last = err(r.status === 529 || r.status === 503 ? 'rate_limited' : 'api_error', msg);
+      if (r.status !== 529 && r.status !== 503) throw last;
+      await new Promise(function (res) { setTimeout(res, 1500 * Math.pow(2, attempt)); });
     }
-    throw e0;
-  }
-  async function call1(body, signal) {
-    if (MODE === 'custom' && KEY) {
-      var r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: HDR(KEY), body: JSON.stringify(body), signal: signal });
-      if (r.status === 404 && body && body.model) {
-        var fb = fallbackModel(body.model);
-        if (fb && fb !== body.model) {
-          r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: HDR(KEY), body: JSON.stringify(Object.assign({}, body, { model: fb })), signal: signal });
-        }
-      }
-      if (!r.ok) { var t = ''; try { t = await r.text(); } catch (e) { /* ok */ } var ra1 = Number(r.headers.get('retry-after')) || 0; throw Object.assign(err(r.status === 429 || r.status === 529 ? 'rate_limited' : r.status === 401 || r.status === 403 ? 'not_granted' : 'api_error', 'Claude API ' + r.status + ': ' + t.slice(0, 300)), { retryAfter: ra1 }); }
-      return r.json();
-    }
-    if (MODE === 'shared') {
-      var payload = body;
-      var rs = await fetch('/api/claude', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: signal });
-      if (!rs.ok) {
-        var ts = ''; try { ts = await rs.text(); } catch (e) { /* ok */ }
-        var code = rs.status === 429 || rs.status === 529 ? 'rate_limited' : rs.status === 401 || rs.status === 403 || rs.status === 503 ? 'not_granted' : 'api_error';
-        var msg = 'Shared Claude API ' + rs.status + ': ' + ts.slice(0, 300);
-        try { var parsed = JSON.parse(ts); if (parsed && parsed.error && parsed.error.message) msg = parsed.error.message; } catch (e) { /* ok */ }
-        throw Object.assign(err(code, msg), { retryAfter: Number(rs.headers.get('retry-after')) || 0 });
-      }
-      SHARED_USED++;
-      return rs.json();
-    }
-    throw err('not_granted', 'No Claude API key configured');
+    throw last;
   }
   async function toMsgs(messages, images) {
     var out = (messages || []).map(function (m) { return { role: m.role === 'assistant' ? 'assistant' : 'user', content: typeof m.content === 'string' ? [{ type: 'text', text: m.content || ' ' }] : (m.content || []) }; });
-    // the API wants turns to alternate: merge neighbours with the same role
     var merged = []; for (var m of out) { var last = merged[merged.length - 1]; if (last && last.role === m.role) last.content = last.content.concat(m.content); else merged.push(m); }
     if (images && images.length && merged.length) { var lu = merged[merged.length - 1]; for (var im of images) { try { var blob = im instanceof Blob ? im : await (await fetch(im)).blob(); lu.content.push({ type: 'image', source: { type: 'base64', media_type: blob.type || 'image/jpeg', data: await b64(blob) } }); } catch (e) { /* skip */ } } }
     if (merged[0] && merged[0].role !== 'user') merged.unshift({ role: 'user', content: [{ type: 'text', text: '(continue)' }] });
     return merged;
   }
-  // ---- prompt caching (saves most of the cost of repeated context): Anthropic re-reads a cached prefix at ~10% of the price.
-  // Breakpoints (max 4 allowed, we use 3): the tool list, the first message (the long, fixed instructions), and the newest
-  // message, so every extra tool-loop turn only pays full price for what is new. Too-short prefixes are simply not cached.
-  var CC = { type: 'ephemeral' };
-  function cacheTools(tools) { return tools.map(function (t, i) { return i === tools.length - 1 ? Object.assign({}, t, { cache_control: CC }) : t; }); }
-  function markLast(m) {
-    if (!m || !Array.isArray(m.content) || !m.content.length) return m;
-    var c = m.content.slice(); var k = c.length - 1;
-    while (k >= 0 && (c[k].type === 'thinking' || c[k].type === 'redacted_thinking' || (c[k].type === 'text' && !String(c[k].text || '').trim()))) k--;
-    if (k < 0) return m; c[k] = Object.assign({}, c[k], { cache_control: CC }); return { role: m.role, content: c };
-  }
-  function cacheMarks(msgs) {
-    var out = msgs.map(function (m) { if (!Array.isArray(m.content)) return m; return { role: m.role, content: m.content.map(function (b) { if (b && b.cache_control) { var x = Object.assign({}, b); delete x.cache_control; return x; } return b; }) }; });
-    if (out.length > 1) out[0] = markLast(out[0]);
-    out[out.length - 1] = markLast(out[out.length - 1]);
-    return out;
-  }
+  // web search: on when a caller asks for it, or when the player's request clearly asks to look something up online
+  var WEB_RX = /\b(search (the )?(web|internet|online)|look (it |this |that )?up|google (it|for)|latest|news|current(ly)?|today'?s|this (week|month|year)|right now|recent(ly)?)\b/i;
   async function sample(messages, opt) {
-    opt = opt || {}; if (MODE === 'none' || (MODE === 'custom' && !KEY)) throw err('not_granted', 'No API key');
-    var msgs = await toMsgs(messages, opt.images); var tools = (opt.tools || []).map(function (t) { return { name: t.name, description: String(t.description || '').slice(0, 4000), input_schema: t.inputSchema || t.input_schema || { type: 'object', properties: {} } }; });
+    opt = opt || {};
+    var msgs = await toMsgs(messages, opt.images);
+    var tools = (opt.tools || []).map(function (t) { return { name: t.name, description: String(t.description || '').slice(0, 4000), input_schema: t.inputSchema || t.input_schema || { type: 'object', properties: {} } }; });
     var byName = {}; (opt.tools || []).forEach(function (t) { byName[t.name] = t; });
-    var text = '', model = opt.model || 'claude-sonnet-5-5';
-    var maxTurns = 40;
-    for (var turn = 0; turn < maxTurns; turn++) {
+    var lastUser = ''; for (var i = msgs.length - 1; i >= 0 && !lastUser; i--) if (msgs[i].role === 'user') lastUser = (msgs[i].content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join(' ');
+    var web = opt.use_web_search != null ? !!opt.use_web_search : WEB_RX.test(String(lastUser).slice(-2000));
+    var text = '', model = opt.model || 'local';
+    for (var turn = 0; turn < 40; turn++) {
       if (opt.signal && opt.signal.aborted) throw err('cancelled', 'cancelled', text);
-      var body = { model: model, max_tokens: 8192, messages: cacheMarks(msgs) }; if (tools.length) body.tools = cacheTools(tools);
+      var body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools;
       var res; try { res = await call(body, opt.signal); } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
-      var tu = []; for (var c of res.content || []) { if (c.type === 'text') { text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
+      var tu = []; for (var c of res.content || []) { if (c.type === 'text') { if (!c.text) continue; text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
       msgs.push({ role: 'assistant', content: res.content });
       if (res.stop_reason !== 'tool_use' || !tu.length) break;
       var results = []; for (var u of tu) { var out; try { var t = byName[u.name]; out = t && t.execute ? await t.execute(u.input || {}) : 'unknown tool'; } catch (e) { out = 'error: ' + (e.message || e); } results.push({ type: 'tool_result', tool_use_id: u.id, content: typeof out === 'string' ? out.slice(0, 20000) : JSON.stringify(out === undefined ? 'ok' : out).slice(0, 20000) }); }
@@ -229,101 +179,26 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var s = t.indexOf('{'), a = t.indexOf('['); var i = s < 0 ? a : a < 0 ? s : Math.min(s, a); var j = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
     try { return JSON.parse(i >= 0 && j > i ? t.slice(i, j + 1) : t); } catch (e) { return null; }
   };
-  sample.limits = async function () { return { images: true, shared: MODE === 'shared', remaining: null }; };
+  sample.limits = async function () { return { images: true, maxCount: 4, local: true, remaining: null }; };
+  sample.url = AI_URL;
+  window.localAI = { url: AI_URL, sample: sample, health: function () { return fetch(AI_URL + '/health').then(function (r) { return r.json(); }); } };
+  // the game asks for capabilities by name; only 'sample' (the AI) is provided here
+  window.claude = { use: async function (name) { return name === 'sample' ? sample : null; } };
 
-  window.claude = {
-    use: async function (name) {
-      if (name !== 'sample') return null;
-      await READY;
-      return (MODE === 'custom' && KEY) || MODE === 'shared' ? sample : null;
-    }
-  };
-
-  function promptKey(isReopen) {
-    var box = document.createElement('div');
-    box.style.cssText = 'position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:linear-gradient(#7fb0dc,#cfe3f2 70%,#e9f1f6);font:15px/1.45 "IBM Plex Sans",system-ui,sans-serif;color:#0f1a24;padding:24px';
-    box.innerHTML = '<div style="width:min(460px,100%);text-align:center;background:rgba(255,255,255,.86);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:16px;padding:26px 24px;box-shadow:0 12px 30px rgba(20,40,60,.18)">' +
-      '<h1 style="margin:0 0 8px;font:700 24px Bungee,\'Arial Black\',sans-serif;color:#16212b">The Amazing Simulation</h1>' +
-      '<p style="margin:0 0 16px;color:#33424f;font-size:13.5px;line-height:1.5">Optionally enter your own Claude api key to have infinite usage limits (your Claude plan &amp; rate limits still apply). You can see/get your Claude api key here: <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener noreferrer" style="color:#1e5684;text-decoration:underline;word-break:break-all">https://platform.claude.com/settings/keys</a></p>' +
-      '<form id="akForm" style="display:flex;flex-direction:column;gap:10px">' +
-      '<input id="akIn" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid rgba(22,33,43,.22);background:#fff;color:#0f1a24;font:13.5px \'IBM Plex Mono\',ui-monospace,Menlo,monospace;outline:none">' +
-      '<button id="akGo" type="submit" style="background:#16212b;color:#fff;border:0;border-radius:99px;padding:10px 20px;font:600 14px \'IBM Plex Sans\',system-ui,sans-serif;cursor:pointer">Start with Claude AI</button>' +
-      '</form>' +
-      '<p id="akMsg" style="margin:12px 0 0;font-size:13px;color:#2a3946;min-height:1.4em"></p>' +
-      '<button id="akSkip" type="button" style="margin-top:4px;background:none;border:0;color:#2a5b86;text-decoration:underline;cursor:pointer;font-size:12.5px">Continue without custom key (limits apply)</button></div>';
-    document.documentElement.appendChild(box);
-
-    var form = box.querySelector('#akForm');
-    var input = box.querySelector('#akIn');
-    var goBtn = box.querySelector('#akGo');
-    var skipBtn = box.querySelector('#akSkip');
-    var msg = box.querySelector('#akMsg');
-    var saved = readSaved();
-    if (saved) input.value = saved;
-    setTimeout(function () { try { input.focus(); } catch (e) {} }, 30);
-
-    skipBtn.onclick = async function () {
-      skipBtn.disabled = true;
-      msg.style.color = '#2a3946';
-      msg.textContent = 'Starting with shared limits…';
-      try {
-        var st = await fetch('/api/claude', { method: 'GET' });
-        if (st.ok) {
-          var info = await st.json();
-          if (info && info.configured) {
-            MODE = 'shared';
-            if (info.limits && info.limits.per10Min) SHARED_SOFT_LIMIT = info.limits.per10Min;
-          } else {
-            MODE = 'shared'; // still route through /api/claude so server reports clear status if env var is added later
-          }
-        } else {
-          MODE = 'shared';
-        }
-      } catch (e) {
-        MODE = 'shared';
-      }
-      box.remove();
-      if (!isReopen) readyRes();
-    };
-
-    form.onsubmit = async function (ev) {
-      ev.preventDefault();
-      var raw = String(input.value || '').trim();
-      var m = raw.match(/sk-ant-[A-Za-z0-9_\-]{20,}/);
-      var candidate = m ? m[0] : raw;
-      if (!candidate) {
-        msg.style.color = '#9a3412';
-        msg.textContent = 'Please paste a Claude API key (or choose Continue without custom key (limits apply)).';
-        return;
-      }
-      goBtn.disabled = true;
-      goBtn.style.opacity = '0.65';
-      msg.style.color = '#2a3946';
-      msg.textContent = 'Checking API key…';
-      try {
-        var r = await fetch('https://api.anthropic.com/v1/models?limit=1', { headers: HDR(candidate) });
-        if (r.ok) {
-          KEY = candidate;
-          MODE = 'custom';
-          saveKey(candidate);
-          msg.style.color = '#166534';
-          msg.textContent = 'API key accepted — starting…';
-          setTimeout(function () { box.remove(); if (!isReopen) readyRes(); }, 250);
-          return;
-        }
-        msg.style.color = '#9a3412';
-        msg.textContent = 'API key was not accepted (' + r.status + '). Please check it and try again.';
-      } catch (e) {
-        msg.style.color = '#9a3412';
-        msg.textContent = 'Could not reach Claude API (' + (e && e.message || e) + ').';
-      }
-      goBtn.disabled = false;
-      goBtn.style.opacity = '1';
-    };
+  // small status note: shown only while the local AI cannot be reached
+  var note = null;
+  function setStatus(up) {
+    if (up) { if (note) { note.remove(); note = null; } return; }
+    if (note || !document.body) return;
+    note = document.createElement('div'); note.setAttribute('role', 'status');
+    note.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:max(12px,env(safe-area-inset-bottom));z-index:10000;max-width:min(560px,calc(100% - 24px));background:rgba(15,26,34,.94);color:#f1e7cf;border:1px solid rgba(241,231,207,.2);border-radius:10px;padding:10px 12px;font:13px/1.45 "IBM Plex Sans",system-ui,sans-serif;display:flex;gap:10px;align-items:flex-start;box-shadow:0 8px 24px rgba(0,0,0,.3)';
+    note.innerHTML = '<span style="flex:1"><b style="color:#f2b632">Local AI offline.</b> Start it with <code>start.bat</code> (Windows) or <code>./start.sh</code> (Mac/Linux), then press Retry. Looking for it at <code></code>.</span><button type="button" style="background:#f2b632;color:#0f1a22;border:0;border-radius:6px;padding:5px 10px;font:600 12px system-ui;cursor:pointer">Retry</button><button type="button" aria-label="Dismiss" style="background:none;border:0;color:#9db0b0;font-size:16px;cursor:pointer;line-height:1">&times;</button>';
+    note.querySelector('code:last-of-type').textContent = AI_URL;
+    var bs = note.querySelectorAll('button'); bs[0].onclick = function () { check(); }; bs[1].onclick = function () { if (note) { note.remove(); note = null; } };
+    document.body.appendChild(note);
   }
-
-  window.__openClaudeKeyModal = function () { promptKey(true); };
-  promptKey(false);
+  function check() { fetch(AI_URL + '/health', { cache: 'no-store' }).then(function (r) { setStatus(r.ok); }, function () { setStatus(false); }); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', check); else check();
 })();
 </script>
 <aside id="panel">

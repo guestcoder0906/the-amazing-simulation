@@ -1,0 +1,14 @@
+# Local AI API + engine (NVIDIA / CPU). Install PyTorch first with CUDA, e.g. for RTX 50-series:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+fastapi>=0.115
+uvicorn[standard]>=0.30
+transformers>=4.53
+accelerate>=1.2
+bitsandbytes>=0.46
+peft>=0.15
+pillow>=10.0
+numpy>=1.26
+soundfile>=0.12
+faster-whisper>=1.1.0
+ddgs>=9.0
+psutil>=5.9

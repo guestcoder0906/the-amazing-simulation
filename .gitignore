@@ -6,3 +6,13 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# local AI
+local-ai/.venv/
+local-ai/my_adapter/
+local-ai/outputs/
+local-ai/data/*
+!local-ai/data/README.md
+local-ai/*.log
+local-ai/*.pid
+__pycache__/

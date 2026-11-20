@@ -125,11 +125,11 @@
     k = Math.max(0.84, Math.min(1.18, k));
     k = 1 + (k - 1) * 0.5;
     var showman = !!(spec.showman || spec.timbre === 'showman');
-    if (showman) k = 0.93 + jit * 0.5; // lower baritone: full and grown-up, never high or squeaky
+    if (showman) k = 0.86 + jit * 0.5; // deep baritone: big and full, never high or squeaky
     var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
-    if (showman) pace = Math.max(pace, 1.2); // manic, rapid-fire ringmaster pacing
+    if (showman) pace = Math.max(pace, 1.28); // manic, rapid-fire ringmaster pacing
     var pick = { voice: voice, k: k, pace: pace };
-    if (showman) pick.style = { expr: 1.55, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
+    if (showman) pick.style = { expr: 1.8, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
     used.set(key, { spec: spec, pick: pick });
     return pick;
   }

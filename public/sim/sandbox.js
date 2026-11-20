@@ -825,7 +825,7 @@ const SLUGS = new Map(); const slug = (t) => String(t).toLowerCase().replace(/[^
 /* AUTO TAGS: every library character / creation / animation / system gets rich, accurate search tags (species, body type, traits,
    style, colours, mood, uses, synonyms) from the quick model (Gemini 3.5 Flash Lite), cached per item so it runs once. */
 const AUTOTAG = { q: [], busy: 0, done: new Set(), cache: (() => { try { return JSON.parse(localStorage.getItem('sbx_autotags_v1') || '{}'); } catch (e) { return {}; } })() };
-const AUTOTAG_KINDS = /^(cast|creation|anim|system|script|puppet|world)$/;
+const AUTOTAG_KINDS = /^(cast|creation|anim|system|script|puppet|world)$/; /* (castdef cards carry their own tags) */
 function autoTagKey(e) { const c = e.creation; return e.id + '|' + String(e.name || '') + '|' + (c ? String(c.created || '') + (c.code ? String(c.code).length : '') : ''); }
 function autoTagInfo(e) { const out = [`Name: ${e.name}`, `Library kind: ${e.kind}`, `Category: ${e.category || ''}`]; if (e.desc) out.push('Description: ' + String(e.desc).slice(0, 600)); if ((e.tags || []).length) out.push('Existing tags: ' + e.tags.join(', '));
   const cc = e.cast || (e.creation && e.creation.kind === 'character' && CAST.CASTS.find((k) => k.id === (e.creation.charId || e.creation.id)));
@@ -849,6 +849,8 @@ function semScore(qvs, qv, e) { if (!e.tv || !e.tv.length || !qvs.length) return
 function buildLibrary() {
   const CH = { ollo: "Levitating felt star-sprite; hovers, carries a lantern-wand" };
   for (const c of CAST.CASTS) addEntry({ name: c.ch.name, category: "Characters", kind: "cast", cast: c, tags: ["character", "rigged", "animated", c.ch.subtitle || "", ...(c.id === "ollo" ? ["hover", "levitate", "fly", "sprite", "star"] : ["walk"])], tris: triCount(c.group), desc: (CH[c.id] || "") + ". Fully rigged (IK, springs, face), with procedural animation." });
+  const CLASSIC = [['spondo', 'Spondo', 'Plush red-panda bunny with long ears and a ringed tail', ['plush', 'red panda', 'bunny', 'rabbit', 'ears', 'tail', 'soft', 'stuffed animal']], ['rozy', 'Rozy', 'Felt moth with soft satin wings', ['felt', 'moth', 'insect', 'wings', 'antennae', 'fuzzy']], ['meno', 'Meno', 'Rubber penguin toy with a tail fin', ['rubber', 'penguin', 'bird', 'toy', 'squeaky', 'fin']], ['klora', 'Klora', 'Plastic swan with a long neck and crest', ['plastic', 'swan', 'bird', 'long neck', 'crest', 'wings']]];
+  for (const [id, name, desc, tags] of CLASSIC) if (RPC.builders && RPC.builders[id] && !CAST.CASTS.find((k) => k.id === id)) addEntry({ id: 'ch_' + id, name, category: "Characters", kind: "castdef", castId: id, tags: ["character", "rigged", "animated", "classic cast", ...tags], tris: 0, desc: desc + '. Fully rigged (IK, springs, face), sculpted, with procedural animation.' });
   addEntry({ name: "Ollo’s lantern-wand", category: "Props", kind: "wand", tags: ["lantern", "wand", "staff", "cane", "light", "glow", "brass", "glass", "held"], tris: triCount(wand), desc: "Separate prop: a lacquered staff with a brass-capped glass lantern. Ollo holds it in his right hand." });
   for (const [name, clip] of SBX.anims) addEntry({ name, category: "Animations", kind: "anim", clip: name, tags: ["animation", "motion", "procedural", clip.loop ? "loop" : "once"], tris: 0, desc: "Procedural animation that works on any character (bones are matched by role)." });
 }
@@ -864,11 +866,21 @@ function freeSpot(p, rad) { // nudge a placement point so it does not land on Ol
 const appear = []; // scale-in animation for anything that is built or placed
 function popIn(o) { const s = o.scale.clone(); o.scale.multiplyScalar(0.001); appear.push({ o, s, t: 0 }); }
 function registerPlaced(obj, meta) { const id = meta.id || uid('o'); obj.userData.sbx = { id, ...meta, solid: meta.solid !== false }; obj.name = obj.name || meta.name; WORLD.add(obj); SBX.placed.set(id, obj); SBX.dirty = true; if (meta.pop !== false) popIn(obj); refreshOutliner(); worldChanged(); return id; }
+/* THE CLASSIC CAST (Spondo, Rozy, Meno, Klora): their pre-built sculpted skins live in their own file (~4 MB) that loads only the first time
+   one of them is placed, then only that character's skin is unpacked and the character is built - the page itself starts no slower. */
+let CLASSIC_DATA = null;
+function loadClassicData() { if (CLASSIC_DATA) return CLASSIC_DATA; CLASSIC_DATA = new Promise((res, rej) => { if (window.__CAST_SCULPT_LOADED) return res(true); const s2 = document.createElement('script'); s2.src = './sim/cast-sculpt.js'; s2.onload = () => res(true); s2.onerror = () => { CLASSIC_DATA = null; rej(new Error('could not load the cast skins')); }; document.head.appendChild(s2); }); return CLASSIC_DATA; }
+async function buildClassic(id) { const have = CAST.CASTS.find((k) => k.id === id); if (have) return have; toast('Bringing ' + id.charAt(0).toUpperCase() + id.slice(1) + ' in…'); try { await loadClassicData(); } catch (e) { toast(e.message + ' - sculpting live instead (slower)'); }
+  try { const Z = RPC.SCULPT_DATA_Z && RPC.SCULPT_DATA_Z[id]; if (Z && !(RPC.SCULPT_DATA && RPC.SCULPT_DATA[id]) && typeof DecompressionStream !== 'undefined') { const bin = Uint8Array.from(atob(Z.z), (ch) => ch.charCodeAt(0)); const ds = new Blob([bin]).stream().pipeThrough(new DecompressionStream('deflate-raw')); const buf = new Uint8Array(await new Response(ds).arrayBuffer()); RPC.SCULPT_DATA = RPC.SCULPT_DATA || {}; RPC.SCULPT_DATA[id] = { head: Z.head, bytes: buf }; } } catch (e) { console.warn('[classic cast] skin', id, e); }
+  await nextFrame(); const live = RPC.SCULPT_LIVE; let c; try { RPC.SCULPT_LIVE = false; c = CAST.addCast(id); } finally { RPC.SCULPT_LIVE = live; }
+  c.group.visible = true; try { fixArms(c); } catch (e) { /* ok */ } try { setIdle(c); } catch (e) { /* ok */ } try { chkForget(c); } catch (e) { /* ok */ } return c; }
+SBX.buildClassic = buildClassic;
 async function placeEntry(e, opt = {}) {
   if (e.kind === 'tool') { const on = !e.open; e.open = on; setLegacyUI(on, e.ids); toast(on ? e.name + ' open' : e.name + ' closed'); return null; }
   if (e.kind === 'island') { const on = !park.root.visible; park.root.visible = on; SBX.islandOn = on; toast(on ? 'Island restored around the platform (its ground does not block Ollo)' : 'Island put away'); return null; }
   if (e.kind === 'anim') { const c = opt.cast || ollo; playClip(c, e.clip); return null; }
   if (e.kind === 'wand') { if (wand.userData.held) { const p = opt.at ? new THREE.Vector3(...opt.at) : freeSpot(frontSpot(), 0.3); wand.parent.remove(wand); wand.position.copy(p).add(new THREE.Vector3(0, 0.205, 0)); wand.rotation.set(0, 0, 0); registerPlaced(wand, { id: 'wand', name: 'Ollo’s lantern-wand', entry: e.id, solid: false, pop: false }); wand.userData.held = false; } else { WORLD.remove(wand); SBX.placed.delete('wand'); wandToHand(); refreshOutliner(); } return 'wand'; }
+  if (e.kind === 'castdef') { const c = await buildClassic(e.castId); const i = SBX.entries.indexOf(e); const ne = { id: e.id, name: e.name, category: 'Characters', kind: 'cast', cast: c, tags: e.tags, desc: e.desc, tris: triCount(c.group) }; if (i >= 0) SBX.entries.splice(i, 1); addEntry(ne); if (libState.sel === e) libState.sel = ne; e = ne; }
   if (e.kind === 'cast') { const c = e.cast; if (c === ollo) { SBX.olloTeleport(opt.at || [0, 0, 1.2]); return 'ollo'; }
     const at = opt.at ? new THREE.Vector3(...opt.at) : freeSpot(frontSpot(), 0.4); c.group.position.copy(at); const gy = groundBelow(at.x, at.z, at.y + 2, 10); if (gy !== null) c.group.position.y = gy; c.group.rotation.set(0, opt.yaw ?? Math.atan2(camera.position.x - at.x, camera.position.z - at.z), 0); c.group.visible = true;
     c.st = RPC.newState(c.ch); c.ik = {}; c.locks = new Set(); c.walk = null; c.baseY = null; c.offset = 0; c.motion.reset(); c.loco.reset(null); c.want = null; c.mo.grounded = true; c.mo.gait = true;
@@ -981,7 +993,7 @@ function renderGrid() { gridEl.textContent = ''; const res = search(libState.q, 
   else if (res[0].why === 'closest by meaning') gridEl.append(h('p', { class: 'lib-empty' }, `No exact match for “${libState.q}” — closest by meaning:`));
   for (const { e, why } of res) { const img = h('img', { alt: '' }); const th = h('div', { class: 'th' }, e.kind === 'anim' || e.kind === 'music' || e.kind === 'tool' || e.kind === 'puppet' || (e.kind === 'creation' && !e.obj) ? h('span', { style: 'font-size:30px' }, CAT[e.category] || '◆') : img);
     const card = h('div', { class: 'card' + (libState.sel === e ? ' sel' : ''), role: 'button', tabindex: '0', title: e.name }, th, h('div', { class: 'nm' }, e.name), h('div', { class: 'meta' }, h('span', {}, e.category), why ? h('span', { class: 'why', title: why }, why) : h('span', {}, e.tris ? fmtN(e.tris) + ' tris' : '')), (() => { const w = inWorld(e).length; return w ? h('span', { class: 'inw', title: w + ' in the world now' }, '● ' + w) : ''; })());
-    card.onclick = () => { libState.sel = e; renderDetail(); for (const c of gridEl.children) c.classList.toggle('sel', c === card); }; card.ondblclick = () => (/^(cast|creation|puppet|park|pack)$/.test(e.kind) ? placeInteractive(e) : placeEntry(e)); card.onkeydown = (ev) => { if (ev.key === 'Enter') card.onclick(); };
+    card.onclick = () => { libState.sel = e; renderDetail(); for (const c of gridEl.children) c.classList.toggle('sel', c === card); }; card.ondblclick = () => (/^(cast|castdef|creation|puppet|park|pack)$/.test(e.kind) ? placeInteractive(e) : placeEntry(e)); card.onkeydown = (ev) => { if (ev.key === 'Enter') card.onclick(); };
     gridEl.append(card); if (th.firstChild === img) queueThumb(e, img); } }
 function renderDetail() { const e = libState.sel; detEl.hidden = !e; if (!e) return; detEl.textContent = '';
   const actions = h('div', { class: 'row acts' }); const add = (label, fn, pri) => { const b = h('button', { class: pri ? 'pri' : '' }, label); b.onclick = async () => { try { await fn(); } catch (err) { toast(String(err.message || err)); } }; actions.append(b); };
@@ -1015,8 +1027,8 @@ function endPlacing(ok) { const P = PLACING; if (!P.on) return; P.on = false; co
   else { if (P.cast) { const c = P.cast; try { c.st = c.st || RPC.newState(c.ch); c.walk = null; c.want = null; c.baseY = null; if (c.motion) c.motion.reset(); if (c.loco) c.loco.reset(null); setIdle(c); groundCharSoon(c); } catch (e) { /* ok */ } } resolveOllo(); worldChanged(); toast('Placed: ' + P.name); }
   refreshOutliner(); try { renderDetail(); } catch (e) { /* ok */ } }
 async function placeInteractive(e) { if (PLACING.on) endPlacing(false);
-  if (!/^(cast|creation|puppet|park|pack)$/.test(e.kind) || (e.kind === 'cast' && e.cast === ollo)) return placeEntry(e);
-  const castBefore = e.kind === 'cast' && e.cast.group.visible ? e.cast : null; const prev = castBefore ? castBefore.group.position.clone() : null; const prevYaw = castBefore ? castBefore.group.rotation.y : 0;
+  if (!/^(cast|castdef|creation|puppet|park|pack)$/.test(e.kind) || (e.kind === 'cast' && e.cast === ollo)) return placeEntry(e);
+  const castBefore = e.kind === 'cast' && e.cast && e.cast.group.visible ? e.cast : null; const prev = castBefore ? castBefore.group.position.clone() : null; const prevYaw = castBefore ? castBefore.group.rotation.y : 0;
   const id = await placeEntry(e); if (!id) return id; const obj = SBX.placed.get(id); if (!obj) return id;
   const cast = id.startsWith('cast:') ? CAST.CASTS.find((k) => k.id === id.slice(5)) : null; const meta = obj.userData.sbx;
   const P = PLACING; Object.assign(P, { on: true, id, obj, cast, name: e.name, prev, prevYaw, meta, solid: meta ? meta.solid : true, yaw: obj.rotation.y, last: null, touch: null, cursor: renderer.domElement.style.cursor });

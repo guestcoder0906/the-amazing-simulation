@@ -1745,8 +1745,1468 @@ RPC.symPose = symPose;
 const mirrorX = (p) => [-p[0], p[1], p[2]];
 const SIDES = [['.L', 1], ['.R', -1]];
 
-RPC.builders = {};
+// ================================================================= SPONDO
+// Sculpted plush body (see sculpt.js). Every number below is read off the model sheet (front view; 0.47 mm per pixel).
+// Modelled the way a character artist does it: arms and legs are sculpted and weight-painted in an A/T-pose (spec.tpose),
+// clear of the body, then posed back into the sheet's stance, so they can rest right against the body without fusing to it.
+function spondoHead(K) { // the head block: a squared-off plush head (front profile between a circle and a rounded square), fuller jowls
+  const { P } = RPC.sculpt; const { HC, HR } = K;
+  // the crown tapers in a little (narrower across, slightly shallower) from just above the eyes to the top
+  return P.sell(HC, HR, [2.7, 2.15], null, { warp: (x, y, z) => { const t = y < 0 ? Math.min(1, -y / (HR[1] * 0.5)) : 0; const j = 1 + 0.05 * t * (2 - t); const u = Math.min(1, Math.max(0, (y - 0.1 * HR[1]) / (0.9 * HR[1]))), tp = (1 - 0.44 * u * u) * 0.9, tz = (1 - 0.25 * u * u) * 0.93; /* (it gets smoothly smaller toward the top: a third narrower and a sixth shallower at the crown) */ return [x / (j * tp), y < -0.05 ? -0.05 + (y + 0.05) * 0.94 : y, z / ((1 + 0.025 * t) * tz)]; } });
+}
+// the snout: not one oval but the shape a plush animal's muzzle really is. Two full whisker pads side by side (a soft cleft runs down
+// between them under the nose), a narrower bridge on top that carries the nose and reaches furthest forward, and a small chin tucked in
+// under them. f is the same field the sculpt makes from these (used to seat the nose and the drawn mouth on the real surface).
+function spondoSnout(K) {
+  const { P, smin } = RPC.sculpt; const cy = K.SC[1], cz = K.SC[2];
+  const prims = [
+    { p: P.ell([0.0172, cy - 0.0045, cz + 0.003], [0.0305, 0.027, 0.033]), k: 0.011 },
+    { p: P.ell([-0.0172, cy - 0.0045, cz + 0.003], [0.0305, 0.027, 0.033]), k: 0.011 },
+    { p: P.ell([0, cy + 0.0105, cz + 0.0075], [0.0232, 0.0205, 0.0352], [9, 0, 0]), k: 0.016 },
+    { p: P.ell([0, cy - 0.0235, cz - 0.003], [0.0215, 0.0135, 0.0268]), k: 0.012 },
+  ];
+  const f = (x, y, z) => { let d = Infinity; for (const q of prims) d = smin(d, q.p.f(x, y, z), q.k); return d; };
+  return { prims, f };
+}
+function surfZ(prim, x, y, z0 = 0, z1 = 0.2) { let lo = z0, hi = z1; for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (prim.f(x, y, m) < 0) lo = m; else hi = m; } return lo; } // front surface depth along +z
+function spondoSculpt(ch, K) {
+  const { P, frameM } = RPC.sculpt; const { HC, HR, SC, SR, CHK, EYE, EA, EB, ETILT, SH, ELB, WR, PAW, HIP, KNEE, ANK, FOOT, EAR0, EARM, EART, TAIL } = K;
+  const BROWN = '#93402a', WHITE = '#e7e4df', PINK = '#e9a596';
+  const L = (p, s) => [p[0] * s, p[1], p[2]];
+  const parts = [], paint = [], seams = [], carve = [];
+  // ---- torso: one tall stuffed pillow from the seat to the shoulders, with no waist: squarish from the front with soft round corners and
+  // straight sides (as wide at the hips as at the chest), puffed out front and back in the middle and thinning toward its seamed side
+  // edges, like a cushion stood on end. Toward the top it thins, so the bow tie sits out in front of it and shows
+  parts.push({ id: 'torso', bones: ['Hips', 'Torso_Lower', 'Torso_Upper', 'Neck', 'Shoulder.L', 'Shoulder.R'], color: BROWN, k: 0.03, seam: true, prims: [
+    // (its top corners slope away from the neck toward the arms: shoulders, not the corners of a box)
+    P.sell([0, 0.3, -0.002], [0.079, 0.13, 0.072], [5, 2.6], null, { warp: (x, y, z) => { const u = Math.min(1, Math.max(0, (y - 0.062) / 0.068)), t = Math.min(1, Math.max(0, (-0.065 - y) / 0.045)), v = t * t * (3 - 2 * t); return [x / ((1 - 0.24 * u * u) * (1 + 0.08 * v)), y, z]; } }), // (and below his paws it widens a little into the hips, so the legs carry on from it)
+    // a round of stuffing right at each shoulder joint, in the body itself (the arm's own top is a round of the same size about the same point):
+    // a ball turned about its own middle does not change, so however the arm swings there is a full round shoulder there, never a dip
+    ...[1, -1].map((s) => ({ p: P.ell([s * (SH[0] - 0.005), SH[1] - 0.001, SH[2]], [0.0285, 0.028, 0.0295]), k: 0.03 })),
+  ] });
+  // ---- head: squared-off plush head (sheet: flat-ish crown, near-vertical sides, widest through the cheeks), a fur tuft on the crown, flame cheek tufts
+  const HEAD = spondoHead(K); const head = [HEAD];
+  // crown tuft: three short round flames with rounded ends, sticking out forward (a little above level) from the top front of the head;
+  // they start close together and fan out a little away from each other (the side ones turned 24° out), so each one still stands on its own
+  const dirYZ = (deg, len = 1) => [0, Math.cos(deg * D2R) * len, Math.sin(deg * D2R) * len], FWD = 85, FAN = 24;
+  const CR = v3.add([0, 0.585, 0.045], dirYZ(FWD, -0.015)); // rooted 1.5 cm inside, behind where the flames come out of the head
+  for (const [sd, ln, w0] of [[-1, 0.0388, 0.0098], [0, 0.0414, 0.0106], [1, 0.0388, 0.0098]]) { // (15% smaller than the cheek flames' size)
+    const a = sd * FAN * D2R, d0 = dirYZ(FWD), dir = [Math.sin(a) * d0[2], d0[1], Math.cos(a) * d0[2]], up = v3.norm(v3.cross(dir, [Math.cos(a), 0, -Math.sin(a)]));
+    const base = v3.add(CR, [sd * 0.011, 0, 0]), mid = v3.add(base, v3.mul(dir, ln * 0.5)), tip = v3.add(base, v3.mul(dir, ln));
+    head.push({ p: P.chain([base, mid, tip], [w0 * 1.02, w0 * 0.91, w0 * 0.8], [w0 * 0.98, w0 * 0.88, w0 * 0.78], up, 0.007, { endScale: 0.55 }), k: 0.016 }); // round, with rounded ends
+  }
+  // cheek fur: three flat flame tufts a side, out past the cheeks and sweeping back (sheet). They grow out of a soft ruff of fur on the
+  // side of the head, so each tuft swells smoothly out of the cheek instead of sticking on
+  for (const s of [1, -1]) head.push({ p: P.ell([s * 0.092, 0.474, -0.009], [0.017, 0.036, 0.024], [0, s * -12, s * 6]), k: 0.024 });
+  for (const s of [1, -1]) for (const [y, dy, ln, w0] of [[0.496, 0.012, 0.03, 0.0115], [0.475, 0.001, 0.039, 0.0125], [0.451, -0.012, 0.027, 0.011]]) {
+    const base = [s * 0.086, y, -0.007], mid = [s * (0.093 + ln * 0.5), y + dy * 0.4, -0.011], tip = [s * (0.092 + ln), y + dy, -0.015]; // cheek tufts follow the narrower head
+    head.push({ p: P.chain([base, mid, tip], [w0 * 1.6, w0 * 0.98, w0 * 0.64], [w0 * 1.1, w0 * 0.72, w0 * 0.46], [0, 0, 1], 0.007, { endScale: 0.95 }), k: 0.016 });
+  }
+  for (const s of [1, -1]) head.push({ p: P.rc([s * 0.042, 0.582, 0.012], [s * 0.036, 0.6, 0.026], 0.008, 0.0016), k: 0.005 }); // tufts at the ear roots
+  parts.push({ id: 'head', parent: 'torso', join: { c: [0, 0.432, 0.004], r: 0.1, k: 0.03 } /* (the blend reaches all the way round the neck, to the front under the chin too: where it stopped short the head met the chest in a hard crease with a sawtooth edge) */, bones: ['Head', 'Neck'], color: BROWN, k: 0.012, prims: head });
+  // oval eye sockets (tilted in at the top, like the bead eyes that sit in them)
+  for (const s of [1, -1]) carve.push({ p: P.ell([s * EYE[0], EYE[1], EYE[2] - 0.0015], [EA * 0.93, EB * 0.93, EB * 0.93], [0, 0, s * ETILT]), k: 0.004, parts: ['head'] });
+  // ---- white cheeks: sewn-in white panels flush with the head (like the knee patches), round as seen from the front
+  for (const s of [1, -1]) { const c = [s * CHK[0], CHK[1], surfZ(HEAD, s * CHK[0], CHK[1])];
+    paint.push({ parts: ['head'], color: WHITE, soft: 0.001, seam: true, sd: (x, y, z) => (Math.hypot((x - c[0]) / 0.034, (y - c[1]) / CHK[2], (z - c[2]) / 0.032) - 1) * CHK[2] }); }
+  // ---- muzzle: separate white panel sewn on, snout-shaped (see spondoSnout)
+  parts.push({ id: 'muzzle', parent: 'head', join: { c: [0, SC[1] - 0.012, SC[2] - 0.012], r: 0.095, k: 0.012 }, /* (the blend reaches right round the snout's edge: where it faded out under the chin the snout met the head at a grazing angle in a hard, sawtoothed crease) */ bones: ['Snout', 'Head'], color: BROWN, k: 0.01,
+    prims: spondoSnout(K).prims });
+  // its white is painted on by the snout's own shape (white wherever the skin is the snout's surface, with the sewn seam along that edge),
+  // not by which part each vertex happens to be nearest: under the chin the snout meets the head at a shallow angle, and there the
+  // nearest-part edge zig-zagged from vertex to vertex and let white run down into the brown chin. This edge is one smooth closed line.
+  { const SN = spondoSnout(K); paint.push({ parts: ['muzzle', 'head'], color: WHITE, soft: 0.0007, seam: true, sd: (x, y, z) => (Math.abs(x) > 0.07 || y > SC[1] + 0.05 || y < SC[1] - 0.06 || z < SC[2] - 0.05 ? null : SN.f(x, y, z) - 0.0009) }); }
+  // ---- ears: long leaf-shaped plush ears, cupped in front (pink), white tips
+  for (const s of [1, -1]) {
+    const sfx = s > 0 ? 'L' : 'R'; const e0 = L(EAR0, s), em = L(EARM, s), et = L(EART, s);
+    const pts = [], rx = [], rz = []; const N = 9;
+    for (let i = 0; i < N; i++) { const t = i / (N - 1); const a = t < 0.5 ? e0.map((v, k) => v + (em[k] - v) * t * 2) : em.map((v, k) => v + (et[k] - v) * (t - 0.5) * 2); pts.push(a); rx.push([0.024, 0.031, 0.036, 0.038, 0.039, 0.0385, 0.037, 0.034, 0.028][i]); rz.push([0.012, 0.0105, 0.0098, 0.0095, 0.0093, 0.009, 0.0088, 0.0084, 0.0078][i]); }
+    const up = [s * 0.18, 0.05, 1]; const ear = P.chain(pts, rx, rz, up, 0.012, { overlap: 1.0 });
+    const A = [et[0] - e0[0], et[1] - e0[1], et[2] - e0[2]], LEN = Math.hypot(...A); const M = frameM(A, up); // local frame: x across, y along, z out the front
+    const loc = (x, y, z) => { const dx = x - e0[0], dy = y - e0[1], dz = z - e0[2]; return [M[0] * dx + M[3] * dy + M[6] * dz, M[1] * dx + M[4] * dy + M[7] * dz, M[2] * dx + M[5] * dy + M[8] * dz]; };
+    const wAt = (t) => { const i = Math.min(N - 2, Math.max(0, Math.floor(t * (N - 1)))); const u = t * (N - 1) - i; return rx[i] + (rx[i + 1] - rx[i]) * u; };
+    const cupC = em.map((v, k) => v + M[k * 3 + 2] * 0.0105 - M[k * 3 + 1] * 0.006);
+    const cup = P.ell(cupC, [0.023, 0.052, 0.0062], M);
+    parts.push({ id: 'ear' + sfx, parent: 'head', join: { c: e0, r: 0.042, k: 0.016 }, bones: ['Ear.' + sfx, 'Ear_Tip.' + sfx], color: BROWN, seam: true, k: 0.008, prims: [ear, { p: cup, op: 'sub', k: 0.005 }],
+      uv: { a: e0, dir: A, up, circ: 0.13 } });
+    paint.push({ parts: ['ear' + sfx], color: PINK, soft: 0.0012, seam: false, sd: (x, y, z) => { const [lx, ly, lz] = loc(x, y, z); if (lz < 0.001) return null; const t = ly / LEN; const w = wAt(Math.min(1, Math.max(0, t))) * 0.62; const cy = 0.45, hy = 0.34; return (Math.hypot(lx / Math.max(0.004, w), (t - cy) / hy) - 1) * Math.min(w, hy * LEN); } });
+    paint.push({ parts: ['ear' + sfx], color: WHITE, soft: 0.001, seam: true, sd: (x, y, z) => { const [lx, ly] = loc(x, y, z); return 0.79 * LEN - ly + 0.014 * (lx / 0.035) ** 2; } });
+    seams.push({ parts: ['ear' + sfx], w: 0.0018, sd: (x, y, z) => { const [, ly, lz] = loc(x, y, z); return ly < 0.02 ? null : lz + 0.0005; } });
+  }
+  // ---- arms: thick plush tubes that hang right against the body (no gap, no ball shoulder: the top of the arm IS the shoulder),
+  // mitten paws with two stitched finger lines
+  const tpose = [];
+  for (const s of [1, -1]) {
+    const sfx = s > 0 ? 'L' : 'R'; const sh = L(SH, s), el = L(ELB, s), wr = L(WR, s), pw = L(PAW, s);
+    parts.push({ id: 'arm' + sfx, parent: 'torso', join: { c: [s * (SH[0] - 0.01), SH[1] - 0.004, SH[2]], r: 0.046, k: 0.02 } /* (a wide, soft blend: the top of the shoulder runs smoothly into the arm) */, bones: ['Shoulder.' + sfx, 'UpperArm.' + sfx, 'LowerArm.' + sfx, 'Hand.' + sfx], color: BROWN, seam: true, k: 0.012, prims: [
+      P.tube([sh, el, wr], [0.0272, 0.0258, 0.0245]),
+      { p: P.ell(pw, [0.0298, 0.034, 0.029], [10, 0, s * -6]), k: 0.014 },
+    ] });
+    for (const dx of [-0.0085, 0.0085]) carve.push({ p: P.rc([pw[0] + dx * s * 0.6 + dx, pw[1] - 0.006, pw[2] + 0.02], [pw[0] + dx * 1.15, pw[1] - 0.032, pw[2] + 0.008], 0.0013, 0.0017), k: 0.0016, parts: ['arm' + sfx] });
+    tpose.push({ parts: ['arm' + sfx], bones: ['UpperArm.' + sfx, 'LowerArm.' + sfx, 'Hand.' + sfx], pivot: sh, axis: [0, 0, 1], angle: s * 70, relax: [0.05, 0.13] }); // (relax: the skin of the armpit and the side under it is smoothed out once the arm hangs: no pinch, no fold)
+  }
+  // ---- legs: chunky stuffed legs straight under the hips, big slipper feet with three toe lines
+  for (const s of [1, -1]) {
+    const sfx = s > 0 ? 'L' : 'R'; const kn = L(KNEE, s), an = L(ANK, s), ft = L(FOOT, s);
+    parts.push({ id: 'leg' + sfx, parent: 'torso', join: { c: [s * 0.044, 0.2, 0], r: 0.064, k: 0.03 } /* (the body runs smoothly into the legs: no ledge at the hips) */, bones: ['UpperLeg.' + sfx, 'LowerLeg.' + sfx], color: BROWN, seam: true, k: 0.02, prims: [
+      P.tube([[s * 0.038, 0.208, 0], [s * 0.051, 0.16, 0.004], kn, an], [0.034, 0.0395, 0.041, 0.036]), // (the leg widens steadily from the hip to the knee: no bulge at the thigh, so no waist above it)
+    ] });
+    parts.push({ id: 'foot' + sfx, parent: 'leg' + sfx, join: { c: [an[0], an[1] - 0.008, an[2] + 0.004], r: 0.05, k: 0.034 }, bones: ['Foot.' + sfx, 'LowerLeg.' + sfx], color: BROWN, seam: false, k: 0.022, prims: [
+      P.tube([[an[0], an[1] + 0.012, an[2] - 0.002], [ft[0] - s * 0.002, ft[1] + 0.006, ft[2] - 0.022]], [0.033, 0.036]), // the heel: the back of the ankle runs down into the foot in one curve (no ledge where the foot stuck out behind the leg)
+      P.ell(ft, [0.054, 0.034, 0.07], [0, s * -4, 0], { warp: (x, y, z) => [x / (1 + 0.12 * Math.max(0, Math.min(1, z / 0.069))), y < -0.017 ? -0.017 + (y + 0.017) * 2.6 : y, z] }),
+    ] });
+    for (const dx of [-0.017, 0, 0.017]) carve.push({ p: P.rc([ft[0] + dx * 0.9, ft[1] + 0.009, ft[2] + 0.052], [ft[0] + dx * 1.15, ft[1] - 0.012, ft[2] + 0.07], 0.0015, 0.002), k: 0.0018, parts: ['foot' + sfx] });
+    const sp = [s * 0.1, 0.132, 0.033]; paint.push({ parts: ['leg' + sfx], color: WHITE, soft: 0.001, seam: true, sd: (x, y, z) => (Math.hypot((x - sp[0]) / 0.019, (y - sp[1]) / 0.027, (z - sp[2]) / 0.022) - 1) * 0.019 });
+    tpose.push({ parts: ['leg' + sfx], bones: ['UpperLeg.' + sfx, 'LowerLeg.' + sfx, 'Foot.' + sfx], pivot: L(HIP, s), axis: [0, 0, 1], angle: s * 12 });
+  }
+  // ---- tail: big red-panda tail, white rings + white tip
+  const tailPts = TAIL; let tLen = 0; const segL = []; for (let i = 1; i < tailPts.length; i++) { const l = Math.hypot(...tailPts[i].map((v, k) => v - tailPts[i - 1][k])); segL.push(l); tLen += l; }
+  parts.push({ id: 'tail', parent: 'torso', join: { c: TAIL[0], r: 0.045, k: 0.016 }, bones: ['Tail_1', 'Tail_2', 'Tail_3'], color: BROWN, seam: true, k: 0.01, prims: [
+    P.tube(tailPts, [0.022, 0.031, 0.036, 0.034, 0.026]), P.ell(tailPts[4], [0.026, 0.024, 0.024]) ] });
+  const tailT = (x, y, z) => { let best = Infinity, bt = 0, acc = 0; for (let i = 1; i < tailPts.length; i++) { const a = tailPts[i - 1], b = tailPts[i]; const ab = b.map((v, k) => v - a[k]); const l2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2; const u = Math.max(0, Math.min(1, ((x - a[0]) * ab[0] + (y - a[1]) * ab[1] + (z - a[2]) * ab[2]) / l2)); const d = Math.hypot(x - a[0] - ab[0] * u, y - a[1] - ab[1] * u, z - a[2] - ab[2] * u); if (d < best) { best = d; bt = (acc + segL[i - 1] * u) / tLen; } acc += segL[i - 1]; } const tip = Math.hypot(x - tailPts[4][0], y - tailPts[4][1], z - tailPts[4][2]); return best > tip ? 1 + (tip > 0 ? 0.001 : 0) : bt; };
+  for (const [a, b] of [[0.34, 0.47], [0.6, 0.73], [0.86, 2]]) paint.push({ parts: ['tail'], color: WHITE, soft: 0.0012, seam: true, sd: (x, y, z) => { const t = tailT(x, y, z); return Math.max(a - t, t - b) * tLen; } });
+  // ---- white belly panel (sewn in), from under the bow to the crotch
+  const belly = (x, y) => { const cx = 0, top = 0.397, bot = 0.2, hw = (yy) => 0.049 - 0.005 * Math.max(0, Math.min(1, (0.25 - yy) / 0.05)); const r = 0.022; if (y < bot + r) { const w = hw(bot + r) - r; const dx = Math.max(0, Math.abs(x - cx) - w); return Math.hypot(dx, Math.max(0, bot + r - y)) - r; } return Math.max(Math.abs(x - cx) - hw(y), y - top); };
+  paint.push({ parts: ['torso'], color: WHITE, soft: 0.0012, seam: true, sd: (x, y, z, nx, ny, nz) => (nz < 0.08 || z < 0.0 ? null : belly(x, y)) });
+  // ---- plush construction seams: centre seam over the crown, side seams of the body, outer seams of arms + legs
+  seams.push({ parts: ['head'], w: 0.0016, sd: (x, y, z) => (y > HC[1] + 0.035 && z < 0.07 && !(y > 0.579 && z > 0.008) ? x : null) }); // the crown seam stops at the root of the crown tuft
+  seams.push({ parts: ['torso'], w: 0.0018, sd: (x, y, z) => (Math.abs(x) > 0.035 ? z + 0.004 : null) });
+  for (const s of [1, -1]) { seams.push({ parts: ['arm' + (s > 0 ? 'L' : 'R')], w: 0.0016, sd: (x, y, z) => (s * x > SH[0] + 0.012 ? z - 0.004 : null) }); seams.push({ parts: ['leg' + (s > 0 ? 'L' : 'R')], w: 0.0018, sd: (x, y, z) => (s * x > 0.064 ? z - 0.002 : null) }); }
+  return { name: 'Spondo_Body_Plush', surface: 'plush', voxel: 0.0019, targetTris: 84000, tile: 0.022, mat: { sheen: 0.75, sheenColor: '#f0c2ad', sheenRough: 0.45 }, base: BROWN, parts, paint, seams, carve, tpose,
+    rigid: [{ part: 'head', bone: 'Head' }, { part: 'muzzle', bone: 'Snout', r0: 0, r1: 0.0001 }], groove: 0.0011, lumps: 0.00035, seamWidth: 0.0022, grime: 1,
+    keep: (pc) => true, conform: (pc) => (pc.tag === 'drape' || pc.mat === 'mouth' ? { mode: 'drape', off: pc.mat === 'mouth' ? 0.0005 : 0.0004 } : pc.tag === 'felt' ? { mode: 'drape', off: 0.0007, keepRelief: 0.6 } : null) };
+}
+function buildSpondo() {
+  const R = new Rig('spondo', 'Spondo');
+  R.extra.color = '#c4553a'; R.extra.subtitle = 'Stuffed toy · plush red-panda bunny';
+  R.mat('brown', { name: 'Spondo_Plush_Brown', color: '#97402a', rough: 1, sheen: 0.7, sheenColor: '#d98a66', sheenRough: 0.55 })
+   .mat('white', { name: 'Spondo_Plush_White', color: '#e9e6e2', rough: 1, sheen: 0.6, sheenColor: '#ffffff', sheenRough: 0.5 })
+   .mat('pink', { name: 'Spondo_Plush_InnerEar', color: '#eaa596', rough: 1, sheen: 0.5, sheenColor: '#ffd2c6', sheenRough: 0.5 })
+   .mat('red', { name: 'Spondo_BowTie', color: '#c40a0a', rough: 0.55, sheen: 0.6, sheenColor: '#ff6a5a', sheenRough: 0.35 })
+   .mat('redDark', { name: 'Spondo_BowTie_Lines', color: '#5e0303', rough: 0.7 })
+   .mat('bead', { name: 'Spondo_Eyes_Nose_Bead', color: '#0a0a0c', rough: 0.14, clearcoat: 1, ccRough: 0.05 })
+   .mat('shine', { name: 'Spondo_Eye_Shine', color: '#ffffff', rough: 0.25, emissive: '#ffffff', emissiveI: 0.35 })
+   .mat('stitch', { name: 'Spondo_Stitches', color: '#2a120c', rough: 1 });
+  // ===== measured from the model sheet (front view, 0.47 mm per sheet pixel, feet at y = 0, ear tips at 0.70 m)
+  const HC = [0, 0.513, 0.0], HR = [0.104, 0.085, 0.082];           // head block (squared-off; see spondoHead)
+  const HEADP = spondoHead({ HC, HR }); const onHead = (x, y, lift = 0) => [x, y, surfZ(HEADP, x, y) + lift];
+  const hN = (p) => { const e = 1e-4, f = (q) => HEADP.f(q[0], q[1], q[2]); const g = [0, 1, 2].map((k) => { const a = p.slice(), b = p.slice(); a[k] += e; b[k] -= e; return f(a) - f(b); }); return v3.norm(g); };
+  const SC = [0, 0.4675, 0.058], SR = [0.048, 0.037, 0.036];      // muzzle (white): centre, and the oval the mouth drawings are laid out on
+  const SNP = spondoSnout({ SC });                                   // its real shape (a snout, not that oval)
+  const CHK = [0.078, 0.468, 0.027];                             // white cheek panels: centre x, y, radius (painted, flush)
+  const EA = 0.0135, EB = 0.0166, ETILT = 16;                       // oval bead eyes: half-width, half-height, tilted in at the top
+  const EYE = [0.0405, 0.5115, 0]; EYE[2] = surfZ(HEADP, EYE[0], EYE[1]) - 0.0068;
+  const BROW = [0.027, 0.548];                                       // white brow spots
+  const SH = [0.0845, 0.4, 0.006], ELB = [0.1015, 0.318, 0.022], WR = [0.1007, 0.27, 0.031], PAW = [0.1017, 0.252, 0.039]; // arm: hangs right against the pillow body
+  const HIP = [0.052, 0.198, 0], KNEE = [0.068, 0.11, 0.008], ANK = [0.072, 0.06, 0.003], FOOT = [0.076, 0.033, 0.027]; // leg: straight under the hips
+  const EAR0 = [0.052, 0.566, -0.012], EARM = [0.099, 0.63, -0.016], EART = [0.14, 0.696, -0.018]; // ear base / middle / tip
+  const TAIL = [[0, 0.205, -0.05], [0, 0.212, -0.098], [0, 0.232, -0.146], [0, 0.268, -0.186], [0, 0.31, -0.205]];
+  // ---- bones (char space: y up, facing +z, character left = +x)
+  R.bone('Root', null, [0, 0, 0], { dir: [0, 0, -1], len: 0.16, region: 'Body', ctrl: 0.22, shape: 'root' })
+   .bone('Hips', 'Root', [0, 0.205, 0], { to: 'Torso_Lower', ctrl: 0.13, shape: 'cog' })
+   .bone('Torso_Lower', 'Hips', [0, 0.255, 0], { to: 'Torso_Upper', ctrl: 0.1 })
+   .bone('Torso_Upper', 'Torso_Lower', [0, 0.33, 0], { to: 'Neck', ctrl: 0.1 })
+   .bone('Neck', 'Torso_Upper', [0, 0.404, 0], { to: 'Head', ctrl: 0.065 })
+   .bone('Head', 'Neck', [0, 0.434, 0], { dir: [0, 1, 0], len: 0.17, ctrl: 0.12 })
+   .bone('Snout', 'Head', [0, SC[1], 0.03], { dir: [0, 0, 1], len: 0.06, region: 'Face', ctrl: 0.03, shape: 'sphere' });
+  R.pair('Eye', 'Head', EYE, { dir: [0, 0, 1], len: 0.03, region: 'Face', ctrl: 0.02, shape: 'sphere' })
+   .pair('Lid', 'Head', EYE, { dir: [0, 0.3, 1], len: 0.025, xaxis: [Math.cos(d(ETILT)), Math.sin(d(ETILT)), 0], region: 'Face', ctrl: 0.018, shape: 'sphere' })
+   .pair('Brow', 'Head', [BROW[0], BROW[1], 0.07], { dir: [0, 1, 0.3], len: 0.022, region: 'Face', ctrl: 0.016, shape: 'sphere' })
+   .pair('Ear', 'Head', EAR0, { to: 'Ear_Tip', region: 'Ears', ctrl: 0.035 })
+   .pair('Ear_Tip', 'Ear*', EARM, { dir: v3.sub(EART, EARM), len: v3.len(v3.sub(EART, EARM)), region: 'Ears', ctrl: 0.032 })
+   .bone('Tail_1', 'Hips', TAIL[0], { to: 'Tail_2', region: 'Tail', ctrl: 0.05 })
+   .bone('Tail_2', 'Tail_1', TAIL[1], { to: 'Tail_3', region: 'Tail', ctrl: 0.055 })
+   .bone('Tail_3', 'Tail_2', TAIL[2], { dir: v3.sub(TAIL[4], TAIL[2]), len: v3.len(v3.sub(TAIL[4], TAIL[2])), region: 'Tail', ctrl: 0.05 })
+   .pair('Shoulder', 'Torso_Upper', [0.032, 0.41, 0], { to: 'UpperArm', region: 'Arms', ctrl: 0.03 })
+   .pair('UpperArm', 'Shoulder*', SH, { to: 'LowerArm', region: 'Arms', ctrl: 0.045 })
+   .pair('LowerArm', 'UpperArm*', ELB, { to: 'Hand', region: 'Arms', ctrl: 0.042 })
+   .pair('Hand', 'LowerArm*', WR, { dir: [0.02, -1, 0.12], len: 0.05, region: 'Arms', ctrl: 0.045 })
+   .pair('UpperLeg', 'Hips', HIP, { to: 'LowerLeg', region: 'Legs', ctrl: 0.055 })
+   .pair('LowerLeg', 'UpperLeg*', KNEE, { to: 'Foot', region: 'Legs', ctrl: 0.05 })
+   .pair('Foot', 'LowerLeg*', ANK, { dir: [0, -0.3, 1], len: 0.085, region: 'Legs', ctrl: 0.045 });
+  R.ik.push(
+    { name: 'Leg.L', upper: 'UpperLeg.L', lower: 'LowerLeg.L', end: 'Foot.L', pole: [0.07, 0.11, 0.3], kind: 'leg' },
+    { name: 'Leg.R', upper: 'UpperLeg.R', lower: 'LowerLeg.R', end: 'Foot.R', pole: [-0.07, 0.11, 0.3], kind: 'leg' },
+    { name: 'Arm.L', upper: 'UpperArm.L', lower: 'LowerArm.L', end: 'Hand.L', pole: [0.12, 0.3, -0.3], kind: 'arm' },
+    { name: 'Arm.R', upper: 'UpperArm.R', lower: 'LowerArm.R', end: 'Hand.R', pole: [-0.12, 0.3, -0.3], kind: 'arm' });
+
+  // ---- the body itself is SCULPTED (sculpt.js, spec below): one sewn plush skin with automatic weights.
+  // What stays separate here is what is separate on the real toy: bead eyes + nose, lids, brow felt, bow tie, tag, stitching.
+  // nose: black bead, rounded triangle, on top of the muzzle
+  { const NY = SC[1] + 0.0165; const NC = [0, NY, surfZ(SNP, 0, NY, SC[2], SC[2] + 0.09) - 0.0035];
+    R.add('bead', ellGrid(NC, [0.0225, 0.0118, 0.011], { nu: 24, nv: 14, deform: (l) => { const k = 0.32 + 0.68 * ((l[1] / 0.0118) + 1) / 2; l[0] *= k; l[2] *= 0.85 + 0.15 * k; return l; } }), W.rigid('Snout')); }
+  for (const [sfx, s] of SIDES) {
+    // oval bead eyes, tilted in at the top (sheet), sitting in sockets; brown lid shells hug the same oval to blink
+    const ec = [s * EYE[0], EYE[1], EYE[2]]; const tq = quat.euler(0, 0, d(s * ETILT));
+    R.add('bead', ellGrid(ec, [EA, EB, EB], { nu: 24, nv: 18, q: tq }), W.rigid('Eye' + sfx));
+    { const c = Math.cos(d(-s * ETILT)), sn = Math.sin(d(-s * ETILT)); const wx = -0.36 * EA, wy = 0.42 * EB; const lx = wx * c - wy * sn, ly = wx * sn + wy * c;
+      const lz = EB * Math.sqrt(Math.max(0.05, 1 - (lx / EA) ** 2 - (ly / EB) ** 2)); const ln = v3.norm([lx / (EA * EA), ly / (EB * EB), lz / (EB * EB)]);
+      const pw = quat.rot(tq, [lx, ly, lz]), nw = quat.rot(tq, ln);
+      R.add('shine', ellGrid(v3.add(ec, v3.add(pw, v3.mul(nw, 0.0002))), [0.0036, 0.0036, 0.0005], { nu: 10, nv: 6, q: quat.fromUnit([0, 0, 1], nw) }), W.rigid('Eye' + sfx)); }
+    R.add('brown', ellGrid(ec, [EA * 1.13, EB * 1.13, EB * 1.13], { nu: 22, nv: 16, t0: -PI / 2, t1: PI / 2, q: quat.mul(tq, quat.euler(d(-165), 0, 0)) }), W.rigid('Lid' + sfx));
+    const bp = onHead(s * BROW[0], BROW[1], 0.0006), nrm = hN(bp);
+    const bq = quat.mul(quat.fromUnit([0, 0, 1], nrm), quat.euler(0, 0, d(-s * 16)));
+    R.add('white', ellGrid(bp, [0.0085, 0.0128, 0.0026], { nu: 16, nv: 10, q: bq }), W.rigid('Brow' + sfx), 'felt');
+  }
+  // the manufacturer's tag sewn into his left hip seam (Episode 1: "Spondo" in a bubbly retro corporate font)
+  const tagCv = (() => { const cv = document.createElement('canvas'); cv.width = 320; cv.height = 192; const g = cv.getContext('2d');
+    g.fillStyle = '#f1ead6'; g.fillRect(0, 0, 320, 192); g.strokeStyle = '#c9b98f'; g.lineWidth = 6; g.setLineDash([10, 7]); g.strokeRect(10, 10, 300, 172); g.setLineDash([]);
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = 'bold 74px "Arial Rounded MT Bold", "Comic Sans MS", "Chalkboard SE", "Trebuchet MS", sans-serif'; g.lineJoin = 'round';
+    g.lineWidth = 16; g.strokeStyle = '#0f3c8c'; g.strokeText('Spondo', 160, 84); g.fillStyle = '#ff5a3a'; g.fillText('Spondo', 160, 84); g.lineWidth = 3; g.strokeStyle = '#ffd34a'; g.strokeText('Spondo', 160, 84);
+    g.font = 'bold 20px "Trebuchet MS", sans-serif'; g.fillStyle = '#0f3c8c'; g.fillText('RADIANT TOY CO. · 1985', 160, 144); g.font = '14px "Trebuchet MS", sans-serif'; g.fillStyle = '#5a5240'; g.fillText('SURFACE WASHABLE · MADE IN JAPAN', 160, 166);
+    const im = g.getImageData(0, 0, 320, 192), dd = im.data; for (let i = 0; i < dd.length; i += 4) { const x = (i / 4) % 320, y = Math.floor(i / 4 / 320); const k = 0.82 + 0.18 * Math.sin(x * 0.05 + y * 0.03) * Math.cos(y * 0.07) - (Math.random() < 0.02 ? 0.12 : 0); dd[i] *= k; dd[i + 1] *= k * 0.98; dd[i + 2] *= k * 0.9; } g.putImageData(im, 0, 0); return cv; })();
+  R.mat('tag', { name: 'Spondo_Hip_Tag', color: '#ffffff', rough: 0.85, map: tagCv }); /* (a closed shell: one-sided, so its far face never shows through the near one as dark specks) */
+  // It hangs by its top edge from the seam on the outer front of his left thigh (two short bones, Tag_1 hinged at the seam, Tag_2 the lower
+  // half), lying flat against the plush. The bones are in the 'Tag' region: cloth physics (core6 Springs) lets it hang by gravity, swing as
+  // he moves and rest on his real skin. It is far too light to be a solid part of him, so for everything that treats him as a solid (his
+  // capsules: walking, clipping, the ground) the old tag's points still count where they always were, on his hip (capGhost).
+  { const sp = (v, e) => Math.sign(v) * Math.pow(Math.abs(v), e), fr = Math.fround;
+    const TR0 = [0.022, 0.014, 0.0015], old = ellGrid([0.093, 0.196, 0.036], TR0, { nu: 28, nv: 18, q: quat.mul(quat.euler(0, d(58), 0), quat.euler(0, 0, d(-32))), deform: (l) => [TR0[0] * sp(l[0] / TR0[0], 0.25), TR0[1] * sp(l[1] / TR0[1], 0.25), l[2] + 0.004 * Math.pow(Math.max(0, l[0] / TR0[0]), 2)] });
+    R.extra.capGhost = { Spondo_Hip_Tag: { bone: 'Hips', P: old.P.map((p) => [fr(p[0]), fr(p[1]), fr(p[2])]) } };
+    const TA = [0.0785, 0.186, 0.0232], TC = [0.0868, 0.1605, 0.0292], HT = v3.len(v3.sub(TC, TA)), dn = v3.norm(v3.sub(TC, TA)), up = v3.mul(dn, -1);   // seam point, bottom edge (both 1.5 mm off the plush)
+    const tx = v3.norm(v3.cross(up, [0.77, 0.32, 0.56])), nz = v3.cross(tx, up), TM = v3.add(TA, v3.mul(dn, HT / 2)), TR = [0.02, HT / 2, 0.0011];
+    R.bone('Tag_1', 'UpperLeg.L', TA, { dir: dn, len: HT / 2, xaxis: tx, region: 'Tag', ctrl: 0.012 }).bone('Tag_2', 'Tag_1', TM, { dir: dn, len: HT / 2, xaxis: tx, region: 'Tag', ctrl: 0.012 });
+    const q1 = quat.fromUnit([0, 0, 1], nz), q2 = quat.fromUnit(v3.norm(quat.rot(q1, [1, 0, 0])), tx), tq = quat.mul(q2, q1);
+    R.add('tag', ellGrid(TM, TR, { nu: 28, nv: 18, q: tq,
+      deform: (l) => [TR[0] * sp(l[0] / TR[0], 0.25), TR[1] * sp(l[1] / TR[1], 0.25), l[2]],
+      uv: (u, v, th, ph) => [0.5 + 0.5 * sp(Math.cos(ph) * Math.sin(th), 0.25) * (Math.cos(th) >= 0 ? 1 : -1), 0.5 - 0.5 * sp(Math.sin(ph), 0.25)] }), W.axis((p) => v3.dot(v3.sub(p, TA), dn) / HT, [[0.3, 'Tag_1'], [0.7, 'Tag_2']]), 'tag');
+    // his solid shape for walking, clipping and the ground (capsules, core6) is fixed at what it has been since v71, so smoothing his skin never changes how he moves
+    R.extra.capsFixed = [{"bone":1,"name":"Hips","region":"Body","a":[0.09340761898868326,-0.0138590219246435,0.03620229703846617],"b":[0.09340761898868326,-0.004153922535271637,0.03620229703846617],"r":0.022286870131613425},{"bone":3,"name":"Torso_Upper","region":"Body","a":[0.00008781144011094921,0.06842924475669859,0.04258886573729537],"b":[0.00008781144011094921,0.06842924475669859,0.04258886573729537],"r":0.05444057820616421},{"bone":4,"name":"Neck","region":"Body","a":[0.00004488652690532142,0.0146965078115463,0.0416549506619745],"b":[0.00004488652690532142,0.0146965078115463,0.0416549506619745],"r":0.05434642880417848},{"bone":5,"name":"Head","region":"Body","a":[0.00034200584178473154,0.07274959257924546,0.012395125552406166],"b":[0.00034200584178473154,0.08807276984369766,0.012395125552406166],"r":0.10604551415554662},{"bone":6,"name":"Snout","region":"Face","a":[-0.0003388253712388965,-0.00886519452825707,0.038697627633810044],"b":[-0.0003388253712388965,-0.00886519452825707,0.038697627633810044],"r":0.045117956338653224},{"bone":9,"name":"Lid.L","region":"Face","a":[-0.0007562079221439463,0.0018182455397516284,-0.006454094082801488],"b":[-0.0007562079221439463,0.0024769062689927734,-0.00425855831866425],"r":0.017362838497895557},{"bone":10,"name":"Lid.R","region":"Face","a":[0.0002573898303410635,0.0019035102570437168,-0.006646657669940069],"b":[0.0002573898303410635,0.0026704132378976286,-0.0040903144004268074],"r":0.017174165113830023},{"bone":11,"name":"Brow.L","region":"Face","a":[0.000043973379161049014,-0.0018593690821707698,-0.003036492471165192],"b":[0.000043973379161049014,0.0017513832069093738,-0.0019532667844411322],"r":0.009565555771044683},{"bone":12,"name":"Brow.R","region":"Face","a":[-0.00006369314359004619,-0.0019264101141396317,-0.0029875463335792274],"b":[-0.00006369314359004619,0.001869769534142085,-0.001848692439094718],"r":0.009524608628126109},{"bone":13,"name":"Ear.L","region":"Ears","a":[0.020379764311245212,0.02612364181961857,-0.0006105712651380199],"b":[0.03124143328344766,0.04091399956900066,-0.0015349686244743987],"r":0.03413605485854403},{"bone":14,"name":"Ear.R","region":"Ears","a":[-0.02045418370121286,0.026573350231854476,-0.0005525951510922666],"b":[-0.03070415131128667,0.04053075293493369,-0.0014249328200347175],"r":0.034790273739376605},{"bone":15,"name":"Ear_Tip.L","region":"Ears","a":[0.013451367741951867,0.023602154245396134,-0.00018203693224350115],"b":[0.03667826677985811,0.06099179659909881,-0.00131505639750722],"r":0.03420242972047035},{"bone":16,"name":"Ear_Tip.R","region":"Ears","a":[-0.013791122602060446,0.02321839702604045,-0.00007506617219654038],"b":[-0.03734589528693691,0.061135835982183084,-0.0012240794738978301],"r":0.03382162648091562},{"bone":17,"name":"Tail_1","region":"Tail","a":[0.00008923459122220142,-0.017188551384074435,-0.019865382658297542],"b":[0.00008923459122220142,-0.016737881130862164,-0.022955692966038763],"r":0.02387041129915849},{"bone":19,"name":"Tail_3","region":"Tail","a":[0.00014629363771958314,0.013447229514012476,-0.015665855022324177],"b":[0.00014629363771958314,0.07562860185389217,-0.06270048281787421],"r":0.0362305602669563},{"bone":20,"name":"Shoulder.L","region":"Arms","a":[0.027707445183660452,-0.005524119939792349,-0.00540740872428469],"b":[0.027707445183660452,-0.005524119939792349,-0.00540740872428469],"r":0.059581362191208576},{"bone":21,"name":"Shoulder.R","region":"Arms","a":[-0.025768323705651887,-0.006354152674275804,-0.006751928299012155],"b":[-0.025768323705651887,-0.006354152674275804,-0.006751928299012155],"r":0.06037894914999138},{"bone":22,"name":"UpperArm.L","region":"Arms","a":[0.012237091622325488,-0.016371878102404702,0.002845859386495288],"b":[0.019768103273012122,-0.05269793429983444,0.009933870351847422],"r":0.02783087129101188},{"bone":23,"name":"UpperArm.R","region":"Arms","a":[-0.012048890476387172,-0.01562947381827845,0.002553098066479227],"b":[-0.019876490088127488,-0.053386130769025875,0.009920250642234821],"r":0.028061382201637324},{"bone":26,"name":"Hand.L","region":"Arms","a":[0.0007533856796028832,-0.02618139529990915,0.010726669444971401],"b":[0.0008080568583000991,-0.028914954234769585,0.011054696517154648],"r":0.029955121461127984},{"bone":27,"name":"Hand.R","region":"Arms","a":[-0.0003717923436522691,-0.02695988101368288,0.010832981732333616],"b":[-0.00040112484625928757,-0.028426506144033498,0.011008976747975692],"r":0.030362403157549442},{"bone":28,"name":"UpperLeg.L","region":"Legs","a":[0.017650015658816652,-0.035627413568658284,0.006956128122749733],"b":[0.017650015658816652,-0.035627413568658284,0.006956128122749733],"r":0.048608332869264914},{"bone":29,"name":"UpperLeg.R","region":"Legs","a":[-0.017470947436475724,-0.03585909110339702,0.007299604244892564],"b":[-0.017554783386824112,-0.036320188830313155,0.00734152222006676],"r":0.04846872183141009},{"bone":32,"name":"Foot.L","region":"Legs","a":[0.0040719305627699015,-0.01709197365094188,0.007932951471829163],"b":[0.0040719305627699015,-0.03073144808612223,0.053397866255763655],"r":0.051018805506835026},{"bone":33,"name":"Foot.R","region":"Legs","a":[-0.0030606169776078856,-0.016675271953774183,0.006130388027161304],"b":[-0.0030606169776078856,-0.030809867241047006,0.053245705651404046],"r":0.05115458648075641}];
+    R.extra.springs = { Tag: { k: 0.04, d: 0.16, g: 4, cloth: 1, hw: 0.017 } }; }
+  // chest curl stitch ("3" on the sheet)
+  { const pts = [[0.012, 0.37], [0.024, 0.366], [0.016, 0.358], [0.026, 0.351], [0.016, 0.343], [0.024, 0.336]].map(([x, y]) => [x, y, 0.07]);
+    R.add('stitch', tubeGrid(pts, pts.map(() => 0.0012), { nu: 6, seg: 4, capStart: true, capEnd: true }), W.y([[0.3, 'Torso_Lower'], [0.36, 'Torso_Upper']]), 'drape'); }
+  // ---- bow tie: pinched satin wings with swirl stitching + knot
+  const bowW = W.y([[0.39, 'Torso_Upper'], [0.42, 'Neck']]); const BOW = [0, 0.413, 0.036];
+  for (const s of S2) {
+    const lobe = ellGrid([BOW[0] + s * 0.037, BOW[1], BOW[2] + 0.004], [0.039, 0.022, 0.0105], { nu: 26, nv: 16, q: quat.euler(0, d(-s * 14), d(-s * 4)),
+      deform: (l) => { const u = (s * l[0] / 0.039 + 1) / 2; l[1] *= 0.42 + 0.72 * u * (1.15 - 0.15 * u); l[2] *= 0.6 + 0.4 * u; l[2] += 0.004 * Math.sin(u * PI) - 0.003 * Math.abs(l[1]) / 0.022; return l; } });
+    R.add('red', lobe, bowW);
+    const sw = [[s * 0.015, 0.418], [s * 0.028, 0.424], [s * 0.04, 0.418], [s * 0.035, 0.408], [s * 0.022, 0.409], [s * 0.026, 0.416]].map(([x, y]) => [x, y, BOW[2] + 0.004 + 0.0115 * Math.sqrt(Math.max(0, 1 - ((x - s * 0.037) / 0.042) ** 2))]);
+    R.add('redDark', tubeGrid(sw, sw.map(() => 0.0013), { nu: 6, seg: 4, capStart: true, capEnd: true }), bowW);
+  }
+  R.add('red', ellGrid([0, BOW[1], BOW[2] + 0.009], [0.0115, 0.012, 0.0095], { nu: 18, nv: 12 }), bowW);
+  // ---- ear + tail patterns live in the sculpt paint; keep these materials for the Blender colour reference
+  R.extra.sculpt = (ch) => spondoSculpt(ch, { HC, HR, SC, SR, CHK, EYE, EA, EB, ETILT, SH, ELB, WR, PAW, HIP, KNEE, ANK, FOOT, EAR0, EARM, EART, TAIL, BOW });
+
+  // ---- drawn mouth atlas on the snout
+  const ink = '#1a0d0a', dark = '#4a0f12', tongue = '#d8667a', teeth = '#ffffff', LW = 0.0019;
+  const ph = (p) => p.stroke([[0, 0.0085], [0, -0.004]], LW, ink);
+  const mouth = (label, fn) => ({ label, draw: fn });
+  const openShape = (p, pts, opts = {}) => { p.fill(pts, dark); if (opts.tongue) { p.save(); p.clip(pts); p.fill(ell(0, opts.tongue[1], opts.tongue[0], opts.tongue[2]), tongue); p.restore(); } if (opts.teeth) { p.save(); p.clip(pts); p.fill(opts.teeth, teeth); p.restore(); } p.stroke(pts, LW, ink, true); };
+  const cells = [
+    mouth('Neutral (sheet)', (p) => { ph(p); for (const s of S2) p.stroke(bez([0, -0.004], [s * 0.004, -0.007], [s * 0.011, -0.011], [s * 0.017, -0.0135]), LW, ink); }),
+    mouth('Frown (painting)', (p) => { p.stroke([[0, 0.0085], [0, -0.006]], LW, ink); p.stroke(bez([-0.015, -0.017], [-0.009, -0.007], [0.009, -0.007], [0.015, -0.017]), LW, ink); }),
+    mouth('Cat smile ω', (p) => { ph(p); for (const s of S2) p.stroke(bez([0, -0.004], [s * 0.002, -0.013], [s * 0.012, -0.014], [s * 0.017, -0.006]), LW, ink); }),
+    mouth('Happy open', (p) => { ph(p); openShape(p, [...bez([-0.016, -0.005], [-0.012, -0.027], [0.012, -0.027], [0.016, -0.005]), [0, -0.004]], { tongue: [0.008, -0.019, 0.006] }); }),
+    mouth('Gasp', (p) => { ph(p); openShape(p, ell(0, -0.0145, 0.0055, 0.0075), {}); }),
+    mouth('Scream', (p) => { p.stroke([[0, 0.0085], [0, 0.0]], LW, ink); openShape(p, ell(0, -0.018, 0.0125, 0.017), { tongue: [0.009, -0.03, 0.007] }); }),
+    mouth('Gritted teeth', (p) => { ph(p); const pts = [[-0.017, -0.006], ...bez([-0.017, -0.006], [-0.014, -0.02], [0.014, -0.02], [0.017, -0.006]), [0, -0.004]]; openShape(p, pts, { teeth: [[-0.02, -0.002], [0.02, -0.002], [0.02, -0.02], [-0.02, -0.02]] }); for (const x of [-0.008, 0, 0.008]) p.stroke([[x, -0.005], [x, -0.017]], LW * 0.6, ink); p.stroke([[-0.016, -0.011], [0.016, -0.011]], LW * 0.6, ink); }),
+    mouth('Wobbly (scared)', (p) => { ph(p); p.stroke(spl([[-0.017, -0.012], [-0.011, -0.008], [-0.006, -0.012], [0, -0.008], [0.006, -0.012], [0.011, -0.008], [0.017, -0.012]], 8), LW, ink); }),
+    mouth('Groan', (p) => { ph(p); openShape(p, ell(0, -0.012, 0.0095, 0.0045), {}); }),
+    mouth('Talk A', (p) => { ph(p); openShape(p, [...bez([-0.012, -0.007], [-0.01, -0.023], [0.01, -0.023], [0.012, -0.007]), [0, -0.004]], { tongue: [0.007, -0.02, 0.005] }); }),
+    mouth('Talk E', (p) => { ph(p); openShape(p, [...bez([-0.016, -0.007], [-0.013, -0.016], [0.013, -0.016], [0.016, -0.007]), [0, -0.0045]], { teeth: [[-0.02, -0.003], [0.02, -0.003], [0.02, -0.0095], [-0.02, -0.0095]] }); }),
+    mouth('Talk O', (p) => { ph(p); openShape(p, ell(0, -0.0135, 0.007, 0.0085), { tongue: [0.005, -0.019, 0.004] }); }),
+  ];
+  for (let i = 0; i < 4; i++) cells.push(mouth('Custom ' + (i + 1), (p) => cells[0].draw(p)));
+  // talking shapes (phoneme chart) after the custom slots, so saved drawings keep their places
+  const VG = { x: 0, y: -0.0052, w: 0.0168, h: 0.022, lw: LW, ink, dark, tongue, teeth };
+  for (const vz of RPC.VISEMES) cells.push(mouth('Talk: ' + vz.label, (p) => { if (vz.key !== 'OO' && vz.key !== 'OH') ph(p); else p.stroke([[0, 0.0085], [0, -0.002]], LW, ink); RPC.drawViseme(p, vz.key, VG); }));
+  const mouthAtlas = new Atlas({ key: 'mouth', label: 'Mouth', c: SC, r: SR, t0: d(-64), t1: d(64), p0: d(-70), p1: d(26), cols: 4, rows: 7, cw: 384, ch: 224, pad: 6, cells, def: 0 });
+  mouthAtlas.drawAll();
+  R.mat('mouth', { name: 'Spondo_Mouth_Drawn', color: '#ffffff', rough: 1, sheen: 0.5, sheenColor: '#ffffff', sheenRough: 0.5, atlas: 'mouth', alphaTest: 0.3, poly: -2 });
+  { // the drawn mouth is laid out on the oval, then pressed onto the snout's own surface (each point along its ray from inside the snout)
+    const G = ellGrid(SC, SR, { nu: 36, nv: 28, t0: mouthAtlas.t0, t1: mouthAtlas.t1, p0: mouthAtlas.p0, p1: mouthAtlas.p1, uv: (u, v) => mouthAtlas.uvMap(u, v) });
+    const C0 = [0, SC[1] - 0.002, SC[2] - 0.014], E = 2e-4, gr = (q) => v3.norm([SNP.f(q[0] + E, q[1], q[2]) - SNP.f(q[0] - E, q[1], q[2]), SNP.f(q[0], q[1] + E, q[2]) - SNP.f(q[0], q[1] - E, q[2]), SNP.f(q[0], q[1], q[2] + E) - SNP.f(q[0], q[1], q[2] - E)]);
+    G.P = G.P.map((p) => { const dr = v3.norm(v3.sub(p, C0)); let t = 0.12; for (let i = 0; i < 90; i++) { const q = v3.add(C0, v3.mul(dr, t)), ds = SNP.f(q[0], q[1], q[2]); if (ds < 1.5e-5) break; t -= Math.max(ds * 0.85, 1.5e-5); if (t <= 0.002) break; }
+      const q = v3.add(C0, v3.mul(dr, t)); return v3.add(q, v3.mul(gr(q), 0.0008)); });
+    R.add('mouth', G, W.rigid('Snout')); }
+  mouthAtlas.guide = (pen) => { pen.fill(ell(0, 0.0165, 0.0165, 0.01), 'rgba(0,0,0,.18)'); };
+  R.layers.push(mouthAtlas);
+
+  // ---- face controls (bone-driven parts)
+  R.extra.face = {
+    eyesKind: 'bead', look: { bones: ['Eye.L', 'Eye.R'], maxX: 26, maxY: 20 },
+    talk: { mouth: 16 }, // first talking mouth cell (phoneme chart order)
+    lidBones: ['Lid.L', 'Lid.R'], lidClose: 143, lidTilt: ETILT,
+    parts: {
+      lids: { label: 'Eyelids', options: {
+        'Open': { L: [0, 0], R: [0, 0] }, 'Relaxed': { L: [0.2, 0], R: [0.2, 0] }, 'Half': { L: [0.5, 0], R: [0.5, 0] }, 'Sleepy': { L: [0.68, 0], R: [0.68, 0] }, 'Closed': { L: [1, 0], R: [1, 0] },
+        'Wide': { L: [-0.12, 0], R: [-0.12, 0] }, 'Worried': { L: [0.28, -16], R: [0.28, -16] }, 'Angry': { L: [0.38, 18], R: [0.38, 18] }, 'Sad': { L: [0.45, -12], R: [0.45, -12] },
+        'Wink (left)': { L: [1, 0], R: [0, 0] }, 'Wink (right)': { L: [0, 0], R: [1, 0] } } },
+      brows: { label: 'Brow spots', options: {
+        'Neutral': { p: [0, 0, 0], r: 0 }, 'Raised': { p: [0, 0.008, -0.0022], r: 0 }, 'Worried': { p: [0, 0.006, -0.0016], r: -20 }, 'Angry': { p: [0, -0.004, 0.0006], r: 22 },
+        'Sad': { p: [0, 0.002, -0.0004], r: -12 }, 'Surprised': { p: [0, 0.012, -0.0035], r: 0 }, 'Skeptical': { L: { p: [0, 0.01, -0.0028], r: -6 }, R: { p: [0, -0.002, 0.0002], r: 10 } } } },
+      ears: { label: 'Ears', options: {
+        'Up (sheet)': {}, 'Perky': symPose({ 'Ear*': [-8, 0, 6], 'Ear_Tip*': [-6, 0, 0] }), 'Floppy left (sheet B)': { 'Ear.L': [0, 0, -10], 'Ear_Tip.L': [0, 0, -112] },
+        'Floppy right': { 'Ear.R': [0, 0, 10], 'Ear_Tip.R': [0, 0, 112] }, 'Both floppy': symPose({ 'Ear*': [0, 0, -12], 'Ear_Tip*': [0, 0, -105] }),
+        'Pinned back (scared)': symPose({ 'Ear*': [55, 0, -18], 'Ear_Tip*': [25, 0, 0] }), 'Droopy (sad)': symPose({ 'Ear*': [20, 0, -48], 'Ear_Tip*': [10, 0, -40] }), 'Alert': symPose({ 'Ear*': [-14, 0, 2], 'Ear_Tip*': [-10, 0, 0] }) } },
+    },
+    expressions: {
+      'Neutral': { lids: 'Open', brows: 'Neutral', mouth: 0, look: [0, 0] },
+      'Asleep / waking': { lids: 'Closed', brows: 'Neutral', mouth: 8, look: [0, 0] },
+      'Terrified': { lids: 'Wide', brows: 'Worried', mouth: 5, look: [0, 0.2], ears: 'Pinned back (scared)' },
+      'Scared': { lids: 'Worried', brows: 'Worried', mouth: 7, look: [0, 0] },
+      'Worried': { lids: 'Worried', brows: 'Worried', mouth: 1, look: [0, -0.3] },
+      'Sad': { lids: 'Sad', brows: 'Sad', mouth: 1, look: [0, -0.5], ears: 'Droopy (sad)' },
+      'Happy': { lids: 'Relaxed', brows: 'Raised', mouth: 3, look: [0, 0] },
+      'Surprised': { lids: 'Wide', brows: 'Surprised', mouth: 4, look: [0, 0] },
+      'Angry': { lids: 'Angry', brows: 'Angry', mouth: 6, look: [0, 0] },
+      'Talking': { lids: 'Open', brows: 'Neutral', mouth: 9, look: [0, 0] },
+    },
+  };
+  // ---- poses
+  R.extra.poses = {
+    'Rest (bind pose)': {},
+    'Script start: waking in booth': {
+      pos: { Hips: [0, -0.137, 0] },
+      rot: symPose({ Hips: [-88, 0, 0], Neck: [12, 0, 0], Head: [8, 0, -10], 'UpperArm*': [22, 0, 30], 'LowerArm*': [-12, 0, 0], 'UpperLeg*': [10, 0, 7], 'LowerLeg*': [4, 0, 0], 'Foot*': [-8, 0, 0], Tail_1: [0, 72, 0], Tail_2: [0, 24, 0], Tail_3: [0, 12, 0], 'Ear*': [28, 0, -24], 'Ear_Tip*': [18, 0, 0] }),
+      face: 'Asleep / waking',
+    },
+    'Standing (sheet A)': { rot: symPose({ 'UpperArm*': [0, 0, 5], 'LowerArm*': [-6, 0, 0], Tail_1: [0, 72, 0], Tail_2: [8, 22, 0], Tail_3: [12, 0, 0] }), face: 'Neutral' },
+    'Standing (sheet B)': { rot: { ...symPose({ 'UpperArm*': [0, 0, 4], 'LowerArm*': [-5, 0, 0], Tail_1: [0, 74, 0], Tail_2: [8, 20, 0], Tail_3: [12, 0, 0] }), Torso_Upper: [0, 8, 0], Neck: [0, 6, 0], Head: [-2, 12, 3], 'Ear.L': [0, 0, -10], 'Ear_Tip.L': [0, 0, -112] }, face: 'Neutral' },
+    'Sitting against wall (painting)': {
+      pos: { Hips: [0, -0.128, -0.02] },
+      rot: { ...symPose({ Hips: [14, 0, 0], 'UpperLeg*': [-84, 0, 9], 'LowerLeg*': [6, 0, 0], 'Foot*': [-18, 0, 0], Neck: [-4, 0, 0], Head: [-6, -4, -8], Tail_1: [-30, 64, 0], Tail_2: [0, 20, 0] }), 'Ear.L': [0, 0, -10], 'Ear_Tip.L': [0, 0, -105] },
+      ik: { 'Arm.L': { t: [-0.012, 0.165, 0.082] }, 'Arm.R': { t: [0.018, 0.15, 0.088] } },
+      face: 'Worried',
+    },
+    'Cowering (scared)': {
+      pos: { Hips: [0, -0.045, -0.01] },
+      rot: symPose({ 'UpperLeg*': [-30, 0, 9], 'LowerLeg*': [52, 0, 0], 'Foot*': [-22, 0, 0], Torso_Lower: [12, 0, 0], Torso_Upper: [10, 0, 0], Head: [-8, 0, 0], Tail_1: [20, 0, 0] }),
+      ik: { 'Arm.L': { t: [0.05, 0.4, 0.13] }, 'Arm.R': { t: [-0.05, 0.4, 0.13] } },
+      face: 'Terrified',
+    },
+    'Staring at his paws': {
+      rot: symPose({ Neck: [10, 0, 0], Head: [26, 0, 0], 'Hand*': [-35, 0, -10], Tail_1: [0, 60, 0] }),
+      ik: { 'Arm.L': { t: [0.055, 0.29, 0.15] }, 'Arm.R': { t: [-0.055, 0.29, 0.15] } },
+      face: 'Worried',
+    },
+    'Reading his tag': {
+      rot: { ...symPose({ Neck: [12, 0, 0], Head: [22, 10, 0] }), 'Hand.L': [-20, 0, 0] },
+      ik: { 'Arm.L': { t: [0.09, 0.2, 0.1] } },
+      face: 'Worried',
+    },
+    // ---- Episode 1 staging
+    'Startled (arms up)': {
+      pos: { Hips: [0, -0.012, 0] },
+      rot: symPose({ Torso_Upper: [-8, 0, 0], Neck: [-4, 0, 0], Head: [-6, 0, 0], 'UpperLeg*': [-12, 0, 8], 'LowerLeg*': [18, 0, 0], 'Foot*': [-6, 0, 0], Tail_1: [-20, 60, 0], Tail_2: [0, 20, 0] }),
+      ik: { 'Arm.L': { t: [0.16, 0.49, 0.05] }, 'Arm.R': { t: [-0.16, 0.49, 0.05] } },
+      face: 'Terrified',
+    },
+    'Whispering to Meno': {
+      rot: { ...symPose({ Tail_1: [0, 70, 0], Tail_2: [8, 20, 0] }), Torso_Lower: [4, 0, 0], Torso_Upper: [8, -10, -6], Neck: [4, 0, 0], Head: [6, -12, -8] },
+      ik: { 'Arm.L': { t: [0.035, 0.45, 0.1] }, 'Arm.R': { t: [-0.09, 0.29, 0.06] } },
+      face: 'Worried',
+    },
+    'Wiping the counter': {
+      rot: { ...symPose({ Tail_1: [0, 70, 0] }), Torso_Upper: [10, 0, 0], Neck: [4, 0, 0], Head: [10, -8, 0] },
+      ik: { 'Arm.R': { t: [-0.07, 0.37, 0.13] }, 'Arm.L': { t: [0.085, 0.27, 0.05] } },
+      face: 'Sad',
+    },
+    'Wiping the counter (sweep)': {
+      rot: { ...symPose({ Tail_1: [0, 70, 0] }), Torso_Upper: [10, 6, 0], Neck: [4, 0, 0], Head: [10, 4, 0] },
+      ik: { 'Arm.R': { t: [0.0, 0.37, 0.14] }, 'Arm.L': { t: [0.085, 0.27, 0.05] } },
+      face: 'Sad',
+    },
+    'Looking at his dusty paw': {
+      rot: { ...symPose({ Tail_1: [0, 66, 0] }), Neck: [6, 0, 0], Head: [12, -12, 0] },
+      ik: { 'Arm.R': { t: [-0.045, 0.39, 0.12] }, 'Arm.L': { t: [0.085, 0.27, 0.05] } },
+      face: 'Sad',
+    },
+    'Looking up': { rot: symPose({ 'UpperArm*': [0, 0, 6], 'LowerArm*': [-6, 0, 0], Torso_Upper: [-4, 0, 0], Neck: [-12, 0, 0], Head: [-26, 0, 0], Tail_1: [0, 70, 0], Tail_2: [8, 22, 0] }), face: 'Worried' },
+    'Hugging himself (cold)': {
+      rot: symPose({ Torso_Upper: [6, 0, 0], Neck: [4, 0, 0], Head: [-4, 0, 0], 'UpperLeg*': [0, 0, -2], Tail_1: [10, 80, 0], Tail_2: [0, 30, 0] }),
+      ik: { 'Arm.L': { t: [0.0, 0.32, 0.09] }, 'Arm.R': { t: [-0.005, 0.31, 0.09] } },
+      face: 'Scared',
+    },
+    'Turning his wrist': {
+      rot: { ...symPose({ Tail_1: [0, 70, 0] }), Neck: [-2, 0, 0], Head: [-6, 12, 0], 'Hand.L': [0, -40, 0] },
+      ik: { 'Arm.L': { t: [0.04, 0.42, 0.13] } },
+      face: 'Worried',
+    },
+    'Turning his wrist (over)': {
+      rot: { ...symPose({ Tail_1: [0, 70, 0] }), Neck: [-2, 0, 0], Head: [-6, 12, 0], 'Hand.L': [0, 60, 0] },
+      ik: { 'Arm.L': { t: [0.04, 0.42, 0.13] } },
+      face: 'Worried',
+    },
+    'Kneeling, reaching down': { // bent right over, both arms out at full stretch toward something on the ground in front of him, looking at it (knees where they kneel in the other kneeling poses).
+      // His arms are short (13 cm shoulder to wrist), so the reach comes from the lean: the paws come down to about 4 cm off the ground, 20-25 cm in front of his knees
+      pos: { Hips: [0, -0.09, 0] },
+      rot: { 'UpperLeg.L': [0, 0, 4], 'LowerLeg.L': [90, 0, 0], 'Foot.L': [70, 0, 0], 'UpperLeg.R': [-88, 0, -6], 'LowerLeg.R': [88, 0, 0], Torso_Lower: [45, 0, 0], Torso_Upper: [45, 0, 0], Neck: [-40, 0, 0], Head: [-8, 0, 0], Tail_1: [-30, 70, 0], Tail_2: [0, 20, 0] }, // (as far over as his back and neck bend)
+      ik: { 'Arm.L': { t: [0.075, 0.07, 0.22] }, 'Arm.R': { t: [-0.075, 0.07, 0.22] } },
+      face: 'Worried',
+    },
+    'Kneeling, holding it up': {
+      pos: { Hips: [0, -0.09, 0] },
+      rot: { 'UpperLeg.L': [0, 0, 4], 'LowerLeg.L': [90, 0, 0], 'Foot.L': [70, 0, 0], 'UpperLeg.R': [-88, 0, -6], 'LowerLeg.R': [88, 0, 0], Torso_Lower: [6, 0, 0], Torso_Upper: [4, 0, 0], Neck: [4, 0, 0], Head: [8, 0, 0], Tail_1: [-30, 70, 0], Tail_2: [0, 20, 0] },
+      ik: { 'Arm.L': { t: [0.045, 0.3, 0.16] }, 'Arm.R': { t: [-0.045, 0.3, 0.16] } },
+      face: 'Worried',
+    },
+    'Kneeling, shaking it': {
+      pos: { Hips: [0, -0.09, 0] },
+      rot: { 'UpperLeg.L': [0, 0, 4], 'LowerLeg.L': [90, 0, 0], 'Foot.L': [70, 0, 0], 'UpperLeg.R': [-88, 0, -6], 'LowerLeg.R': [88, 0, 0], Torso_Lower: [6, 0, 0], Torso_Upper: [2, 4, 0], Neck: [4, 0, 0], Head: [6, -4, 0], Tail_1: [-30, 70, 0], Tail_2: [0, 20, 0] },
+      ik: { 'Arm.L': { t: [0.055, 0.34, 0.15] }, 'Arm.R': { t: [-0.035, 0.34, 0.15] } },
+      face: 'Worried',
+    },
+    'Fallen back on his paws': {
+      pos: { Hips: [0, -0.14, -0.02] },
+      rot: symPose({ Hips: [-48, 0, 0], 'UpperLeg*': [-40, 0, 12], 'LowerLeg*': [14, 0, 0], 'Foot*': [-12, 0, 0], Neck: [22, 0, 0], Head: [20, 0, 0], Tail_1: [40, 50, 0], 'UpperArm*': [36, 0, 34], 'LowerArm*': [-30, 0, 0], 'Hand*': [-20, 0, 0] }),
+      face: 'Terrified',
+    },
+    'Sinking in the mud': {
+      pos: { Hips: [0, -0.105, 0.01] },
+      rot: symPose({ 'UpperLeg*': [-4, 0, 6], 'LowerLeg*': [92, 0, 0], 'Foot*': [68, 0, 0], Torso_Lower: [18, 0, 0], Torso_Upper: [14, 0, 0], Neck: [-6, 0, 0], Head: [-12, 0, 0], 'UpperArm*': [-38, 0, 14], 'LowerArm*': [-20, 0, 0], Tail_1: [-40, 40, 0] }),
+      face: 'Scared',
+    },
+    'Sinking in the mud (looking back)': {
+      pos: { Hips: [0, -0.112, 0.01] },
+      rot: { ...symPose({ 'UpperLeg*': [-4, 0, 6], 'LowerLeg*': [92, 0, 0], 'Foot*': [68, 0, 0], Torso_Lower: [18, 0, 0], 'UpperArm*': [-38, 0, 14], 'LowerArm*': [-20, 0, 0], Tail_1: [-40, 40, 0] }), Torso_Upper: [12, 22, 0], Neck: [-4, 22, 0], Head: [-10, 34, 0] },
+      face: 'Terrified',
+    },
+    'Tripping forward': { // a foot caught on something: pitching forward, arms flung out, the back leg trailing
+      pos: { Hips: [0, -0.02, 0.04] },
+      rot: { ...symPose({ Torso_Lower: [6, 0, 0], Torso_Upper: [6, 0, 0], 'Foot*': [-10, 0, 0], Tail_1: [40, 30, 0], Tail_2: [0, 20, 0] }), Hips: [30, 0, 0], Neck: [-16, 0, 0], Head: [-24, 0, 0], 'UpperLeg.L': [-62, 0, 6], 'LowerLeg.L': [32, 0, 0], 'UpperLeg.R': [8, 0, -6], 'LowerLeg.R': [62, 0, 0] },
+      ik: { 'Arm.L': { t: [0.17, 0.42, 0.26] }, 'Arm.R': { t: [-0.17, 0.4, 0.28] } },
+      face: 'Terrified',
+    },
+    'Sprawled face-down (tripped)': { // flat on his belly after the fall, arms out in front, chin up
+      pos: { Hips: [0, -0.15, 0.08] },
+      rot: { ...symPose({ Torso_Lower: [4, 0, 0], Torso_Upper: [2, 0, 0], 'UpperLeg*': [16, 0, 10], 'LowerLeg*': [20, 0, 0], 'Foot*': [50, 0, 0], Tail_1: [-60, 30, 0] }), Hips: [80, 0, 0], Neck: [-36, 0, 0], Head: [-28, 0, 0] },
+      ik: { 'Arm.L': { t: [0.15, 0.07, 0.42] }, 'Arm.R': { t: [-0.15, 0.07, 0.42] } },
+      face: 'Terrified',
+    },
+    'Pushing himself up': { // on his knees, paws on the ground, about to stand
+      pos: { Hips: [0, -0.1, 0.04] },
+      rot: { ...symPose({ 'UpperLeg*': [-40, 0, 8], 'LowerLeg*': [90, 0, 0], 'Foot*': [60, 0, 0], Torso_Upper: [-6, 0, 0], Tail_1: [-30, 40, 0] }), Hips: [50, 0, 0], Neck: [-20, 0, 0], Head: [-16, 0, 0] },
+      ik: { 'Arm.L': { t: [0.11, 0.05, 0.3] }, 'Arm.R': { t: [-0.11, 0.05, 0.3] } },
+      face: 'Scared',
+    },
+    'Collapsed in the mud': {
+      pos: { Hips: [0, -0.15, 0.06] },
+      rot: { ...symPose({ Hips: [74, 0, 0], 'UpperLeg*': [8, 0, 8], 'LowerLeg*': [30, 0, 0], 'Foot*': [40, 0, 0], 'UpperArm*': [-60, 0, 30], 'LowerArm*': [-20, 0, 0], Torso_Upper: [4, 0, 0], Tail_1: [-60, 30, 0] }), Neck: [-30, 20, 0], Head: [-34, 44, 0] },
+      face: 'Asleep / waking',
+    },
+  };
+  R.extra.start = { pose: 'Script start: waking in booth', note: 'Lying in the balloon-pop booth, eyes closed (opening scene)' };
+  R.extra.labelBone = 'Torso_Upper';
+  R.extra.gait = { waddle: 0.45, armSwing: 26, elbow: -14 };
+  return R.finish();
+}
+RPC.buildSpondo = buildSpondo;
 })();
+
+// ================================================================= ROZY
+(() => {
+const { v3, quat, D2R, W, Rig, Atlas, ell, bez, spl, ellGrid, tubeGrid, ellPoint, ellFront, ellNormal, bandTexture, mkCanvas, symPose, drawEye } = RPC;
+const PI = Math.PI, d = (x) => x * D2R, S2 = [1, -1], SIDES = [['.L', 1], ['.R', -1]];
+
+// Sculpted felt plush (sculpt.js): round head, fluffy ruff, fuzzy thorax and a segmented abdomen in one sewn skin.
+function rozySculpt(ch, K) {
+  const { P } = RPC.sculpt; const { HC, HR, SKIN } = K;
+  const COL = '#4a3a99', ABD = '#a69cdc', SPOT = '#2d215f';
+  const parts = [], paint = [], carve = [], seams = [];
+  parts.push({ id: 'thorax', bones: ['Torso_Upper', 'Torso_Lower', 'Neck'], color: SKIN, k: 0.02, seam: true, prims: [P.ell([0, 0.405, -0.008], [0.07, 0.07, 0.063])] });
+  // segmented abdomen: three sewn rings
+  parts.push({ id: 'abdomen', parent: 'thorax', join: { c: [0, 0.35, -0.016], r: 0.06, k: 0.022 }, bones: ['Hips', 'Torso_Lower'], color: ABD, k: 0.01, seam: true, prims: [P.ell([0, 0.284, -0.022], [0.064, 0.09, 0.061], null, { warp: (x, y, z) => [x * (1 + 0.06 * Math.max(0, -y / 0.09)), y, z] })] });
+  for (const g of [0.42, 0.02, -0.4]) { const y = 0.284 + g * 0.09; const rr = 0.064 * Math.sqrt(1 - g * g); carve.push({ p: P.torus([0, y, -0.022], [0, 1, 0], rr + 0.0035, 0.0034), k: 0.003, parts: ['abdomen'] }); }
+  // the head (drawn eyes live on this exact sphere)
+  parts.push({ id: 'head', parent: 'ruff', join: { c: [0, 0.542, -0.002], r: 0.05, k: 0.012 }, bones: ['Head', 'Neck'], color: SKIN, k: 0.01, prims: [P.ell(HC, HR)] });
+  // fluffy ruff: a felt collar flaring out and down from under the chin, ragged scalloped edge
+  const ruff = P.ell([0, 0.503, -0.004], [0.084, 0.04, 0.078], null, { pad: 0.012, warp: (x, y, z) => { const t = Math.atan2(x, z); const low = Math.max(0, Math.min(1, (-y + 0.008) / 0.03)); const zig = Math.abs(((t * 13 / Math.PI + 0.25) % 2 + 2) % 2 - 1); const k = 1 + low * (0.12 * zig + 0.04 * Math.sin(t * 29 + 1.3)) + 0.025 * Math.sin(t * 7 + y * 90); return [x / k, y + 0.014 * low * zig, z / k]; } });
+  parts.push({ id: 'ruff', parent: 'thorax', join: { c: [0, 0.47, -0.006], r: 0.08, k: 0.012 }, bones: ['Neck', 'Torso_Upper'], color: COL, k: 0.008, seam: 'all', prims: [ruff] });
+  // cheek spots (sheet): dark purple felt circles, sewn on
+  for (const s of [1, -1]) for (const [th, ph, r] of [[64, -26, 0.0125], [76, -11, 0.0088]]) { const a = th * Math.PI / 180 * s, b = ph * Math.PI / 180; const c = [HC[0] + HR[0] * Math.cos(b) * Math.sin(a), HC[1] + HR[1] * Math.sin(b), HC[2] + HR[2] * Math.cos(b) * Math.cos(a)];
+    paint.push({ parts: ['head'], color: SPOT, soft: 0.0008, seam: true, sd: (x, y, z) => Math.hypot(x - c[0], y - c[1], z - c[2]) - r }); }
+  seams.push({ parts: ['head'], w: 0.0014, sd: (x, y, z) => (y > HC[1] + 0.02 && z < 0.05 ? x : null) });
+  seams.push({ parts: ['thorax'], w: 0.0015, sd: (x, y, z) => (Math.abs(x) > 0.035 ? z + 0.004 : null) });
+  // the builder lowers the head 2.8 cm and the neck 1.2 cm at the end (R.shiftY): the skin follows exactly
+  const mv = (q, dy) => (q.f ? P.shift(q, dy) : { ...q, p: P.shift(q.p, dy) });
+  for (const pt of parts) { const dy = pt.id === 'head' ? -0.028 : pt.id === 'ruff' ? -0.012 : 0; if (!dy) continue; pt.prims = pt.prims.map((q) => mv(q, dy)); if (pt.join) pt.join = { ...pt.join, c: [pt.join.c[0], pt.join.c[1] + dy, pt.join.c[2]] }; }
+  for (const p of paint) if (p.parts && p.parts.includes('head')) { const f = p.sd; p.sd = (x, y, z, ...a) => f(x, y + 0.028, z, ...a); }
+  for (const sm of seams) if (sm.parts && sm.parts.includes('head')) { const f = sm.sd; sm.sd = (x, y, z, ...a) => f(x, y + 0.028, z, ...a); }
+  return { name: 'Rozy_Body_Felt', surface: 'felt', voxel: 0.0018, targetTris: 60000, tile: 0.02, base: SKIN, parts, paint, seams, carve, rigid: [{ part: 'head', bone: 'Head' }], groove: 0.0008, lumps: 0.00028, seamWidth: 0.002, grime: 0.9,
+    mat: { sheen: 0.7, sheenColor: '#b9aef0', sheenRough: 0.5 },
+    drop: (pc) => ['purple', 'collar', 'abdomen', 'spot'].includes(pc.mat),
+    conform: () => null };
+}
+function buildRozy() {
+  const R = new Rig('rozy', 'Rozy');
+  R.extra.color = '#a678e6'; R.extra.subtitle = 'Moth · six limbs, four wings';
+  const SKIN = '#7c6ec6';
+  R.mat('purple', { name: 'Rozy_Body_Purple', color: SKIN, rough: 0.62 })
+   .mat('collar', { name: 'Rozy_Collar_Fuzz', color: '#4a3a99', rough: 1, sheen: 0.8, sheenColor: '#9a88ee', sheenRough: 0.45 })
+   .mat('limb', { name: 'Rozy_Limbs_Black', color: '#141218', rough: 0.5 })
+   .mat('spot', { name: 'Rozy_Cheek_Spots', color: '#2d215f', rough: 0.7 });
+  // ---- bones
+  R.bone('Root', null, [0, 0, 0], { dir: [0, 0, -1], len: 0.16, ctrl: 0.24, shape: 'root' })
+   .bone('Hips', 'Root', [0, 0.226, -0.005], { to: 'Torso_Lower', ctrl: 0.11, shape: 'cog' })
+   .bone('Torso_Lower', 'Hips', [0, 0.258, -0.012], { to: 'Torso_Upper', ctrl: 0.1 })
+   .bone('Torso_Upper', 'Torso_Lower', [0, 0.37, -0.006], { to: 'Neck', ctrl: 0.1 })
+   .bone('Neck', 'Torso_Upper', [0, 0.47, 0], { to: 'Head', ctrl: 0.09 })
+   .bone('Head', 'Neck', [0, 0.53, 0], { dir: [0, 1, 0], len: 0.17, ctrl: 0.1 });
+  const HC = [0, 0.62, 0], HR = [0.078, 0.078, 0.078];
+  const EYE = { cx: 0.036, cy: 0.008, rx: 0.025, ry: 0.028, lw: 0.0024, lash: 0.0095 };
+  const PUP = 0.0125;
+  const phc = Math.asin(EYE.cy / HR[1]), thc = Math.asin(EYE.cx / (HR[0] * Math.cos(phc)));
+  for (const [sfx, s] of SIDES) {
+    const pp = ellPoint(HC, HR, s * thc, phc);
+    R.bone('Eye' + sfx, 'Head', HC, { dir: v3.sub(pp, HC), len: 0.07, region: 'Face', ctrl: 0.02, shape: 'sphere' });
+    R.bone('Pupil' + sfx, 'Eye' + sfx, pp, { dir: v3.sub(pp, HC), len: 0.012, region: 'Face', ctrl: 0.014, shape: 'sphere' });
+  }
+  R.pair('Antenna_1', 'Head', [0.023, 0.686, 0.017], { to: 'Antenna_2', region: 'Antennae', ctrl: 0.012 })
+   .pair('Antenna_2', 'Antenna_1*', [0.03, 0.755, 0.02], { to: 'Antenna_3', region: 'Antennae', ctrl: 0.012 })
+   .pair('Antenna_3', 'Antenna_2*', [0.035, 0.82, 0.012], { dir: [0.06, 1, -0.2], len: 0.06, region: 'Antennae', ctrl: 0.012 })
+   .pair('Wing_Fore', 'Torso_Upper', [0.03, 0.455, -0.058], { dir: [0.55, -0.8, -0.2], len: 0.2, region: 'Wings', ctrl: 0.05 })
+   .pair('Wing_Hind', 'Torso_Upper', [0.026, 0.41, -0.066], { dir: [0.5, -0.8, -0.32], len: 0.15, region: 'Wings', ctrl: 0.045 })
+   .pair('Arm_Upper', 'Torso_Upper', [0.06, 0.452, 0], { to: 'Arm_Lower', region: 'Arms', ctrl: 0.025 })
+   .pair('Arm_Lower', 'Arm_Upper*', [0.078, 0.335, -0.006], { to: 'Hand', region: 'Arms', ctrl: 0.022 })
+   .pair('Hand', 'Arm_Lower*', [0.088, 0.218, 0.002], { dir: [0.1, -1, 0.05], len: 0.02, region: 'Arms', ctrl: 0.022 })
+   .pair('Arm2_Upper', 'Torso_Upper', [0.052, 0.352, 0.004], { to: 'Arm2_Lower', region: 'Mid arms', ctrl: 0.024 })
+   .pair('Arm2_Lower', 'Arm2_Upper*', [0.07, 0.258, 0.01], { to: 'Hand2', region: 'Mid arms', ctrl: 0.022 })
+   .pair('Hand2', 'Arm2_Lower*', [0.077, 0.165, 0.008], { dir: [0.1, -1, 0.05], len: 0.02, region: 'Mid arms', ctrl: 0.022 })
+   .pair('Leg_Upper', 'Hips', [0.032, 0.226, 0], { to: 'Leg_Lower', region: 'Legs', ctrl: 0.026 })
+   .pair('Leg_Lower', 'Leg_Upper*', [0.036, 0.118, 0.01], { to: 'Foot', region: 'Legs', ctrl: 0.024 })
+   .pair('Foot', 'Leg_Lower*', [0.038, 0.017, 0], { to: 'Toes', region: 'Legs', ctrl: 0.024 })
+   .pair('Toes', 'Foot*', [0.038, 0.008, 0.014], { dir: [0, 0, 1], len: 0.04, region: 'Legs', ctrl: 0.024 });
+  const FING = [[[0.088, 0.21, 0.006], [0.083, 0.178, 0.026]], [[0.09, 0.21, 0.002], [0.097, 0.174, 0.007]], [[0.091, 0.21, -0.003], [0.108, 0.18, -0.012]]];
+  FING.forEach(([a, b], i) => R.pair('Finger_' + (i + 1), 'Hand*', a, { dir: v3.sub(b, a), len: v3.len(v3.sub(b, a)), region: 'Arms', ctrl: 0.012 }));
+  const H2 = [0.077, 0.165, 0.008], H1 = [0.088, 0.218, 0.002];
+  const FING2 = FING.map(([a, b]) => [v3.add(H2, v3.sub(a, H1)), v3.add(H2, v3.sub(b, H1))]);
+  FING2.forEach(([a, b], i) => R.pair('Finger2_' + (i + 1), 'Hand2*', a, { dir: v3.sub(b, a), len: v3.len(v3.sub(b, a)), region: 'Mid arms', ctrl: 0.012 }));
+  for (const [sfx, s] of SIDES) {
+    R.ik.push({ name: 'Leg' + sfx, upper: 'Leg_Upper' + sfx, lower: 'Leg_Lower' + sfx, end: 'Foot' + sfx, pole: [s * 0.04, 0.12, 0.3], kind: 'leg' });
+    R.ik.push({ name: 'Arm' + sfx, upper: 'Arm_Upper' + sfx, lower: 'Arm_Lower' + sfx, end: 'Hand' + sfx, pole: [s * 0.1, 0.335, -0.3], kind: 'arm' });
+    R.ik.push({ name: 'Arm2' + sfx, upper: 'Arm2_Upper' + sfx, lower: 'Arm2_Lower' + sfx, end: 'Hand2' + sfx, pole: [s * 0.1, 0.26, -0.3], kind: 'arm' });
+  }
+
+  // ---- head, collar, thorax, abdomen
+  R.add('purple', ellGrid(HC, HR, { nu: 48, nv: 34 }), W.y([[0.505, 'Neck'], [0.535, 'Head']]));
+  for (const s of S2) for (const [th, ph, r] of [[64, -26, 0.0115], [76, -11, 0.008]]) {
+    const p = ellPoint(HC, HR, d(s * th), d(ph), { lift: -0.0018 });
+    R.add('spot', ellGrid(p, [r, r, 0.0028], { nu: 14, nv: 8, q: quat.fromUnit([0, 0, 1], ellNormal(HC, HR, p)) }), W.rigid('Head'));
+  }
+  // fuzzy collar ring
+  {
+    const y0 = 0.528, y1 = 0.46;
+    const prof = (s) => 0.05 + 0.028 * Math.sin(PI * Math.min(1, s * 1.18)) + 0.012 * s;
+    // closed top: a fuzzy shelf runs in under the head, then the ruff flares out and down
+    const G = RPC.fnGrid(72, 20, (u, w) => {
+      const th = -PI + 2 * PI * u;
+      let r, y;
+      if (w < 0.22) { const k = w / 0.22; r = 0.054 * Math.sin(k * PI / 2); y = y0 + 0.007 * (1 - k * k); }
+      else {
+        const v = (w - 0.22) / 0.78;
+        r = prof(v) + 0.0035 * Math.sin(th * 23 + v * 6) * v + 0.002 * Math.sin(th * 41) * v;
+        y = y0 + (y1 - y0) * v;
+        if (v > 0.8) y -= 0.011 * Math.abs(Math.sin(th * 13)) * (v - 0.8) / 0.2;
+      }
+      return [r * Math.sin(th), y, r * Math.cos(th) * 0.93 - 0.002];
+    }, (u, w, p) => [0, p[1] - 0.03, -0.002], true);
+    R.add('collar', G, W.y([[0.47, 'Torso_Upper'], [0.51, 'Neck']]));
+  }
+  R.add('purple', ellGrid([0, 0.405, -0.008], [0.07, 0.07, 0.062], { nu: 36, nv: 24 }), W.y([[0.345, 'Torso_Lower'], [0.39, 'Torso_Upper']]));
+  const grooves = [0.42, 0.02, -0.4];
+  const abdTex = (() => {
+    const cv = mkCanvas(256, 512), c = cv.getContext('2d');
+    const g = c.createLinearGradient(0, 0, 0, 512); g.addColorStop(0, '#9b90d6'); g.addColorStop(1, '#aaa0de');
+    c.fillStyle = g; c.fillRect(0, 0, 256, 512);
+    c.strokeStyle = '#5f529f'; c.lineWidth = 3;
+    for (const gy of grooves) { const v = 0.5 - Math.asin(gy) / PI; c.beginPath(); for (let x = 0; x <= 256; x += 4) { const y = v * 512 + 2.5 * Math.sin(x / 256 * PI * 6); x ? c.lineTo(x, y) : c.moveTo(x, y); } c.stroke(); }
+    return cv;
+  })();
+  R.mat('abdomen', { name: 'Rozy_Abdomen_Segmented', color: '#ffffff', rough: 0.6, map: abdTex });
+  R.add('abdomen', ellGrid([0, 0.285, -0.022], [0.063, 0.088, 0.06], { nu: 36, nv: 30, deform: (l) => { const yn = l[1] / 0.088; let k = 1; for (const g of grooves) k -= 0.05 * Math.exp(-(((yn - g) / 0.07) ** 2)); l[0] *= k; l[2] *= k; return l; } }),
+    W.y([[0.235, 'Hips'], [0.285, 'Torso_Lower'], [0.35, 'Torso_Lower'], [0.39, 'Torso_Upper']]));
+
+  // ---- antennae
+  for (const [sfx, s] of SIDES) {
+    const pts = [[0.02, 0.678, 0.016], [0.026, 0.72, 0.02], [0.03, 0.755, 0.02], [0.033, 0.79, 0.017], [0.035, 0.82, 0.012], [0.038, 0.85, 0.006], [0.04, 0.877, -0.002]].map((p) => [p[0] * s, p[1], p[2]]);
+    R.add('limb', tubeGrid(pts, [0.0056, 0.0054, 0.0052, 0.005, 0.0049, 0.0048, 0.0052], { nu: 10, seg: 4, capEnd: true }),
+      W.t([[0, 'Antenna_1' + sfx], [0.28, 'Antenna_1' + sfx], [0.38, 'Antenna_2' + sfx], [0.62, 'Antenna_2' + sfx], [0.72, 'Antenna_3' + sfx], [1, 'Antenna_3' + sfx]]));
+  }
+  // ---- limbs
+  const limb = (pts, r0, r1, anchors) => R.add('limb', tubeGrid(pts, pts.map((_, i) => r0 + (r1 - r0) * i / (pts.length - 1)), { nu: 10, seg: 5, capEnd: true }), W.t(anchors));
+  for (const [sfx, s] of SIDES) {
+    const m = (p) => [p[0] * s, p[1], p[2]];
+    limb([[0.042, 0.46, 0], [0.06, 0.452, 0], [0.07, 0.395, -0.004], [0.078, 0.335, -0.006], [0.083, 0.276, -0.002], [0.088, 0.218, 0.002]].map(m), 0.0068, 0.0058,
+      [[0, 'Arm_Upper' + sfx], [0.5, 'Arm_Upper' + sfx], [0.64, 'Arm_Lower' + sfx], [0.92, 'Arm_Lower' + sfx], [1, 'Hand' + sfx]]);
+    limb([[0.036, 0.36, 0.0], [0.052, 0.352, 0.004], [0.062, 0.305, 0.008], [0.07, 0.258, 0.01], [0.074, 0.21, 0.01], [0.077, 0.165, 0.008]].map(m), 0.0064, 0.0056,
+      [[0, 'Arm2_Upper' + sfx], [0.5, 'Arm2_Upper' + sfx], [0.64, 'Arm2_Lower' + sfx], [0.92, 'Arm2_Lower' + sfx], [1, 'Hand2' + sfx]]);
+    limb([[0.03, 0.245, 0], [0.032, 0.226, 0], [0.034, 0.172, 0.006], [0.036, 0.118, 0.01], [0.037, 0.067, 0.006], [0.038, 0.017, 0]].map(m), 0.0072, 0.0062,
+      [[0, 'Leg_Upper' + sfx], [0.5, 'Leg_Upper' + sfx], [0.64, 'Leg_Lower' + sfx], [0.94, 'Leg_Lower' + sfx], [1, 'Foot' + sfx]]);
+    R.add('limb', ellGrid(m(H1), [0.0074, 0.0074, 0.0074], { nu: 12, nv: 8 }), W.rigid('Hand' + sfx));
+    R.add('limb', ellGrid(m(H2), [0.007, 0.007, 0.007], { nu: 12, nv: 8 }), W.rigid('Hand2' + sfx));
+    FING.forEach(([a, b], i) => R.add('limb', tubeGrid([m(a), m(v3.lerp(a, b, 0.5)), m(b)], [0.0052, 0.0047, 0.0042], { nu: 8, seg: 4, capEnd: true }), W.rigid('Finger_' + (i + 1) + sfx)));
+    FING2.forEach(([a, b], i) => R.add('limb', tubeGrid([m(a), m(v3.lerp(a, b, 0.5)), m(b)], [0.005, 0.0045, 0.004], { nu: 8, seg: 4, capEnd: true }), W.rigid('Finger2_' + (i + 1) + sfx)));
+    R.add('limb', ellGrid(m([0.038, 0.012, 0.002]), [0.0085, 0.0075, 0.0095], { nu: 12, nv: 8 }), W.rigid('Foot' + sfx));
+    for (const tip of [[0.013, 0.003, 0.05], [0.038, 0.003, 0.058], [0.063, 0.003, 0.048]])
+      R.add('limb', tubeGrid([m([0.038, 0.008, 0.01]), m(v3.lerp([0.038, 0.008, 0.01], tip, 0.5)), m(tip)], [0.0058, 0.005, 0.0042], { nu: 8, seg: 4, capEnd: true }), W.rigid('Toes' + sfx));
+    R.add('limb', tubeGrid([m([0.038, 0.008, 0.0]), m([0.039, 0.005, -0.012]), m([0.04, 0.003, -0.022])], [0.0055, 0.0048, 0.0042], { nu: 8, seg: 4, capEnd: true }), W.rigid('Foot' + sfx));
+  }
+
+  // ---- wings (painted, double sided)
+  const fore = [[0, 0], [0.05, 0.013], [0.1, 0.002], [0.145, -0.038], [0.174, -0.105], [0.186, -0.185], [0.172, -0.252], [0.137, -0.29], [0.092, -0.302], [0.052, -0.274], [0.022, -0.2], [0.006, -0.11]];
+  const hind = [[0, 0], [0.04, -0.008], [0.088, -0.058], [0.114, -0.128], [0.11, -0.19], [0.085, -0.232], [0.05, -0.238], [0.022, -0.19], [0.006, -0.1]];
+  const bbox = (c) => { const xs = c.map((p) => p[0]), ys = c.map((p) => p[1]); return [Math.min(...xs) - 0.004, Math.min(...ys) - 0.004, Math.max(...xs) + 0.004, Math.max(...ys) + 0.004]; };
+  const paintWing = (contour, box, W_, H_, painter) => {
+    const cv = mkCanvas(W_, H_), c = cv.getContext('2d');
+    const P = (p) => [(p[0] - box[0]) / (box[2] - box[0]) * W_, (box[3] - p[1]) / (box[3] - box[1]) * H_];
+    const path = (pts, close = true) => { c.beginPath(); pts.forEach((p, i) => { const q = P(p); i ? c.lineTo(...q) : c.moveTo(...q); }); if (close) c.closePath(); };
+    const sm = spl([...contour, contour[0]], 8);
+    c.save(); path(sm); c.clip(); painter(c, path, P); c.restore();
+    path(sm); c.lineWidth = 5; c.strokeStyle = '#141218'; c.lineJoin = 'round'; c.stroke();
+    return { cv, sm };
+  };
+  const fb = bbox(fore), hb = bbox(hind);
+  const foreTex = paintWing(fore, fb, 320, 512, (c, path, P) => {
+    const [x0, y0] = P([0, 0]), [x1, y1] = P([0.18, -0.3]);
+    const g = c.createLinearGradient(x0, y0, x1, y1); g.addColorStop(0, '#c247cf'); g.addColorStop(0.45, '#df8fe3'); g.addColorStop(1, '#eeb4ee');
+    c.fillStyle = g; c.fillRect(0, 0, 320, 512);
+    path(spl([[-0.02, 0.03], [0.05, 0.02], [0.12, -0.02], [0.17, -0.08], [0.2, -0.15], [0.12, -0.08], [0.06, -0.05], [0.02, -0.06], [-0.02, -0.05]], 6));
+    c.fillStyle = 'rgba(176,52,196,.65)'; c.fill();
+    path(spl([[-0.02, -0.215], [0.03, -0.205], [0.08, -0.18], [0.13, -0.135], [0.17, -0.1], [0.22, -0.08], [0.22, -0.4], [-0.02, -0.4]], 6));
+    const gy = c.createLinearGradient(...P([0, -0.15]), ...P([0, -0.3])); gy.addColorStop(0, '#ffe766'); gy.addColorStop(1, '#ffd23a');
+    c.fillStyle = gy; c.fill();
+  });
+  const hindTex = paintWing(hind, hb, 256, 512, (c, path, P) => {
+    const g = c.createLinearGradient(...P([0, 0]), ...P([0.08, -0.22])); g.addColorStop(0, '#e9a1e9'); g.addColorStop(0.35, '#ffe35a'); g.addColorStop(1, '#ffcf34');
+    c.fillStyle = g; c.fillRect(0, 0, 256, 512);
+  });
+  R.mat('wingF', { name: 'Rozy_Wing_Fore', color: '#ffffff', rough: 0.55, map: foreTex.cv, side: 'double', alphaTest: 0.3 })
+   .mat('wingH', { name: 'Rozy_Wing_Hind', color: '#ffffff', rough: 0.55, map: hindTex.cv, side: 'double', alphaTest: 0.3 });
+  for (const [sfx, s] of SIDES) {
+    const frame = (o, exr, eyr) => { const ey = v3.norm([eyr[0] * s, eyr[1], eyr[2]]); let ex = v3.norm([exr[0] * s, exr[1], exr[2]]); ex = v3.norm(v3.sub(ex, v3.mul(ey, v3.dot(ex, ey)))); return [[o[0] * s, o[1], o[2]], ex, ey]; };
+    const [oh, exh, eyh] = frame([0.026, 0.41, -0.068], [1, 0, -0.62], [-0.2, 1, 0.1]);
+    R.flat('wingH', hindTex.sm.slice(0, -1), oh, exh, eyh, W.rigid('Wing_Hind' + sfx), hb);
+    const [of, exf, eyf] = frame([0.03, 0.455, -0.058], [1, 0, -0.38], [-0.25, 1, 0.12]);
+    R.flat('wingF', foreTex.sm.slice(0, -1), of, exf, eyf, W.rigid('Wing_Fore' + sfx), fb);
+  }
+
+  // ---- drawn face: eye whites, pupils (bone driven), lids atlas, mouth atlas
+  const ink = '#130f1c';
+  const eyePatch = { c: HC, r: HR, t0: d(-76), t1: d(76), p0: d(-26), p1: d(56), cw: 384, ch: 224, pad: 6 };
+  const whites = new Atlas({ ...eyePatch, key: 'whites', cols: 1, rows: 1, cells: [{ label: 'Whites', draw: (p) => { for (const s of S2) p.fill(ell(s * EYE.cx, EYE.cy, EYE.rx, EYE.ry, 64), '#fffdf0'); } }] });
+  whites.drawAll();
+  R.mat('whites', { name: 'Rozy_Eye_Whites', color: '#ffffff', rough: 0.4, map: whites.canvas, alphaTest: 0.5, poly: -1 });
+  R.add('whites', ellGrid(HC, HR, { nu: 44, nv: 26, t0: whites.t0, t1: whites.t1, p0: whites.p0, p1: whites.p1, off: 0.0014, uv: (u, v) => whites.uvMap(u, v) }), W.rigid('Head'));
+  const pupCv = mkCanvas(128, 128); { const c = pupCv.getContext('2d'); c.fillStyle = '#0d0b12'; c.beginPath(); c.arc(64, 64, 58, 0, 2 * PI); c.fill(); }
+  R.mat('pupil', { name: 'Rozy_Pupils', color: '#ffffff', rough: 0.3, map: pupCv, alphaTest: 0.5, poly: -2 });
+  for (const [sfx, s] of SIDES) {
+    const a = (PUP * 1.06) / HR[0];
+    R.add('pupil', ellGrid(HC, HR, { nu: 14, nv: 14, t0: s * thc - a / Math.cos(phc), t1: s * thc + a / Math.cos(phc), p0: phc - a, p1: phc + a, off: 0.0025 }), W.rigid('Pupil' + sfx));
+  }
+  const E = (s) => ({ ...EYE, cx: s * EYE.cx });
+  const both = (spL, spR = spL) => (p) => { drawEye(p, E(1), 1, spL, RPC.lidHole(SKIN), ink); drawEye(p, E(-1), -1, spR, RPC.lidHole(SKIN), ink); };
+  const lidCells = [
+    ['Open', { top: 0 }], ['Relaxed', { top: 0.2 }], ['Half', { top: 0.5 }], ['Sleepy', { top: 0.68, bottom: 0.08 }],
+    ['Closed', { mode: 'closed' }], ['Happy ^^', { mode: 'happy' }], ['Worried', { top: 0.22, tilt: 0.9, brow: { inY: 0.013, outY: 0.003, curve: 0.002 } }],
+    ['Sad', { top: 0.42, tilt: 0.75 }], ['Angry', { top: 0.3, tilt: -1.0, brow: { inY: -0.001, outY: 0.01, curve: -0.001, w: 1.25 } }],
+    ['Surprised', { top: 0, thick: 1.3, brow: { inY: 0.015, outY: 0.014, curve: 0.004, w: 0.9 } }], ['Squeeze >_<', { mode: 'squeeze' }], ['Wink (left)', { mode: 'happy' }, { top: 0 }],
+  ].map(([label, a, b]) => ({ label, draw: both(a, b || a) }));
+  for (let i = 0; i < 4; i++) lidCells.push({ label: 'Custom ' + (i + 1), draw: lidCells[0].draw });
+  const lids = new Atlas({ ...eyePatch, key: 'lids', label: 'Eyes', cols: 4, rows: 4, cells: lidCells, def: 0 });
+  lids.drawAll();
+  lids.guide = (p) => { for (const s of S2) p.fill(ell(s * EYE.cx, EYE.cy, EYE.rx, EYE.ry, 48), 'rgba(255,255,255,.55)'); };
+  R.mat('lids', { name: 'Rozy_Eyelids_Drawn', color: '#ffffff', rough: 0.62, atlas: 'lids', alphaTest: 0.75, poly: -3, lidMask: true, order: 3 });
+  R.add('lids', ellGrid(HC, HR, { nu: 44, nv: 26, t0: lids.t0, t1: lids.t1, p0: lids.p0, p1: lids.p1, off: 0.0037, uv: (u, v) => lids.uvMap(u, v) }), W.rigid('Head'));
+  R.layers.push(lids);
+
+  const MY = -0.048, LW = 0.0023, dark = '#3b1236', tongue = '#e07a9a', teeth = '#ffffff';
+  const open = (p, pts, o = {}) => { p.fill(pts, dark); if (o.tongue) { p.save(); p.clip(pts); p.fill(ell(0, o.tongue[1], o.tongue[0], o.tongue[2]), tongue); p.restore(); } if (o.teeth) { p.save(); p.clip(pts); p.fill(o.teeth, teeth); p.restore(); } p.stroke(pts, LW, ink, true); };
+  const mc = [
+    ['Wavy (sheet A)', (p) => p.stroke(spl([[-0.025, MY + 0.002], [-0.013, MY - 0.002], [-0.003, MY + 0.003], [0.008, MY - 0.002], [0.019, MY + 0.002], [0.026, MY + 0.0005]], 8), LW, ink)],
+    ['Worried wobble (sheet B)', (p) => p.stroke(spl([[-0.021, MY - 0.006], [-0.012, MY + 0.002], [-0.003, MY - 0.001], [0.006, MY + 0.003], [0.015, MY - 0.001], [0.022, MY - 0.007]], 8), LW, ink)],
+    ['Smile', (p) => p.stroke(bez([-0.023, MY + 0.004], [-0.012, MY - 0.009], [0.012, MY - 0.009], [0.023, MY + 0.004]), LW, ink)],
+    ['Big smile', (p) => open(p, [...bez([-0.024, MY + 0.004], [-0.016, MY - 0.022], [0.016, MY - 0.022], [0.024, MY + 0.004])], { tongue: [0.011, MY - 0.014, 0.007] })],
+    ['Frown', (p) => p.stroke(bez([-0.02, MY - 0.006], [-0.01, MY + 0.005], [0.01, MY + 0.005], [0.02, MY - 0.006]), LW, ink)],
+    ['Flat', (p) => p.stroke(spl([[-0.018, MY], [-0.006, MY - 0.0015], [0.006, MY + 0.0008], [0.018, MY - 0.0005]], 6), LW, ink)],
+    ['Oh', (p) => open(p, ell(0, MY - 0.002, 0.0068, 0.0088))],
+    ['Gasp', (p) => open(p, ell(0, MY - 0.006, 0.0125, 0.016), { tongue: [0.009, MY - 0.017, 0.006] })],
+    ['Talk A', (p) => open(p, [...bez([-0.016, MY + 0.002], [-0.012, MY - 0.018], [0.012, MY - 0.018], [0.016, MY + 0.002])], { tongue: [0.008, MY - 0.012, 0.005] })],
+    ['Talk E', (p) => open(p, [...bez([-0.02, MY + 0.002], [-0.015, MY - 0.01], [0.015, MY - 0.01], [0.02, MY + 0.002])], { teeth: [[-0.03, MY + 0.006], [0.03, MY + 0.006], [0.03, MY - 0.002], [-0.03, MY - 0.002]] })],
+    ['Talk O', (p) => open(p, ell(0, MY - 0.003, 0.0085, 0.011), { tongue: [0.006, MY - 0.01, 0.004] })],
+    ['Grimace', (p) => { const pts = [[-0.022, MY + 0.003], [0.022, MY + 0.003], [0.02, MY - 0.009], [-0.02, MY - 0.009]]; open(p, pts, { teeth: [[-0.03, MY + 0.006], [0.03, MY + 0.006], [0.03, MY - 0.012], [-0.03, MY - 0.012]] }); p.stroke([[-0.02, MY - 0.003], [-0.013, MY + 0.001], [-0.006, MY - 0.005], [0, MY + 0.001], [0.006, MY - 0.005], [0.013, MY + 0.001], [0.02, MY - 0.003]], LW * 0.6, ink); }],
+  ].map(([label, draw]) => ({ label, draw }));
+  for (let i = 0; i < 4; i++) mc.push({ label: 'Custom ' + (i + 1), draw: mc[0].draw });
+  const VG = { x: 0, y: MY + 0.0045, w: 0.0215, h: 0.026, lw: LW, ink, dark, tongue, teeth };
+  for (const vz of RPC.VISEMES) mc.push({ label: 'Talk: ' + vz.label, draw: (p) => RPC.drawViseme(p, vz.key, VG) });
+  const mouth = new Atlas({ key: 'mouth', label: 'Mouth', c: HC, r: HR, t0: d(-48), t1: d(48), p0: d(-72), p1: d(-14), cols: 4, rows: 7, cw: 384, ch: 224, pad: 6, cells: mc, def: 0 });
+  mouth.drawAll();
+  mouth.guide = (p) => { for (const s of S2) p.fill(ell(s * 0.064, -0.026, 0.0115, 0.0115, 24), 'rgba(45,33,95,.5)'); };
+  R.mat('mouth', { name: 'Rozy_Mouth_Drawn', color: '#ffffff', rough: 0.62, atlas: 'mouth', alphaTest: 0.3, poly: -1 });
+  R.add('mouth', ellGrid(HC, HR, { nu: 34, nv: 22, t0: mouth.t0, t1: mouth.t1, p0: mouth.p0, p1: mouth.p1, off: 0.0014, uv: (u, v) => mouth.uvMap(u, v) }), W.rigid('Head'));
+  R.layers.push(mouth);
+
+  const lookMax = (EYE.rx - PUP - 0.0015) / HR[0] / D2R;
+  R.extra.sculpt = (ch) => rozySculpt(ch, { HC, HR, SKIN });
+  R.extra.face = {
+    eyesKind: 'drawn', look: { bones: ['Eye.L', 'Eye.R'], maxX: lookMax, maxY: (EYE.ry - PUP - 0.0015) / HR[0] / D2R }, pupilBones: ['Pupil.L', 'Pupil.R'],
+    talk: { mouth: 16 },
+    parts: {
+      antennae: { label: 'Antennae', options: {
+        'Up (sheet A)': {}, 'Droop one (sheet B)': { 'Antenna_1.R': [18, 0, 30], 'Antenna_2.R': [30, 0, 16], 'Antenna_3.R': [36, 0, 0] },
+        'Both droop': symPose({ 'Antenna_1*': [22, 0, -14], 'Antenna_2*': [40, 0, 0], 'Antenna_3*': [44, 0, 0] }), 'Perked back': symPose({ 'Antenna_1*': [-16, 0, -8], 'Antenna_2*': [-10, 0, 0] }),
+        'Curious tilt': { 'Antenna_1.L': [-10, 0, -22], 'Antenna_1.R': [16, 0, 10], 'Antenna_2.R': [26, 0, 0] }, 'Curled tips': symPose({ 'Antenna_2*': [-18, 0, 0], 'Antenna_3*': [-62, 0, 0] }), 'Splayed': symPose({ 'Antenna_1*': [0, 0, -25], 'Antenna_2*': [0, 0, -8] }) } },
+    },
+    expressions: {
+      'Neutral': { lids: 0, mouth: 0, look: [0, 0], pupil: 1 },
+      'Looking up (painting)': { lids: 1, mouth: 1, look: [0.1, 1], pupil: 1 },
+      'Hopeful (sheet A)': { lids: 0, mouth: 0, look: [0.35, 0.95], pupil: 1 },
+      'Sad (sheet B)': { lids: 7, mouth: 1, look: [-0.65, -0.75], pupil: 1, antennae: 'Droop one (sheet B)' },
+      'Worried': { lids: 6, mouth: 1, look: [0, 0], pupil: 1 },
+      'Happy': { lids: 5, mouth: 3, look: [0, 0], pupil: 1 },
+      'Surprised': { lids: 9, mouth: 7, look: [0, 0], pupil: 0.72, antennae: 'Perked back' },
+      'Angry': { lids: 8, mouth: 4, look: [0, 0], pupil: 1 },
+      'Asleep': { lids: 4, mouth: 5, look: [0, 0], pupil: 1, antennae: 'Both droop' },
+      'Talking': { lids: 0, mouth: 8, look: [0, 0], pupil: 1 },
+    },
+  };
+  R.extra.poses = {
+    'Rest (bind pose)': {},
+    'Booth corner (painting) — start': {
+      rot: symPose({ Neck: [-6, 0, 0], Head: [-17, 0, 5], 'Arm2_Upper*': [-10, 0, 3], 'Arm2_Lower*': [-16, 0, 0], 'Hand*': [-30, 0, 0], 'Finger_1*': [-20, 0, 0], 'Finger_2*': [-25, 0, 0], 'Finger_3*': [-20, 0, 0] }),
+      ik: { 'Arm.L': { t: [0.012, 0.43, 0.088], pole: [0.25, 0.32, -0.15] }, 'Arm.R': { t: [-0.012, 0.424, 0.088], pole: [-0.25, 0.32, -0.15] } },
+      face: 'Looking up (painting)',
+    },
+    'Sheet A (hand on hip)': {
+      rot: symPose({ Head: [-12, 0, 0], 'Arm_Upper.L': [0, 0, 4], 'Hand.R': [0, 0, -30] }),
+      ik: { 'Arm.R': { t: [-0.084, 0.305, 0.03], pole: [-0.3, 0.33, -0.05] } },
+      face: 'Hopeful (sheet A)',
+    },
+    'Sheet B (slouched, sad)': {
+      pos: { Hips: [0, -0.012, 0] },
+      rot: { ...symPose({ Torso_Lower: [6, 0, 0], Torso_Upper: [8, 0, 0], Neck: [2, 0, 0], Head: [-3, -12, -12], 'Arm_Upper*': [-14, 0, -3], 'Arm_Lower*': [-24, 0, 0], 'Arm2_Upper*': [-8, 0, 0], 'Arm2_Lower*': [-12, 0, 0], 'Leg_Upper*': [-14, 0, 0], 'Leg_Lower*': [26, 0, 0], 'Foot*': [-12, 0, 0], 'Wing_Fore*': [14, 0, -4], 'Wing_Hind*': [10, 0, 0] }), 'Antenna_1.R': [18, 0, 30], 'Antenna_2.R': [30, 0, 16], 'Antenna_3.R': [36, 0, 0] },
+      face: 'Sad (sheet B)',
+    },
+    'Trying to fly': { rot: symPose({ 'Wing_Fore*': [0, 0, 38], 'Wing_Hind*': [0, 0, 26], 'Arm_Upper*': [0, 0, 72], 'Arm_Lower*': [0, 0, 18], 'Arm2_Upper*': [0, 0, 40], 'Arm2_Lower*': [0, 0, 10], Head: [-10, 0, 0] }), face: 'Happy' },
+    'Waving hello': { rot: { 'Arm_Upper.L': [0, 0, 150], 'Arm_Lower.L': [0, 0, 28], 'Hand.L': [0, 0, 10], Head: [-4, 8, 6] }, face: 'Happy' },
+    'Shy (hands together low)': { rot: symPose({ Head: [10, 8, 6] }), ik: { 'Arm.L': { t: [0.016, 0.31, 0.076] }, 'Arm.R': { t: [-0.016, 0.31, 0.076] } }, face: 'Worried' },
+  };
+  { // sit the head down into the fuzzy collar
+    const head = R.descendants('Head');
+    R.shiftY((bn) => head.has(bn) ? -0.028 : bn === 'Neck' ? -0.012 : 0);
+  }
+  R.extra.start = { pose: 'Booth corner (painting) — start', note: 'Not in the Episode 1 script: placed from the painting, beside the balloon-pop booth' };
+  R.extra.labelBone = 'Torso_Upper';
+  R.extra.gait = { waddle: 0.15, armSwing: 20, elbow: -18, mid: 0.7 };
+  return R.finish();
+}
+RPC.buildRozy = buildRozy;
+})();
+
+// ================================================================= MENO
+(() => {
+const { v3, quat, D2R, W, Rig, Atlas, ell, bez, spl, ellGrid, tubeGrid, ellPoint, ellFront, ellNormal, bandTexture, mkCanvas, symPose, drawEye } = RPC;
+const PI = Math.PI, d = (x) => x * D2R, S2 = [1, -1], SIDES = [['.L', 1], ['.R', -1]];
+const ORANGE = '#f37a12', CREAM = '#fff3e4', LINE = '#b2470a';
+
+// Sculpted moulded-rubber body (sculpt.js). Proportions read off the model sheet (front view, 0.46 mm per pixel).
+// Meno's head is not a ball: it narrows and gets shallower toward the crown (widest through the cheeks, like a sea lion's), and the back of
+// the skull is flatter. One map, height unchanged, used both ways: the sculpted head (inverse, in its warp) and everything drawn on the head
+// (the whites, pupils, lids and brows, forward), so the drawn face still lies exactly on the skin
+function menoHeadWD(HR, y, z) { const t = Math.min(1, Math.max(0, (y / HR[1] + 0.3) / 1.3)), e = t * t * (3 - 2 * t); return [1 - 0.13 * e, (1 - 0.08 * e) * (z < 0 ? 0.88 : 1)]; } // [across, front-to-back] at local height y
+function menoHeadMap(HC, HR, p) { const k = menoHeadWD(HR, p[1] - HC[1], p[2] - HC[2]); return [HC[0] + (p[0] - HC[0]) * k[0], p[1], HC[2] + (p[2] - HC[2]) * k[1]]; }
+function menoSculpt(ch, K) {
+  const { P, frameM } = RPC.sculpt; const { HC, HR, MSH, MEL, MWR } = K;
+  const OR = '#f37a12', CR = '#fff1e0', TAN = '#e9b65a';
+  const parts = [], paint = [], carve = [], seams = [];
+  // ---- body: one smooth moulded sea-lion column (rounded-rectangle profile front and side, oval in section), as wide as the head,
+  // a touch narrower at the shoulders and the seat, no neck; a soft rounded seat behind
+  const prof = (h) => 1 - 3 * Math.max(0, h - 0.08) ** 2 - 9 * Math.max(0, -h - 0.1) ** 2; // width along the height (h = up from the middle)
+  // one consistent body depth from the seat up through the chest (12% slimmer front-to-back than before, everywhere, so the chest and
+  // upper torso are exactly as deep as the lower torso), and a chest 6% narrower across than the belly, blending in above the plug
+  const DEPTH = 0.88, slim = (h) => { const u = Math.min(1, Math.max(0, (h + 0.09) / 0.09)), e = u * u * (3 - 2 * u); return [1 - 0.06 * e, DEPTH]; };
+  parts.push({ id: 'body', bones: ['Hips', 'Torso_Lower', 'Torso_Upper', 'Neck'], color: OR, k: 0.03, prims: [
+    P.sell([0, 0.29, 0.002], [0.089, 0.078, 0.2], [2, 3.2], [90, 0, 0], { warp: (x, y, z) => { const k = prof(-z), sl = slim(-z); return [x / (k * sl[0]), y / (k * sl[1]), z]; } }), // runs up into the head: a wide neck
+    P.ell([0, 0.15, -0.022 * DEPTH], [0.08, 0.055, 0.061 * DEPTH]),
+  ] });
+  // squeaker plug on the belly (sheet, second pose)
+  const plug = [0, 0.205, 0.0795 * DEPTH];
+  // ---- head: the drawn eyes live on this exact ellipsoid, so it stays; the body grows into it
+  parts.push({ id: 'head', parent: 'body', join: { c: [0, 0.43, -0.01], r: 0.1, k: 0.05 }, bones: ['Head', 'Neck'], color: OR, k: 0.01, prims: [
+    P.ell(HC, HR, null, { warp: (x, y, z) => { const k = menoHeadWD(HR, y, z); return [x / k[0], y > 0.068 ? 0.068 + (y - 0.068) * 1.12 : y, z / k[1]]; } }), // (menoHeadMap, inverse) and the crown is a touch flatter (above the drawn brows)
+    ...[[-0.013, -0.02, 15, 0.0088], [0.002, -0.012, -4, 0.0097], [0.016, -0.022, -19, 0.0083]].map(([x, z, a, r]) => { const b = [x, HC[1] + HR[1] - 0.008, z], t = [x + 0.016 * Math.sin(a * D2R), HC[1] + HR[1] + 0.018, z - 0.01]; return { p: P.rc(b, t, r, 0.0022), k: 0.008 }; }),
+  ] });
+  parts.push({ id: 'muzzle', parent: 'head', join: { c: [0, 0.5, 0.06], r: 0.06, k: 0.01 }, bones: ['Snout', 'Head'], color: TAN, k: 0.008, prims: [
+    // narrow between the eyes (nose on top), full and round down at the mouth
+    // broad, flat-topped upper snout with a FLAT underside (a clean straight mouth line over the lower jaw)
+    (() => { const mz = P.sell([0, 0.499, 0.072], [0.047, 0.032, 0.04], [2.45, 2.1], null, { warp: (x, y, z) => { const yy = y > 0 ? y / 1.1 : y / 1.34; /* the lower half reaches further down, so the cut leaves a broad FLAT underside */ const nb = 1 + 0.07 * Math.min(1, Math.max(0, -y / 0.031)), nt = 1 + 0.07 * Math.min(1, Math.max(0, yy / 0.031)); return [x * nb * nt, yy, z]; } });
+      return P.fn(mz.box, (x, y, z) => RPC.sculpt.smax(mz.f(x, y, z), 0.4688 - y, 0.003)); })(),
+  ] });
+  // ---- flippers: broad pillowed paddles hanging from the shoulders down his sides (a seal's front flippers), flat faces out,
+  // narrow at the root, widest near the rounded end, four moulded finger lines. Sculpted and weighted swung out to the side
+  // (spec.tpose), then posed back, so they lie right against his sides without fusing into them.
+  const tpose = [];
+  for (const s of [1, -1]) {
+    const sfx = s > 0 ? 'L' : 'R'; const m = (p) => [p[0] * s, p[1], p[2]];
+    const AZ = 66, az = AZ * D2R; const tang = [s * Math.cos(az), 0, -Math.sin(az)];
+    const nrm = v3.norm([Math.sin(az) / 0.0837, 0, Math.cos(az) / 0.0686]); const inn = (d) => [-nrm[0] * d, 0, -nrm[2] * d]; // outward normal of the body there (positive side)
+    const sh = m(MSH); const fr = { o: sh, x: tang, y: [0, -1, 0.015] }; // paddle plane tangent to his side, 66 degrees round from the front
+    const poly = [[-0.019, -0.013], [0.015, -0.015], [0.026, 0.018], [0.034, 0.056], [0.0365, 0.092], [0.032, 0.112], [0.02, 0.122], [0.004, 0.126], [-0.011, 0.125], [-0.024, 0.12], [-0.033, 0.106], [-0.034, 0.07], [-0.027, 0.028]];
+    const paddle = P.slab(fr, poly, 0.0112, { pillow: 0.019, rim: 0.0034, bend: [0.55, 0], taper: (ly) => 1 - 0.3 * Math.min(1, Math.max(0, ly / 0.13)) });
+    const jc = v3.add(MSH, inn(0.0125)), rc0 = v3.add(MSH, inn(0.0095));
+    parts.push({ id: 'flip' + sfx, parent: 'body', join: { c: m([jc[0], MSH[1] + 0.006, jc[2]]), r: 0.04, k: 0.016 }, bones: ['UpperArm.' + sfx, 'LowerArm.' + sfx, 'Hand.' + sfx], color: OR, k: 0.012, prims: [
+      P.ell(m([rc0[0], MSH[1] + 0.002, rc0[2]]), [0.021, 0.022, 0.016], [0, s * AZ, 0]), { p: paddle, k: 0.012 } ] });
+    const F = paddle.frame; const front = F.Z[2] > 0 ? 1 : -1;
+    const at = (lx, ly, lz) => [F.o[0] + F.X[0] * lx + F.Y[0] * ly + F.Z[0] * lz * front, F.o[1] + F.X[1] * lx + F.Y[1] * ly + F.Z[1] * lz * front, F.o[2] + F.X[2] * lx + F.Y[2] * ly + F.Z[2] * lz * front];
+    for (const lx of [-0.02, -0.0067, 0.0067, 0.02]) carve.push({ p: P.rc(at(lx * 0.95, 0.09, 0.0088), at(lx * 1.08, 0.123, 0.0056), 0.001, 0.0014), k: 0.0011, parts: ['flip' + sfx] });
+    tpose.push({ parts: ['flip' + sfx], bones: ['UpperArm.' + sfx, 'LowerArm.' + sfx, 'Hand.' + sfx], pivot: sh, axis: [0, 0, 1], angle: s * 55 });
+  }
+  // ---- legs: short and stubby, flat moulded soles, three toe lines
+  for (const s of [1, -1]) {
+    const sfx = s > 0 ? 'L' : 'R'; const m = (p) => [p[0] * s, p[1], p[2]];
+    parts.push({ id: 'leg' + sfx, parent: 'body', join: { c: m([0.045, 0.11, 0]), r: 0.06, k: 0.03 }, bones: ['UpperLeg.' + sfx, 'LowerLeg.' + sfx, 'Foot.' + sfx], color: OR, k: 0.016, prims: [
+      P.tube([m([0.042, 0.125, 0]), m([0.054, 0.075, 0.004]), m([0.057, 0.036, 0.008])], [0.034, 0.037, 0.036]),
+      { p: P.ell(m([0.058, 0.022, 0.017]), [0.04, 0.023, 0.047], [0, s * -5, 0], { warp: (x, y, z) => [x, y < -0.012 ? -0.012 + (y + 0.012) * 3 : y, z] }), k: 0.016 } ] });
+    for (const dx of [-0.014, 0, 0.014]) carve.push({ p: P.rc(m([0.058 + dx, 0.03, 0.05]), m([0.058 + dx * 1.15, 0.008, 0.062]), 0.0011, 0.0015), k: 0.0012, parts: ['leg' + sfx] });
+    tpose.push({ parts: ['leg' + sfx], bones: ['UpperLeg.' + sfx, 'LowerLeg.' + sfx, 'Foot.' + sfx], pivot: m([0.05, 0.11, 0]), axis: [0, 0, 1], angle: s * 10 });
+  }
+  // ---- tail + caudal fin (fan), fin rays moulded in
+  const T = [[0, 0.122, -0.05], [0, 0.098, -0.095], [0, 0.074, -0.133], [0, 0.058, -0.158]];
+  const finFr = { o: T[3], x: [1, 0, 0], y: [0, -0.18, -1] };
+  const finPoly = [[-0.016, -0.008], [0.016, -0.008], [0.04, 0.04], [0.064, 0.086], [0.06, 0.104], [0.032, 0.097], [0, 0.092], [-0.032, 0.097], [-0.06, 0.104], [-0.064, 0.086], [-0.04, 0.04]].map(([a, b]) => [a * 0.92, b * 0.92]);
+  const fin = P.slab(finFr, finPoly, 0.008, { pillow: 0.016, rim: 0.003, bend: [0, 0] });
+  parts.push({ id: 'tail', parent: 'body', join: { c: T[0], r: 0.05, k: 0.022 }, bones: ['Tail_1', 'Tail_2', 'Tail_Fin'], color: OR, k: 0.012, prims: [P.tube(T, [0.038, 0.03, 0.022, 0.016]), { p: fin, k: 0.012 }] });
+  { const F = fin.frame; const at = (lx, ly, lz) => [F.o[0] + F.X[0] * lx + F.Y[0] * ly + F.Z[0] * lz, F.o[1] + F.X[1] * lx + F.Y[1] * ly + F.Z[1] * lz, F.o[2] + F.X[2] * lx + F.Y[2] * ly + F.Z[2] * lz];
+    for (const a of [-0.6, -0.2, 0.2, 0.6]) for (const side of [1, -1]) carve.push({ p: P.rc(at(a * 0.037, 0.033, 0.0075 * side), at(a * 0.097, 0.086, 0.0062 * side), 0.0011, 0.0014), k: 0.001, parts: ['tail'] }); }
+  // ---- squeaker plug: a moulded ring + cap on the belly
+  parts.push({ id: 'plug', parent: 'body', join: { c: plug, r: 0.03, k: 0.004 }, bones: ['Torso_Lower', 'Hips'], color: OR, k: 0.003, prims: [P.torus(plug, [0, 0.12, 1], 0.017, 0.0042), P.cyl([plug[0], plug[1] - 0.0012, plug[2] - 0.006], [plug[0], plug[1] + 0.0004, plug[2] + 0.0036], 0.0145, 0.003)] });
+  // ---- clownfish stripes: wavy cream bands that wrap (some only part way round), as on the sheet
+  const th = (x, z) => Math.atan2(x, z); // 0 = front, + = his left
+  const band = (y0, w, a1, p1, a2, p2, cov, c0) => (x, y, z) => { const t = th(x, z); const yc = y0 + a1 * Math.sin(t + p1) + a2 * Math.sin(2 * t + p2); const ww = w * (0.8 + 0.16 * Math.cos(t + p2) + 0.06 * Math.cos(2 * t + p1)); let d = Math.abs(y - yc) - ww; if (cov) { const m = Math.cos(t - c0) - cov; d = Math.max(d, -m * 0.05); } return d; };
+  const bands = [
+    band(0.446, 0.016, 0.012, 0.6, 0.006, 1.0, -0.15, Math.PI),      // collar under the head (open at the front)
+    band(0.4, 0.015, 0.02, 2.2, 0.008, 0.3, 0.1, 1.2),              // high on his left
+    band(0.364, 0.016, 0.016, -0.8, 0.008, 2.0, 0.05, -1.4),         // high on his right
+    band(0.33, 0.018, 0.012, 0.4, 0.007, -1.0, null, 0),            // full band across the chest
+    band(0.256, 0.017, 0.014, 1.4, 0.007, 0.8, null, 0),              // belly band
+    band(0.176, 0.015, 0.014, -0.6, 0.006, 2.4, null, 0),            // low belly band
+    band(0.124, 0.016, 0.014, 2.6, 0.007, -0.5, -0.3, Math.PI),      // seat band
+  ];
+  for (const f of bands) paint.push({ parts: ['body', 'head'], color: CR, soft: 0.0009, sd: (x, y, z) => f(x, y, z) });
+  for (const s of [1, -1]) paint.push({ parts: ['leg' + (s > 0 ? 'L' : 'R')], color: CR, soft: 0.0009, sd: (x, y, z) => Math.abs(y - (0.052 + 0.006 * Math.sin(Math.atan2(x - s * 0.055, z) * 1.3))) - 0.0095 });
+  paint.push({ parts: ['tail'], color: CR, soft: 0.0009, sd: (x, y, z) => { const t = Math.hypot(y - 0.098, z + 0.095); return Math.abs(t) - 0.011; } });
+  // the builder lowers everything from the chest up by 4 cm at the end (R.shiftY): give the skin exactly the same move
+  const DY = -0.04; const fwdB = (y) => y + DY * Math.min(1, Math.max(0, (y - 0.15) / 0.14)); const invB = (y) => (y <= 0.15 ? y : y < 0.15 + 0.14 * (1 + DY / 0.14) ? 0.15 + (y - 0.15) / (1 + DY / 0.14) : y - DY);
+  const mv = (q, fn) => (q.f ? fn(q) : { ...q, p: fn(q.p) });
+  for (const pt of parts) {
+    if (pt.id === 'body' || pt.id === 'plug') { pt.prims = pt.prims.map((q) => mv(q, (p) => P.warpY(p, fwdB, invB))); if (pt.join) pt.join = { ...pt.join, c: [pt.join.c[0], fwdB(pt.join.c[1]), pt.join.c[2]] }; }
+    else if (pt.id === 'head' || pt.id === 'muzzle' || /^flip/.test(pt.id)) { pt.prims = pt.prims.map((q) => mv(q, (p) => P.shift(p, DY))); if (pt.join) pt.join = { ...pt.join, c: [pt.join.c[0], pt.join.c[1] + DY, pt.join.c[2]] }; }
+  }
+  for (const c of carve) if (c.parts && c.parts.some((id) => /^flip/.test(id))) c.p = P.shift(c.p, DY);
+  for (const g of tpose) if (/^flip/.test(g.parts[0])) g.pivot = [g.pivot[0], g.pivot[1] + DY, g.pivot[2]];
+  for (const p of paint) if (p.parts && p.parts.includes('body')) { const f = p.sd; p.sd = (x, y, z, ...r) => f(x, invB(y), z, ...r); }
+  return { name: 'Meno_Body_Rubber', surface: 'rubber', voxel: 0.0018, targetTris: 72000, tile: 0.03, base: OR, parts, paint, seams, carve, tpose, rigid: [{ part: 'head', bone: 'Head' }, { part: 'muzzle', bone: 'Snout', r0: 0, r1: 0.0001 }], groove: 0, lumps: 0.00006, seamWidth: 0.002, grime: 0.9, aoProbe: 0.01,
+    mat: { rough: 0.32, clearcoat: 0.6, ccRough: 0.18 },
+    conform: () => null }; // the head is the exact ellipsoid the eyes are drawn on: decals stay where they were painted
+}
+function buildMeno() {
+  const R = new Rig('meno', 'Meno');
+  const MSH = [0.0851, 0.372, 0.0327], MEL = [0.0851, 0.322, 0.0331], MWR = [0.0853, 0.277, 0.0334]; // flippers hang from the shoulders down his SIDES, a little forward of the middle (66 degrees round from the front)
+  R.extra.color = '#f38a2a'; R.extra.subtitle = 'Rubber toy · clownfish-striped seal';
+  const rubber = (name, map) => ({ name, color: map ? '#ffffff' : ORANGE, rough: 0.36, clearcoat: 0.75, ccRough: 0.12, map: map || null });
+  R.mat('tan', { name: 'Meno_Rubber_Snout', color: '#e9b65a', rough: 0.4, clearcoat: 0.6, ccRough: 0.15 })
+   .mat('nose', { name: 'Meno_Nose', color: '#0c0b0b', rough: 0.2, clearcoat: 1, ccRough: 0.05 })
+   .mat('mouthIn', { name: 'Meno_Mouth_Inside', color: '#4a1410', rough: 0.6 })
+   .mat('orange', rubber('Meno_Rubber_Orange'))
+   .mat('lines', { name: 'Meno_Rubber_Grooves', color: LINE, rough: 0.5 });
+  // ---- bones
+  R.bone('Root', null, [0, 0, 0], { dir: [0, 0, -1], len: 0.16, ctrl: 0.22, shape: 'root' })
+   .bone('Hips', 'Root', [0, 0.12, 0], { to: 'Torso_Lower', ctrl: 0.14, shape: 'cog' })
+   .bone('Torso_Lower', 'Hips', [0, 0.185, 0], { to: 'Torso_Upper', ctrl: 0.12 })
+   .bone('Torso_Upper', 'Torso_Lower', [0, 0.29, 0], { to: 'Neck', ctrl: 0.12 })
+   .bone('Neck', 'Torso_Upper', [0, 0.4, 0], { to: 'Head', ctrl: 0.11 })
+   .bone('Head', 'Neck', [0, 0.445, 0], { dir: [0, 1, 0], len: 0.15, ctrl: 0.12 })
+   .bone('Snout', 'Head', [0, 0.5, 0.06], { dir: [0, 0, 1], len: 0.055, region: 'Face', ctrl: 0.03, shape: 'sphere' })
+   .bone('Jaw', 'Head', [0, 0.472, 0.05], { dir: [0, -0.25, 1], len: 0.05, region: 'Face', ctrl: 0.03, shape: 'sphere' });
+  const HC = [0, 0.505, 0], HR = [0.088, 0.085, 0.088];
+  const EYE = { cx: 0.05, cy: 0.0305, rx: 0.0176, ry: 0.0191, lw: 0.0025, lash: 0 }; // tucked in beside the top corners of the big muzzle, level with the nose top (sheet)
+  const PUP = 0.0093;
+  const phc = Math.asin(EYE.cy / HR[1]), thc = Math.asin(EYE.cx / (HR[0] * Math.cos(phc)));
+  for (const [sfx, s] of SIDES) {
+    const pp = ellPoint(HC, HR, s * thc, phc);
+    R.bone('Eye' + sfx, 'Head', HC, { dir: v3.sub(pp, HC), len: 0.08, region: 'Face', ctrl: 0.02, shape: 'sphere' });
+    R.bone('Pupil' + sfx, 'Eye' + sfx, pp, { dir: v3.sub(pp, HC), len: 0.012, region: 'Face', ctrl: 0.014, shape: 'sphere' });
+  }
+  R.pair('UpperArm', 'Torso_Upper', MSH, { to: 'LowerArm', region: 'Flippers', ctrl: 0.045 })
+   .pair('LowerArm', 'UpperArm*', MEL, { to: 'Hand', region: 'Flippers', ctrl: 0.04 })
+   .pair('Hand', 'LowerArm*', MWR, { dir: [0, -1, 0.015], len: 0.05, region: 'Flippers', ctrl: 0.045 })
+   .pair('UpperLeg', 'Hips', [0.05, 0.11, 0], { to: 'LowerLeg', region: 'Legs', ctrl: 0.05 })
+   .pair('LowerLeg', 'UpperLeg*', [0.055, 0.066, 0.006], { to: 'Foot', region: 'Legs', ctrl: 0.048 })
+   .pair('Foot', 'LowerLeg*', [0.057, 0.027, 0.003], { dir: [0, -0.2, 1], len: 0.062, region: 'Legs', ctrl: 0.045 })
+   .bone('Tail_1', 'Hips', [0, 0.1, -0.055], { to: 'Tail_2', region: 'Tail', ctrl: 0.05 })
+   .bone('Tail_2', 'Tail_1', [0, 0.078, -0.1], { to: 'Tail_Fin', region: 'Tail', ctrl: 0.04 })
+   .bone('Tail_Fin', 'Tail_2', [0, 0.058, -0.142], { dir: [0, -0.15, -1], len: 0.085, region: 'Tail', ctrl: 0.05 });
+  for (const [sfx, s] of SIDES) {
+    R.ik.push({ name: 'Leg' + sfx, upper: 'UpperLeg' + sfx, lower: 'LowerLeg' + sfx, end: 'Foot' + sfx, pole: [s * 0.046, 0.065, 0.3], kind: 'leg' });
+    R.ik.push({ name: 'Arm' + sfx, upper: 'UpperArm' + sfx, lower: 'LowerArm' + sfx, end: 'Hand' + sfx, pole: [s * 0.12, 0.28, -0.3], kind: 'arm' });
+  }
+
+  // ---- textures (clownfish bands)
+  const bodyTex = (() => {
+    const Wd = 512, Ht = 512, cv = mkCanvas(Wd, Ht), c = cv.getContext('2d');
+    c.fillStyle = ORANGE; c.fillRect(0, 0, Wd, Ht);
+    const vOf = (y) => (y - 0.035) / 0.445;
+    const bands = [[0.445, 0.012, 'front'], [0.378, 0.017], [0.331, 0.0075, 'back'], [0.283, 0.012], [0.19, 0.014], [0.128, 0.01, 'front']];
+    c.fillStyle = CREAM;
+    bands.forEach(([y, hw, gap], bi) => {
+      c.beginPath();
+      const top = [], bot = [];
+      for (let x = 0; x <= Wd; x += 4) {
+        const u = x / Wd, wv = 0.004 * Math.sin(u * 2 * PI * 3 + bi) + 0.0025 * Math.sin(u * 2 * PI * 7 + bi * 2);
+        let k = 1;
+        if (gap === 'front') k = Math.min(1, Math.max(0, (Math.abs(u - 0.5) - 0.06) / 0.05));
+        if (gap === 'back') k = Math.min(1, Math.max(0, (0.5 - Math.abs(u - 0.5) - 0.12) / 0.06));
+        top.push([x, vOf(y + hw * k + wv) * Ht]); bot.push([x, vOf(y - hw * k + wv * 0.6) * Ht]);
+      }
+      top.forEach((p, i) => i ? c.lineTo(...p) : c.moveTo(...p)); bot.reverse().forEach((p) => c.lineTo(...p)); c.closePath(); c.fill();
+    });
+    return cv;
+  })();
+  const headTex = (() => {
+    const Wd = 512, Ht = 256, cv = mkCanvas(Wd, Ht), c = cv.getContext('2d');
+    c.fillStyle = ORANGE; c.fillRect(0, 0, Wd, Ht); c.fillStyle = CREAM;
+    const top = [], bot = [];
+    for (let x = 0; x <= Wd; x += 4) {
+      const th = -PI + 2 * PI * x / Wd, a = Math.abs(th) / PI; // 0 front, 1 back
+      const k = Math.min(1, Math.max(0, (a - 0.31) / 0.08));
+      const cen = 0.535 + 0.07 * a, hw = 0.045 * k;
+      top.push([x, (cen - hw) * Ht]); bot.push([x, (cen + hw * 1.1) * Ht]);
+    }
+    c.beginPath(); top.forEach((p, i) => i ? c.lineTo(...p) : c.moveTo(...p)); bot.reverse().forEach((p) => c.lineTo(...p)); c.closePath(); c.fill();
+    return cv;
+  })();
+  const limbTex = (bands) => bandTexture(64, 256, ORANGE, bands.map((b) => [...b, CREAM, 0.008]).map(([a, b2, col, w]) => [a, b2, col, w]));
+  R.mat('body', rubber('Meno_Rubber_Body', bodyTex)).mat('head', rubber('Meno_Rubber_Head', headTex))
+   .mat('arm', rubber('Meno_Rubber_Flippers', limbTex([[0.1, 0.3]]))).mat('leg', rubber('Meno_Rubber_Legs', limbTex([[0.3, 0.55]])))
+   .mat('tail', rubber('Meno_Rubber_Tail', limbTex([[0.22, 0.38], [0.6, 0.74]])));
+
+  // ---- the body is SCULPTED (menoSculpt below): one moulded rubber skin with automatic weights
+  // muzzle, nose, jaw, mouth inside
+  R.add('nose', ellGrid([0, 0.516, 0.1], [0.022, 0.0145, 0.012], { nu: 22, nv: 14, deform: (l) => { const k = 0.4 + 0.6 * ((l[1] / 0.0145) + 1) / 2; l[0] *= k; return l; } }), W.rigid('Snout'));
+  R.add('tan', ellGrid([0, 0.4672, 0.073], [0.035, 0.0135, 0.0275], { nu: 32, nv: 18, deform: (l) => { if (l[1] > 0) l[1] *= 0.22; return l; } }), W.rigid('Jaw')); // flat-topped lower jaw: a clear mouth line under the muzzle
+  R.add('mouthIn', ellGrid([0, 0.4685, 0.066], [0.031, 0.006, 0.024], { nu: 22, nv: 12 }), W.rigid('Head'));
+  R.extra.sculpt = (ch) => menoSculpt(ch, { HC, HR, MSH, MEL, MWR });
+
+  // ---- drawn face: whites, pupils (bones), lids atlas, brows atlas
+  const ink = '#1a0c04';
+  const eyePatch = { c: HC, r: HR, t0: d(-82), t1: d(82), p0: d(-4), p1: d(56), cw: 384, ch: 192, pad: 6 };
+  const whites = new Atlas({ ...eyePatch, key: 'whites', cols: 1, rows: 1, cells: [{ label: 'Whites', draw: (p) => { for (const s of S2) p.fill(ell(s * EYE.cx, EYE.cy, EYE.rx, EYE.ry, 64), '#ffffff'); } }] });
+  whites.drawAll();
+  R.mat('whites', { ...rubber('Meno_Eye_Whites', whites.canvas), alphaTest: 0.5, poly: -1, order: 2 });
+  R.add('whites', ellGrid(HC, HR, { nu: 40, nv: 20, t0: whites.t0, t1: whites.t1, p0: whites.p0, p1: whites.p1, off: 0.0022, uv: (u, v) => whites.uvMap(u, v) }) /* (v103: the whites sit 0.4 mm under the lids' shell, not 1.6 mm: seen from the side, a deeper white shell slid out from under the drawn outline and showed as a thin white rim) */, W.rigid('Head'));
+  const pupCv = mkCanvas(128, 128); { const c = pupCv.getContext('2d'); c.fillStyle = '#0b0a0a'; c.beginPath(); c.arc(64, 64, 58, 0, 2 * PI); c.fill(); c.fillStyle = '#ffffff'; c.beginPath(); c.arc(44, 42, 15, 0, 2 * PI); c.fill(); c.beginPath(); c.arc(80, 82, 6, 0, 2 * PI); c.fill(); }
+  R.mat('pupil', { ...rubber('Meno_Pupils', pupCv), alphaTest: 0.5, poly: -2, order: 2 });
+  for (const [sfx, s] of SIDES) {
+    const a = (PUP * 1.06) / HR[0];
+    R.add('pupil', ellGrid(HC, HR, { nu: 14, nv: 14, t0: s * thc - a / Math.cos(phc), t1: s * thc + a / Math.cos(phc), p0: phc - a, p1: phc + a, off: 0.0024 }), W.rigid('Pupil' + sfx));
+  }
+  const E = (s) => ({ ...EYE, cx: s * EYE.cx });
+  // where a lid covers the eye the drawing is half-transparent: that marks a hole cut through the whites and pupils (a depth-only mask mesh,
+  // app.js `lidMask`), so his own skin shows there, never a painted patch of a slightly different orange; the lid lines are drawn as before
+  const LIDHOLE = (() => { const h = parseInt(String(ORANGE).slice(1), 16); return 'rgba(' + (h >> 16 & 255) + ',' + (h >> 8 & 255) + ',' + (h & 255) + ',0.6)'; })(); // (v103: the hole's alpha is 0.6 and app.js cuts it at 0.3, half of it, and the whites and pupils are cut at 0.5, half of theirs: a cut at half the value is where the drawn edge really is at every texture size, so far off, where the texture is blurred down, the hole no longer shrinks and the whites no longer grow, and no rim of white shows round a lid)
+  const both = (a, b = a) => (p) => { drawEye(p, E(1), 1, a, LIDHOLE, ink); drawEye(p, E(-1), -1, b, LIDHOLE, ink); };
+  const lidCells = [
+    ['Open (sheet)', { top: 0 }], ['Lazy', { top: 0.32 }], ['Half', { top: 0.5 }], ['Sleepy', { top: 0.7, bottom: 0.06 }],
+    ['Closed', { mode: 'closed' }], ['Squeezed >_< (ouch)', { mode: 'squeeze' }], ['Happy ^^', { mode: 'happy' }], ['Sad', { top: 0.36, tilt: 0.7 }],
+    ['Angry', { top: 0.3, tilt: -0.9 }], ['Skeptical', { top: 0.46 }, { top: 0.08 }], ['Wink (left)', { mode: 'happy' }, { top: 0 }], ['Wide', { top: 0, thick: 1.3 }],
+  ].map(([label, a, b]) => ({ label, draw: both(a, b || a) }));
+  for (let i = 0; i < 4; i++) lidCells.push({ label: 'Custom ' + (i + 1), draw: lidCells[0].draw });
+  const lids = new Atlas({ ...eyePatch, key: 'lids', label: 'Eyes', cols: 4, rows: 4, cells: lidCells, def: 0 });
+  lids.drawAll();
+  lids.guide = (p) => { for (const s of S2) p.fill(ell(s * EYE.cx, EYE.cy, EYE.rx, EYE.ry, 48), 'rgba(255,255,255,.55)'); };
+  R.mat('lids', { ...rubber('Meno_Eyelids_Drawn'), color: '#ffffff', atlas: 'lids', alphaTest: 0.75, poly: -3, lidMask: true, order: 3 });
+  R.add('lids', ellGrid(HC, HR, { nu: 40, nv: 20, t0: lids.t0, t1: lids.t1, p0: lids.p0, p1: lids.p1, off: 0.0026, uv: (u, v) => lids.uvMap(u, v) }), W.rigid('Head'));
+  R.layers.push(lids);
+
+  const BW = 0.0034;
+  const brow = (inY, outY, curve = 0.003, w = 1) => (p, s) => { const pin = [s * 0.029, inY + 0.0125], pout = [s * 0.058, outY + 0.0125]; p.stroke(spl([pin, [s * 0.0435, (inY + outY) / 2 + 0.0125 + curve], pout], 10), BW * w, ink); };
+  const bc = (label, L, Rr = L) => ({ label, draw: (p) => { if (L) L(p, 1); if (Rr) Rr(p, -1); } });
+  const browCells = [
+    bc('Neutral (sheet A)', brow(0.047, 0.046, 0.004)), bc('Raised', brow(0.056, 0.054, 0.005)), bc('Determined (sheet B)', brow(0.043, 0.053, 0.001, 1.1)),
+    bc('Angry', brow(0.039, 0.056, -0.001, 1.3)), bc('Worried', brow(0.058, 0.045, 0.002)), bc('Sad', brow(0.055, 0.041, 0.003)),
+    bc('Skeptical', brow(0.058, 0.057, 0.006), brow(0.044, 0.044, 0)), bc('Flat', brow(0.048, 0.048, 0)), bc('Surprised', brow(0.064, 0.06, 0.007, 0.9)),
+    bc('None', null, null), bc('Furrowed', (p, s) => { brow(0.041, 0.054, -0.002, 1.25)(p, s); if (s > 0) { p.stroke([[0.006, 0.062], [0.002, 0.056]], BW * 0.6, ink); p.stroke([[-0.006, 0.062], [-0.002, 0.056]], BW * 0.6, ink); } }),
+    bc('Soft', brow(0.05, 0.048, 0.005, 0.7)),
+  ];
+  for (let i = 0; i < 4; i++) browCells.push({ label: 'Custom ' + (i + 1), draw: browCells[0].draw });
+  const brows = new Atlas({ key: 'brows', label: 'Eyebrows', c: HC, r: HR, t0: d(-82), t1: d(82), p0: d(24), p1: d(76), cols: 4, rows: 4, cw: 384, ch: 160, pad: 6, cells: browCells, def: 0 });
+  brows.drawAll();
+  brows.guide = (p) => { for (const s of S2) p.fill(ell(s * EYE.cx, EYE.cy, EYE.rx, EYE.ry, 48), 'rgba(255,255,255,.55)'); };
+  R.mat('brows', { ...rubber('Meno_Eyebrows_Drawn'), color: '#ffffff', atlas: 'brows', alphaTest: 0.3, poly: -2 });
+  R.add('brows', ellGrid(HC, HR, { nu: 40, nv: 16, t0: brows.t0, t1: brows.t1, p0: brows.p0, p1: brows.p1, off: 0.0016, uv: (u, v) => brows.uvMap(u, v) }), W.rigid('Head'));
+  R.layers.push(brows);
+  { // the drawn face follows the shaped head (menoHeadMap); each eye turns about a point straight behind it, so its pupil slides along the skin
+    for (const key of ['whites', 'pupil', 'lids', 'brows']) { const part = R.parts[key]; if (!part) continue; for (let v = 0; v < part.P.length / 3; v++) { const q = menoHeadMap(HC, HR, [part.P[v * 3], part.P[v * 3 + 1], part.P[v * 3 + 2]]); part.P[v * 3] = q[0]; part.P[v * 3 + 1] = q[1]; part.P[v * 3 + 2] = q[2]; } }
+    for (const [sfx, s] of SIDES) { const M = (th, ph) => menoHeadMap(HC, HR, ellPoint(HC, HR, th, ph)), e = 0.02, p0 = M(s * thc, phc);
+      let n = v3.norm(v3.cross(v3.sub(M(s * thc + e, phc), M(s * thc - e, phc)), v3.sub(M(s * thc, phc + e), M(s * thc, phc - e)))); if (v3.dot(n, v3.sub(p0, HC)) < 0) n = v3.mul(n, -1);
+      R.bones[R.bi['Pupil' + sfx]].pos = p0; R.bones[R.bi['Eye' + sfx]].pos = v3.sub(p0, v3.mul(n, v3.len(v3.sub(ellPoint(HC, HR, s * thc, phc), HC)))); } }
+
+  R.extra.face = {
+    eyesKind: 'drawn', look: { bones: ['Eye.L', 'Eye.R'], maxX: (EYE.rx - PUP - 0.0012) / HR[0] / D2R, maxY: (EYE.ry - PUP - 0.0012) / HR[0] / D2R, conv: 0.3, out: 0.6 }, // (conv: each pupil sits a little toward his nose; out: and never goes as far outward as inward) pupilBones: ['Pupil.L', 'Pupil.R'],
+    jaw: { bone: 'Jaw', max: 34 },
+    talk: { jaw: 26 }, // degrees of jaw for the tallest talking shape (OH)
+    parts: {},
+    expressions: {
+      'Neutral (sheet A)': { lids: 0, brows: 0, look: [0.55, 0.6], jaw: 0, pupil: 1 },
+      'Lazy / exhausted': { lids: 1, brows: 11, look: [0, -0.2], jaw: 0, pupil: 1 },
+      'Ouch! (squashed)': { lids: 5, brows: 10, look: [0, 0], jaw: 26, pupil: 1 },
+      'Determined (sheet B)': { lids: 0, brows: 2, look: [0.6, 0.45], jaw: 4, pupil: 1 },
+      'Unsettled': { lids: 7, brows: 4, look: [-0.4, -0.7], jaw: 2, pupil: 0.85 },
+      'Sigh': { lids: 2, brows: 5, look: [0, -0.4], jaw: 7, pupil: 1 },
+      'Happy': { lids: 6, brows: 1, look: [0, 0], jaw: 14, pupil: 1 },
+      'Surprised': { lids: 11, brows: 8, look: [0, 0], jaw: 20, pupil: 0.75 },
+      'Skeptical "Ehh"': { lids: 9, brows: 6, look: [-0.5, 0], jaw: 0, pupil: 1 },
+      'Talking': { lids: 0, brows: 0, look: [0, 0], jaw: 12, pupil: 1 },
+      'Asleep': { lids: 4, brows: 11, look: [0, 0], jaw: 0, pupil: 1 },
+      'Blank stare': { lids: 2, brows: 0, look: [0, 0], jaw: 3, pupil: 0.8 },
+    },
+  };
+  R.extra.poses = {
+    'Rest (bind pose)': {},
+    'Script start: squashed flat': {
+      pos: { Hips: [0, -0.043, 0] },
+      rot: symPose({ Hips: [-90, 0, 0], Head: [6, 0, 0], 'UpperArm*': [24, 0, 72], 'LowerArm*': [0, 0, 16], 'Hand*': [0, 0, 10], 'UpperLeg*': [8, 0, 13], 'LowerLeg*': [4, 0, 0], 'Foot*': [-6, 0, 0], Tail_1: [0, 70, 0], Tail_2: [0, 22, 0], Tail_Fin: [0, 8, 0] }),
+      face: 'Ouch! (squashed)',
+    },
+    'Standing (sheet A)': { rot: symPose({ 'UpperArm*': [-6, 0, -2], 'LowerArm*': [-8, 0, 0], Tail_1: [10, 66, 0], Tail_2: [0, 22, 0], Tail_Fin: [0, 10, 0], Head: [-12, -10, 0] }), face: 'Neutral (sheet A)' },
+    'Swimming (sheet B)': {
+      pos: { Hips: [0, 0.12, 0] },
+      rot: { Hips: [52, 0, -8], Torso_Upper: [-10, 0, 0], Neck: [-14, 0, 0], Head: [-28, 12, 0], 'UpperArm.L': [-20, 0, 70], 'LowerArm.L': [-10, 0, 12], 'UpperArm.R': [-60, 0, -32], 'LowerArm.R': [-40, 0, 0], 'UpperLeg.L': [-52, 0, 10], 'LowerLeg.L': [42, 0, 0], 'UpperLeg.R': [30, 0, -6], 'LowerLeg.R': [10, 0, 0], Tail_1: [28, 0, 0], Tail_2: [20, 0, 0], Tail_Fin: [10, 0, 0] },
+      face: 'Determined (sheet B)',
+    },
+    'Chin on rusted pipe': { rot: symPose({ Torso_Lower: [10, 0, 0], Torso_Upper: [14, 0, 0], Head: [8, 0, 8], Tail_1: [0, 60, 0] }), ik: { 'Arm.L': { t: [0.05, 0.4, 0.14] }, 'Arm.R': { t: [-0.035, 0.42, 0.15] } }, face: 'Lazy / exhausted' },
+    'Slumped in burlap sacks': { pos: { Hips: [0, -0.075, 0] }, rot: symPose({ Hips: [16, 0, 0], 'UpperLeg*': [-74, 0, 12], 'LowerLeg*': [12, 0, 0], 'UpperArm*': [0, 0, 22], 'LowerArm*': [-10, 0, 0], Tail_1: [-35, 20, 0], Head: [6, -10, 0] }), face: 'Lazy / exhausted' },
+    'Dusting himself off': { rot: symPose({ Torso_Upper: [6, 8, 0], Head: [12, 10, 0], 'Hand.R': [-20, 0, 0], Tail_1: [0, 50, 0] }), ik: { 'Arm.R': { t: [0.02, 0.24, 0.1] } }, face: 'Sigh' },
+    // ---- Episode 1 staging
+    'Scratching his head': { rot: { ...symPose({ Tail_1: [10, 66, 0], Tail_2: [0, 22, 0], Tail_Fin: [0, 10, 0] }), Torso_Upper: [0, 0, 4], Head: [-4, -8, -12] }, ik: { 'Arm.R': { t: [-0.078, 0.49, 0.05] }, 'Arm.L': { t: [0.07, 0.3, 0.08] } }, face: 'Sigh' },
+    'Scratching his head (rub)': { rot: { ...symPose({ Tail_1: [10, 66, 0], Tail_2: [0, 22, 0], Tail_Fin: [0, 10, 0] }), Torso_Upper: [0, 0, 4], Head: [-4, -8, -14] }, ik: { 'Arm.R': { t: [-0.08, 0.465, 0.045] }, 'Arm.L': { t: [0.07, 0.3, 0.08] } }, face: 'Sigh' },
+    // on his left side: the flipper underneath reaches forward along the ground (not into it), the leg underneath tucked clear of it; body, flipper and leg all rest on the ground
+    'Lying on his side': { pos: { Hips: [0, -0.0307, 0] }, rot: { ...symPose({ 'UpperLeg*': [-10, 0, 0], Tail_1: [0, 40, 0], Tail_2: [0, 10, 0] }), Hips: [0, 0, -86], 'UpperArm.R': [0, 0, -30], 'UpperArm.L': [-95, 0, 0], 'LowerArm.L': [-10, 0, 0], 'UpperLeg.L': [-14, 0, -14], Head: [0, 0, 6] }, face: 'Asleep' },
+    // getting up off his side: the flipper underneath plants on the ground and pushes him up, then he swings up onto his feet
+    'Pushing up on his flipper': { pos: { Hips: [0, 0.0029, 0] }, rot: { ...symPose({ 'UpperLeg*': [-30, 0, 0], 'LowerLeg*': [35, 0, 0], 'Foot*': [-10, 0, 0] }), Hips: [0, 0, -70], 'UpperArm.R': [0, 0, -50], 'LowerArm.R': [-10, 0, 0], Tail_1: [0, 40, 0], Tail_2: [0, 10, 0], Head: [0, 0, 32] }, ik: { 'Arm.L': { t: [0.2, 0.066, 0.07] } }, face: 'Unsettled' }, // (arm targets here are before his upper body was lowered 4 cm: this is 0.026 m off the ground)
+    'Getting up (rising)': { pos: { Hips: [0, 0.0056, 0] }, rot: { ...symPose({ 'UpperLeg*': [-40, 0, 0], 'LowerLeg*': [50, 0, 0], 'Foot*': [-10, 0, 0] }), Hips: [0, 0, -28], 'UpperArm.L': [0, 0, 40], 'UpperArm.R': [0, 0, -40], Head: [0, 0, 14], Tail_1: [0, 50, 0], Tail_2: [0, 15, 0] }, face: 'Unsettled' },
+    'Startled (flippers up)': { pos: { Hips: [0, -0.006, 0] }, rot: symPose({ Torso_Upper: [-8, 0, 0], Head: [-10, 0, 0], 'UpperLeg*': [-10, 0, 10], 'LowerLeg*': [12, 0, 0], Tail_1: [-20, 40, 0], Tail_Fin: [0, 20, 0] }), ik: { 'Arm.L': { t: [0.11, 0.47, 0.1] }, 'Arm.R': { t: [-0.11, 0.47, 0.1] } }, face: 'Surprised' },
+    'Poking his side': { rot: { ...symPose({ Tail_1: [10, 60, 0] }), Torso_Upper: [6, -6, 0], Neck: [8, 0, 0], Head: [22, -10, -6] }, ik: { 'Arm.R': { t: [-0.07, 0.27, 0.1] }, 'Arm.L': { t: [0.075, 0.29, 0.08] } }, face: 'Unsettled' },
+    'Deflated a little': { pos: { Hips: [0, -0.012, 0] }, scl: { Torso_Lower: [1.05, 0.9, 1.05], Torso_Upper: [0.97, 1.05, 0.97] }, rot: { ...symPose({ 'UpperArm*': [8, 0, -4], 'LowerArm*': [-4, 0, 0], Tail_1: [20, 50, 0], Tail_Fin: [0, -10, 0] }), Torso_Upper: [12, 0, 0], Neck: [6, 0, 0], Head: [12, -6, 0] }, face: 'Sigh' },
+    'Backing away': { pos: { Hips: [0, -0.006, 0] }, rot: { ...symPose({ Torso_Upper: [-10, 0, 0], 'UpperLeg*': [-14, 0, 8], 'LowerLeg*': [16, 0, 0], Tail_1: [-10, 50, 0] }), Head: [-6, 0, 0] }, ik: { 'Arm.L': { t: [0.1, 0.37, 0.13] }, 'Arm.R': { t: [-0.1, 0.37, 0.13] } }, face: 'Unsettled' },
+    'Shading his eyes (searching)': { rot: { ...symPose({ Tail_1: [10, 66, 0], Tail_2: [0, 22, 0] }), Torso_Upper: [-4, 0, 0], Head: [-8, 14, 0] }, ik: { 'Arm.R': { t: [-0.05, 0.5, 0.1] }, 'Arm.L': { t: [0.07, 0.3, 0.08] } }, face: 'Unsettled' },
+    'Looking up': { rot: symPose({ 'UpperArm*': [-6, 0, -2], 'LowerArm*': [-8, 0, 0], Neck: [-10, 0, 0], Head: [-26, 0, 0], Tail_1: [10, 66, 0], Tail_2: [0, 22, 0] }), face: 'Neutral (sheet A)' },
+    'Poking forward': { rot: { ...symPose({ Tail_1: [10, 60, 0] }), Torso_Lower: [6, 0, 0], Torso_Upper: [10, 0, 0], Neck: [4, 0, 0], Head: [8, 6, 0] }, ik: { 'Arm.R': { t: [-0.035, 0.33, 0.2] }, 'Arm.L': { t: [0.075, 0.29, 0.08] } }, face: 'Lazy / exhausted' },
+    'Slumped, deflating': { pos: { Hips: [0, -0.082, 0] }, scl: { Torso_Lower: [1.05, 0.9, 1.05], Torso_Upper: [0.97, 1.05, 0.97] }, rot: symPose({ Hips: [20, 0, 0], 'UpperLeg*': [-74, 0, 12], 'LowerLeg*': [12, 0, 0], 'UpperArm*': [6, 0, 18], 'LowerArm*': [-6, 0, 0], Tail_1: [-35, 20, 0], Torso_Upper: [10, 0, 0], Neck: [6, 0, 0], Head: [12, -6, 0] }), face: 'Unsettled' },
+    'Peeking out of the sacks': { pos: { Hips: [0, -0.075, 0] }, rot: symPose({ Hips: [16, 0, 0], 'UpperLeg*': [-74, 0, 12], 'LowerLeg*': [12, 0, 0], 'UpperArm*': [-20, 0, 14], 'LowerArm*': [-16, 0, 0], Tail_1: [-35, 20, 0], Torso_Lower: [6, 0, 0], Torso_Upper: [10, 0, 0], Neck: [-8, 0, 0], Head: [-14, 0, 0] }), face: 'Skeptical "Ehh"' },
+    'Waving from the sacks': { pos: { Hips: [0, -0.075, 0] }, rot: { ...symPose({ Hips: [16, 0, 0], 'UpperLeg*': [-74, 0, 12], 'LowerLeg*': [12, 0, 0], Tail_1: [-35, 20, 0], Torso_Lower: [4, 0, 0], Torso_Upper: [6, 0, 0], Neck: [-8, 0, 0], Head: [-12, 0, 0] }), 'UpperArm.L': [-20, 0, 14], 'LowerArm.L': [-16, 0, 0] }, ik: { 'Arm.R': { t: [-0.1, 0.47, 0.12] } }, face: 'Surprised' },
+  };
+  {
+    const DY = -0.04, up = R.descendants('Torso_Upper');
+    const fn = (bn, p) => up.has(bn) ? DY : bn === 'Torso_Lower' ? DY * Math.min(1, Math.max(0, (p[1] - 0.15) / 0.14)) : 0;
+    R.shiftY(fn);
+    for (const P of Object.values(R.extra.poses)) for (const [cn, o] of Object.entries(P.ik || {})) if (cn.startsWith('Arm')) o.t = [o.t[0], o.t[1] + DY, o.t[2]];
+  }
+  R.extra.start = { pose: 'Script start: squashed flat', note: 'Just outside the booth where Spondo lands on him (SQIIIIEEEAK!)' };
+  R.extra.labelBone = 'Torso_Upper';
+  R.extra.gait = { waddle: 1, armSwing: 14, elbow: -8, flap: 14 };
+  return R.finish();
+}
+RPC.buildMeno = buildMeno;
+RPC.builders = { spondo: RPC.buildSpondo, rozy: RPC.buildRozy, meno: buildMeno };
+})();
+
+// ================================================================= KLORA (plastic swan)
+(() => {
+const { v3, quat, D2R, W, Rig, Atlas, ell, bez, spl, ellGrid, tubeGrid, fnGrid, ellPoint, mkCanvas, symPose, drawEye, crSample } = RPC;
+const PI = Math.PI, d = (x) => x * D2R, S2 = [1, -1], SIDES = [['.L', 1], ['.R', -1]];
+const WHITE = '#f8f7f2', HAIR = '#b4da8a', CREST = '#c8ee7c', BEAK = '#f6e18e', PINK = '#e6778a', BLUE = '#9ecdee', LEG = '#f4c04a';
+const smooth = (t) => { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); };
+const frac = (x) => x - Math.floor(x);
+
+// sample a Catmull-Rom spline (through pts) at parameter s in [0,1] (point-index param)
+function splineAt(S, s) {
+  if (s <= 0) return S[0].p.slice(); if (s >= 1) return S[S.length - 1].p.slice();
+  for (let i = 1; i < S.length; i++) if (S[i].t >= s) { const a = S[i - 1], b = S[i], k = (s - a.t) / Math.max(1e-9, b.t - a.t); return v3.lerp(a.p, b.p, k); }
+  return S[S.length - 1].p.slice();
+}
+// a puffy closed cushion from a 2D outline (star, webbed foot): rounded rim, no paper-thin edges
+function pillow(outline, origin, ex, ey, n, thick, nu = 90, nv = 10, round = 0.4) {
+  const per = []; let tot = 0; for (let i = 0; i < outline.length; i++) { const a = outline[i], b = outline[(i + 1) % outline.length]; per.push(tot); tot += Math.hypot(b[0] - a[0], b[1] - a[1]); }
+  const at = (u) => { const L = u * tot; let i = 0; while (i < outline.length - 1 && per[i + 1] <= L) i++; const a = outline[i], b = outline[(i + 1) % outline.length], seg = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, k = (L - per[i]) / seg; return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]; };
+  const cx = outline.reduce((s, p) => s + p[0], 0) / outline.length, cy = outline.reduce((s, p) => s + p[1], 0) / outline.length;
+  const G = fnGrid(nu, nv, (u, v) => {
+    const o = at(u % 1), be = -PI / 2 + PI * v, s = Math.pow(Math.max(0, Math.cos(be)), round);
+    const x = cx + (o[0] - cx) * s, y = cy + (o[1] - cy) * s;
+    return v3.add(origin, v3.add(v3.add(v3.mul(ex, x), v3.mul(ey, y)), v3.mul(n, thick * Math.sin(be))));
+  }, (u, v) => { const o = at(u % 1); return v3.add(origin, v3.add(v3.mul(ex, cx + (o[0] - cx) * 0.4), v3.mul(ey, cy + (o[1] - cy) * 0.4))); }, true);
+  return G;
+}
+
+// Sculpted hollow-plastic body (sculpt.js): body, S-neck, head, bob, crescent crest, wings, feather pants and tail in one skin.
+// Klora's head is a bird's, not a ball with a bill stuck on: forward of its middle it gets smoothly smaller toward the bill (a quarter smaller
+// where the bill comes out), drawing in toward the bill's own line. One map, depth unchanged, used both ways: the sculpted head and hair cap
+// (inverse, in their warps) and everything drawn on the face (forward), so the drawn eyes still lie exactly on the skin
+function kloraTaper(c, rz) { const A = 0.3, YB = -0.012, YS = 0.9, ZS = 1.13, ZB = 0.97, XS = 0.95; rz *= ZS; /* (ZB: the back of the head is not stretched: only the front half is drawn out toward the bill) */ // (YS: the whole head a tenth less tall; ZS, XS: longer front to back and a little narrower, an oval like a bird's head, not a ball) // (YB: the bill's line sits this far below the middle of the head)
+  const S = (z) => { const t = Math.min(1, Math.max(0, (z - c[2]) / rz)), e = t * t; return [(1 - A * e) * XS, c[1] + YB * e, (1 - A * e) * YS]; };
+  return { fwd: (p) => { const z = c[2] + (p[2] - c[2]) * (p[2] < c[2] ? ZB : ZS), k = S(z); return [c[0] + (p[0] - c[0]) * k[0], k[1] + (p[1] - c[1]) * k[2], z]; }, inv: (p) => { const k = S(p[2]); return [c[0] + (p[0] - c[0]) / k[0], c[1] + (p[1] - k[1]) / k[2], c[2] + (p[2] - c[2]) / (p[2] < c[2] ? ZB : ZS)]; } }; }
+function kloraSculpt(ch, K) {
+  const { P, frameM } = RPC.sculpt; const B = (n) => ch.bones[ch.bi[n]];
+  const WH = '#f5f3ee', PK = '#e27483', HAIRC = '#b2d68c', CRESTC = '#cdee86';
+  const parts = [], paint = [], carve = [], seams = [];
+  const HC2 = K.HCm, HR2 = K.HR.map((v) => v * 0.88), TP = kloraTaper(HC2, HR2[2]), tpL = (c) => (x, y, z) => { const q = TP.inv([x + c[0], y + c[1], z + c[2]]); return [q[0] - c[0], q[1] - c[1], q[2] - c[2]]; }; // (tpL: the taper undone, in a shape's own coordinates)
+  // ---- body: a plump plastic egg, chest forward, tapering up into the tail
+  const egg = P.ell([0, 0.425, 0.005], [0.104, 0.102, 0.128], [-22, 0, 0], { warp: (x, y, z) => { if (z < 0) { const t = Math.min(1, -z / 0.128); y /= 1 - 0.22 * t; x /= 1 - 0.18 * t; } if (z > 0 && y > 0) z /= 1 + 0.08 * (y / 0.1); return [x, y, z]; } });
+  parts.push({ id: 'body', bones: ['Hips', 'Torso_Lower', 'Torso_Upper'], color: WH, k: 0.02, prims: [egg] });
+  // ---- S-curved neck into a round head
+  const NP = [[0, 0.452, 0.03], [0, 0.5, 0.06], [0, 0.55, 0.09], [0, 0.598, 0.085], [0, 0.636, 0.069], [0, 0.668, 0.062]];
+  parts.push({ id: 'neck', parent: 'body', join: { c: [0, 0.47, 0.045], r: 0.08, k: 0.045 }, bones: ['Neck', 'Neck_2', 'Neck_3'], color: WH, k: 0.01, prims: [P.tube(NP, [0.054, 0.045, 0.039, 0.035, 0.034, 0.036], 0.012)] });
+  parts.push({ id: 'head', parent: 'neck', join: { c: [0, 0.66, 0.062], r: 0.055, k: 0.03 }, bones: ['Head'], color: WH, k: 0.01, prims: [P.ell(HC2, HR2, null, { pad: 0.014, warp: tpL(HC2) })] });
+  // ---- the bill grows out of her face, set close in (7 cm long): full width and depth right up to her face (no narrowing where it meets her
+  // head: behind its middle it runs straight back into the head), melting into the face in a smooth fillet (no seam, no ridge), then it
+  // tapers only toward its rounded tip, which droops a little; flat underside, which the lower bill (on the Jaw) closes against
+  { const BZ = 0.135, RZ = 0.05, RUN = 0.035; // middle of the bill, front half-length, straight run back into the head
+    const bill = P.ell([0, 0.676, BZ], [0.03, 0.0215, RZ], null, { pad: 0.045, warp: (x, y, z) => {
+      const t = z / RZ; y += 0.003 * Math.max(0, t) ** 2; // the tip droops (the shape moves down = the query moves up)
+      if (y < 0) y /= 0.35; // flat underside
+      if (t > 0) { const tt = Math.min(1.5, t); x /= 1 - 0.42 * tt; y /= 1 - 0.32 * tt; } // tapers toward the tip only
+      return [x, y, z > 0 ? z : Math.min(0, z + RUN)]; } }); // behind the middle: the same cross-section all the way back (no taper), capped deep inside the head
+    parts.push({ id: 'bill', parent: 'head', join: { c: [0, 0.683, 0.116], r: 0.06, k: 0.012 }, bones: ['Head'], color: BEAK, k: 0.004, prims: [bill] }); }
+  // ---- the green bob: a cap a little bigger than the head, cut by a slanted plane just behind the eyes, with a rolled edge
+  const Hc = [HC2[0], HC2[1] + 0.0062, HC2[2] - 0.0079], Hr = [0.0664, 0.0669, 0.0678]; const nP = [0, -0.48, 0.88]; const nl = Math.hypot(...nP);
+  const capT = tpL(Hc), cap = P.ell(Hc, Hr, null, { pad: 0.014, warp: (x, y, z) => { [x, y, z] = capT(x, y, z); if (z < 0 && y < 0) { const k = Math.min(1, -z / 0.035); y /= 1 + 0.32 * k; } return [x, y, z]; } });
+  const cut = (x, y, z) => ((x - Hc[0]) * nP[0] + (y - Hc[1]) * nP[1] + (z - Hc[2]) * nP[2]) / nl - 0.004;
+  parts.push({ id: 'hair', parent: 'head', join: { c: Hc, r: 0.09, k: 0.004 }, bones: ['Head'], color: HAIRC, k: 0.004, seam: 'all', prims: [P.fn(cap.box, (x, y, z) => RPC.sculpt.smax(cap.f(x, y, z), cut(x, y, z), 0.006))] });
+  // ---- crescent crest (own bone): wide and thin, sweeping up and curling back to a point
+  const sh = B('Crest').pos[1] - 0.765, sz = B('Crest').pos[2] - 0.056;
+  const CP = [[0, 0.74, 0.008], [0, 0.774, 0.036], [0, 0.818, 0.072], [0, 0.87, 0.086], [0, 0.914, 0.072], [0, 0.95, 0.04]].map((p) => [p[0], p[1] + sh, p[2] + sz]);
+  parts.push({ id: 'crest', parent: 'hair', join: { c: CP[1], r: 0.07, k: 0.012 }, bones: ['Crest'], color: CRESTC, k: 0.006, seam: 'all', prims: [P.chain(CP, [0.024, 0.031, 0.034, 0.028, 0.017, 0.006], [0.0125, 0.0122, 0.0114, 0.0096, 0.0074, 0.0042], [1, 0, 0], 0.008, { overlap: 0.95, endScale: 0.45 })] });
+  // ---- wings: moulded blades folded along her sides; three big feather points on the trailing edge, feather grooves.
+  // Sculpted and weighted spread out (spec.tpose), then folded back, so they lie on her sides without fusing into the body.
+  const tpose = [];
+  for (const s of [1, -1]) {
+    const sfx = s > 0 ? 'L' : 'R'; const ws = B('Wing_Upper.' + sfx).pos, wt = B('Wing_Tip.' + sfx).tail;
+    const bo = [ws[0] + s * 0.041, ws[1], ws[2]]; // the blade folds flat against her side (sculpted spread out: spec.tpose)
+    const yAx = [wt[0] - bo[0], wt[1] - bo[1], wt[2] - bo[2]]; const L = Math.hypot(...yAx);
+    const fr = { o: bo, x: [0, -0.32, -1], y: yAx };
+    const poly = [[-0.012, -0.02], [0.05, -0.012], [0.1, 0.05], [0.13, 0.12], [0.148, 0.19], [0.1, 0.165], [0.124, 0.25], [0.078, 0.228], [0.09, 0.31], [0.045, 0.29], [0.035, L - 0.004], [0.012, L + 0.006], [-0.012, L - 0.02], [-0.022, 0.2], [-0.02, 0.08]];
+    const blade = P.slab(fr, poly, 0.012, { pillow: 0.03, rim: 0.0035, bend: [0, 0.16 * s], taper: (ly) => 1 - 0.45 * Math.min(1, Math.max(0, ly / L)) });
+    parts.push({ id: 'wing' + sfx, parent: 'body', join: { c: [ws[0] - s * 0.008, ws[1], ws[2]], r: 0.06, k: 0.024 }, bones: ['Wing_Upper.' + sfx, 'Wing_Lower.' + sfx, 'Wing_Tip.' + sfx], color: WH, k: 0.012, prims: [P.ell([ws[0] - s * 0.004, ws[1] + 0.004, ws[2]], [0.03, 0.034, 0.032]), { p: P.tube([[ws[0], ws[1] + 0.003, ws[2]], [bo[0] - s * 0.004, bo[1] - 0.004, bo[2] - 0.006]], [0.022, 0.016]), k: 0.008 }, { p: blade, k: 0.016 }] });
+    const F = blade.frame; const at = (lx, ly, lz) => [F.o[0] + F.X[0] * lx + F.Y[0] * ly + F.Z[0] * lz, F.o[1] + F.X[1] * lx + F.Y[1] * ly + F.Z[1] * lz, F.o[2] + F.X[2] * lx + F.Y[2] * ly + F.Z[2] * lz];
+    for (const [ax, ay, bx, by] of [[0.04, 0.1, 0.12, 0.17], [0.03, 0.17, 0.095, 0.24], [0.02, 0.24, 0.07, 0.3]]) for (const side of [1, -1]) carve.push({ p: P.rc(at(ax, ay, 0.0105 * side), at(bx, by, 0.0062 * side), 0.0011, 0.0013), k: 0.001, parts: ['wing' + sfx] });
+    tpose.push({ parts: ['wing' + sfx], bones: ['Wing_Upper.' + sfx, 'Wing_Lower.' + sfx, 'Wing_Tip.' + sfx], pivot: ws, axis: [0, 0, 1], angle: s * 65 });
+  }
+  // ---- feather pants: pink thighs with pointed feather tips
+  for (const s of [1, -1]) {
+    const sfx = s > 0 ? 'L' : 'R'; const m = (p) => [p[0] * s, p[1], p[2]];
+    const prims = [P.tube([m([0.05, 0.37, -0.004]), m([0.054, 0.315, 0.0]), m([0.056, 0.255, 0.012]), m([0.056, 0.214, 0.02])], [0.043, 0.042, 0.034, 0.024])];
+    for (const [a, len, y0] of [[-40, 0.05, 0.262], [15, 0.055, 0.25], [70, 0.045, 0.262], [130, 0.04, 0.27]]) { const r = a * Math.PI / 180; const dir = [Math.sin(r) * s, -0.75, Math.cos(r)]; const b = m([0.056 + Math.sin(r) * 0.026, y0, 0.012 + Math.cos(r) * 0.026]); prims.push({ p: P.rc(b, [b[0] + dir[0] * len * 0.55, b[1] + dir[1] * len, b[2] + dir[2] * len * 0.55], 0.014, 0.0025), k: 0.006 }); }
+    parts.push({ id: 'thigh' + sfx, parent: 'body', join: { c: m([0.048, 0.36, 0]), r: 0.07, k: 0.03 }, bones: ['UpperLeg.' + sfx], color: PK, k: 0.012, seam: 'all', prims });
+    tpose.push({ parts: ['thigh' + sfx], bones: ['UpperLeg.' + sfx], pivot: m([0.05, 0.33, 0]), axis: [0, 0, 1], angle: s * 10 });
+  }
+  // ---- jagged pink tail fan
+  const tail = [];
+  for (const [x, y, z, w] of [[0, 0.255, -0.265, 0.036], [0.058, 0.275, -0.24, 0.03], [-0.058, 0.275, -0.24, 0.03], [0.03, 0.305, -0.258, 0.026], [-0.03, 0.305, -0.258, 0.026]]) {
+    const pts = [[x * 0.2, 0.37, -0.08], [x * 0.45, 0.345, -0.142], [x * 0.8, (0.345 + y) / 2, (-0.142 + z) / 2], [x, y, z]];
+    tail.push(P.chain(pts, [w, w, w * 0.7, w * 0.22], [0.012, 0.01, 0.0065, 0.003], [0, 1, 0.3], 0.006));
+  }
+  parts.push({ id: 'tail', parent: 'body', join: { c: [0, 0.36, -0.1], r: 0.07, k: 0.02 }, bones: ['Tail_1', 'Tail_2'], color: PK, k: 0.008, seam: 'all', prims: tail });
+  // a moulding seam around the body (plastic toys are two halves)
+  seams.push({ parts: ['body', 'neck'], w: 0.0012, sd: (x) => x });
+  return { name: 'Klora_Body_Plastic', surface: 'plastic', voxel: 0.0019, targetTris: 78000, tile: 0.04, base: WH, parts, paint, seams, carve, tpose, rigid: [{ part: 'head', bone: 'Head' }, { part: 'bill', bone: 'Head' }], groove: 0.0006, lumps: 0.00004, seamWidth: 0.0018, grime: 0.85, aoProbe: 0.012,
+    mat: { rough: 0.38, clearcoat: 0.35, ccRough: 0.35 },
+    drop: (pc) => { if (['white', 'hair', 'crest', 'feathers'].includes(pc.mat)) return true; if (pc.mat !== 'pink') return false; let best = -1, bw = -1; const w = {}; for (let i = 0; i < pc.SI.length; i++) w[pc.SI[i]] = (w[pc.SI[i]] || 0) + pc.SW[i]; for (const [k, v] of Object.entries(w)) if (v > bw) { bw = v; best = +k; } return ch.bones[best].name !== 'Neck_2'; },
+    conform: () => null }; // her head is the exact (shrunk) ellipsoid the eyes are drawn on
+}
+function buildKlora() {
+  const R = new Rig('klora', 'Klora');
+  R.extra.color = '#9ccf7a'; R.extra.subtitle = 'Plastic swan · crescent crest, petal skirt';
+  const plastic = (name, color, map) => ({ name, color: map ? '#ffffff' : color, rough: 0.26, clearcoat: 0.9, ccRough: 0.07, map: map || null });
+  R.mat('white', plastic('Klora_Plastic_White', WHITE))
+   .mat('feathers', { ...plastic('Klora_Plastic_Feathers', WHITE), color: '#fbfaf6' })
+   .mat('hair', plastic('Klora_Plastic_Hair', HAIR))
+   .mat('crest', plastic('Klora_Plastic_Crest', CREST))
+   .mat('beak', plastic('Klora_Plastic_Beak', BEAK))
+   .mat('mouthIn', { name: 'Klora_Mouth_Inside', color: '#6b2430', rough: 0.6 })
+   .mat('nostril', { name: 'Klora_Nostrils', color: '#4a3a18', rough: 0.6 })
+   .mat('pink', plastic('Klora_Plastic_Pink', PINK))
+   .mat('blue', plastic('Klora_Plastic_Petals', BLUE))
+   .mat('leg', plastic('Klora_Plastic_Legs', LEG))
+   .mat('feet', { ...plastic('Klora_Plastic_Feet', '#f6c752'), side: 'double' });
+
+  // ---- bones (char space: y up, facing +z, character left = +x)
+  R.bone('Root', null, [0, 0, 0], { dir: [0, 0, -1], len: 0.18, ctrl: 0.25, shape: 'root' })
+   .bone('Hips', 'Root', [0, 0.33, 0], { to: 'Torso_Lower', ctrl: 0.15, shape: 'cog' })
+   .bone('Torso_Lower', 'Hips', [0, 0.39, 0], { to: 'Torso_Upper', ctrl: 0.13 })
+   .bone('Torso_Upper', 'Torso_Lower', [0, 0.45, 0.01], { to: 'Neck', ctrl: 0.12 })
+   .bone('Neck', 'Torso_Upper', [0, 0.5, 0.058], { to: 'Neck_2', ctrl: 0.07 })
+   .bone('Neck_2', 'Neck', [0, 0.555, 0.088], { to: 'Neck_3', ctrl: 0.062 })
+   .bone('Neck_3', 'Neck_2', [0, 0.605, 0.08], { to: 'Head', ctrl: 0.058 })
+   .bone('Head', 'Neck_3', [0, 0.648, 0.064], { dir: [0, 1, 0], len: 0.12, ctrl: 0.11 })
+   .bone('Crest', 'Head', [0, 0.765, 0.056], { dir: [0, 0.183, -0.018], len: 0.184, region: 'Crest', ctrl: 0.06 })
+   .bone('Jaw', 'Head', [0, 0.668, 0.115], { dir: [0, -0.1, 1], len: 0.085, region: 'Face', ctrl: 0.03, shape: 'sphere' });
+  const HC = [0, 0.705, 0.06], HR = [0.068, 0.067, 0.072];
+  const EK = 1.26; // her head is lower and longer than the ball her face is drawn on (kloraTaper), which would squash what is drawn there: the eyes are drawn this much taller, so on her they come out as tall as they should be
+  const EYE = { cx: 0.0485, cy: 0.0136, rx: 0.0114, ry: 0.0167 * EK, lw: 0.0036, lash: 0.0092 }; // (set a little out and up from her bill)
+  const PUP = 0.0062;
+  const phc = Math.asin(EYE.cy / HR[1]), thc = Math.asin(EYE.cx / (HR[0] * Math.cos(phc)));
+  for (const [sfx, s] of SIDES) {
+    const pp = ellPoint(HC, HR, s * thc, phc);
+    R.bone('Eye' + sfx, 'Head', HC, { dir: v3.sub(pp, HC), len: 0.064, region: 'Face', ctrl: 0.02, shape: 'sphere' });
+    R.bone('Pupil' + sfx, 'Eye' + sfx, pp, { dir: v3.sub(pp, HC), len: 0.01, region: 'Face', ctrl: 0.012, shape: 'sphere' });
+  }
+  // wings: shoulder -> elbow -> wrist; they hang down along her sides in the bind pose
+  const WS = [0.072, 0.49, 0.02], WE = [0.122, 0.408, -0.004], WW = [0.129, 0.314, -0.048], WT = [0.13, 0.18, -0.112];
+  R.pair('Wing_Upper', 'Torso_Upper', WS, { to: 'Wing_Lower', region: 'Arms', ctrl: 0.05 })
+   .pair('Wing_Lower', 'Wing_Upper*', WE, { to: 'Wing_Tip', region: 'Arms', ctrl: 0.048 })
+   .pair('Wing_Tip', 'Wing_Lower*', WW, { dir: v3.sub(WT, WW), len: v3.len(v3.sub(WT, WW)), region: 'Arms', ctrl: 0.05 })
+   .pair('UpperLeg', 'Hips', [0.05, 0.33, 0], { to: 'LowerLeg', region: 'Legs', ctrl: 0.055 })
+   .pair('LowerLeg', 'UpperLeg*', [0.054, 0.2, 0.022], { to: 'Foot', region: 'Legs', ctrl: 0.04 })
+   .pair('Foot', 'LowerLeg*', [0.056, 0.036, 0], { dir: [0, -0.3, 1], len: 0.08, region: 'Legs', ctrl: 0.05 })
+   .bone('Tail_1', 'Hips', [0, 0.36, -0.1], { to: 'Tail_2', region: 'Tail', ctrl: 0.05 })
+   .bone('Tail_2', 'Tail_1', [0, 0.325, -0.165], { dir: [0, -0.45, -1], len: 0.09, region: 'Tail', ctrl: 0.05 });
+  for (const [sfx, s] of SIDES) {
+    R.ik.push({ name: 'Leg' + sfx, upper: 'UpperLeg' + sfx, lower: 'LowerLeg' + sfx, end: 'Foot' + sfx, pole: [s * 0.054, 0.2, 0.3], kind: 'leg' });
+    R.ik.push({ name: 'Wing' + sfx, upper: 'Wing_Upper' + sfx, lower: 'Wing_Lower' + sfx, end: 'Wing_Tip' + sfx, pole: [s * 0.32, 0.43, -0.12], kind: 'arm' });
+  }
+
+  // ---- body: a smooth plastic egg, chest forward, tail end lifted
+  R.add('white', ellGrid([0, 0.425, 0.005], [0.106, 0.104, 0.13], { nu: 48, nv: 36, q: quat.euler(d(-22), 0, 0), deform: (l) => {
+    if (l[2] < 0) { const t = -l[2] / 0.13; l[1] *= 1 - 0.22 * t; l[0] *= 1 - 0.18 * t; } // tapers to the tail
+    if (l[2] > 0 && l[1] > 0) l[2] *= 1 + 0.08 * (l[1] / 0.1);
+    return l;
+  } }), W.y([[0.34, 'Hips'], [0.395, 'Torso_Lower'], [0.455, 'Torso_Upper'], [0.5, 'Torso_Upper']]));
+  // ---- long S-curved neck + head
+  R.add('white', tubeGrid([[0, 0.455, 0.032], [0, 0.5, 0.06], [0, 0.55, 0.09], [0, 0.598, 0.085], [0, 0.636, 0.069], [0, 0.672, 0.06]],
+    [0.056, 0.047, 0.04, 0.036, 0.036, 0.042], { nu: 30, seg: 6 }),
+    W.t([[0, 'Torso_Upper'], [0.12, 'Neck'], [0.36, 'Neck'], [0.5, 'Neck_2'], [0.66, 'Neck_2'], [0.78, 'Neck_3'], [0.92, 'Head']]));
+  R.add('white', ellGrid(HC, HR, { nu: 46, nv: 34 }), W.y([[0.64, 'Neck_3'], [0.668, 'Head']]));
+  // green bob: a bigger cap that dives into the head in front of a slanted edge (just behind the eye)
+  {
+    const Hc = [0, 0.712, 0.051], Hr = [0.0755, 0.076, 0.077], nP = v3.norm([0, -0.55, 1]);
+    R.add('hair', ellGrid(Hc, Hr, { nu: 52, nv: 40, deform: (l) => {
+      if (l[2] < 0 && l[1] < 0) { const k = Math.min(1, -l[2] / 0.04); l[1] *= 1 + 0.32 * k; l[2] *= 1 + 0.05 * k; }
+      const dd = v3.dot(l, nP); const k = smooth((dd + 0.003) / 0.011); const s = 1 - 0.32 * k; return [l[0] * s, l[1] * s, l[2] * s];
+    } }), W.rigid('Head'));
+  }
+  // crescent crest: sweeps up from the forehead, thick at the root, sharp tip curling back
+  R.add('crest', tubeGrid([[0, 0.722, 0.022], [0, 0.762, 0.058], [0, 0.812, 0.086], [0, 0.868, 0.092], [0, 0.914, 0.074], [0, 0.95, 0.04]],
+    [[0.0135, 0.046], [0.0132, 0.044], [0.0122, 0.038], [0.0102, 0.028], [0.0078, 0.016], [0.0042, 0.0045]], { nu: 24, seg: 7, ref: [1, 0, 0], capStart: true, capEnd: true, capLen1: 0.014 }),
+    W.t([[0, 'Head'], [0.16, 'Head'], [0.3, 'Crest'], [1, 'Crest']]));
+  // ---- bill (upper on the head, lower on the Jaw), mouth inside, nostrils
+  const taper = (L2) => (l) => { if (l[2] > 0) { const t = l[2] / L2; l[0] *= 1 - 0.42 * t; l[1] *= 1 - 0.32 * t; } return l; };
+  // (the upper bill is sculpted into the head skin: kloraSculpt 'bill')
+  // lower bill (on the Jaw), set in as close as the upper one: full width right back to her face (its back end closes only inside the head), tapering toward the tip
+  // (these head pieces are drawn at the full head size and shrunk 0.88x toward the head centre below (mapHead): this one ends up 0.083..0.167 m forward)
+  R.add('beak', ellGrid([0, 0.67, 0.1361], [0.026, 0.0165, 0.0477], { nu: 28, nv: 16, deform: (l) => { taper(0.0477)(l); if (l[2] < 0) { const g = 1 / Math.max(0.3, Math.sqrt(Math.max(0, 1 - (l[2] / 0.0477) ** 2))); l[0] *= g; l[1] *= g; } if (l[1] > 0) l[1] *= 0.3; return l; } }), W.rigid('Jaw'));
+  R.add('mouthIn', ellGrid([0, 0.673, 0.124], [0.023, 0.0075, 0.038], { nu: 22, nv: 10 }), W.rigid('Head'));
+  for (const s of S2) R.add('nostril', ellGrid([s * 0.0097, 0.7005, 0.1623], [0.0032, 0.0019, 0.0048], { nu: 10, nv: 6 }), W.rigid('Head')); // on top of the bill, 45% of the way to its tip
+  // ---- pink star at the throat
+  {
+    const st = []; for (let i = 0; i < 10; i++) { const a = PI / 2 + 0.22 + i * PI / 5, r = i % 2 ? 0.0165 : 0.04; st.push([r * Math.cos(a), r * Math.sin(a)]); }
+    const n = v3.norm([0, -0.25, 1]), ex = [1, 0, 0], ey = v3.norm(v3.cross(n, ex));
+    R.add('pink', pillow(st, [0, 0.572, 0.124], ex, ey, n, 0.0078, 100, 10, 0.3), W.rigid('Neck_2'));
+  }
+  // ---- petal skirt: a ring of light-blue teardrops hanging from the waist
+  {
+    const NP = 9;
+    for (let k = 0; k < NP; k++) {
+      const th = (k + 0.5) * 2 * PI / NP, nrm = [Math.sin(th), 0, Math.cos(th)], tan = [Math.cos(th), 0, -Math.sin(th)];
+      const flare = d(16), up = v3.norm([-nrm[0] * Math.sin(flare), Math.cos(flare), -nrm[2] * Math.sin(flare)]), out = v3.norm(v3.cross(tan, up));
+      const q = quat.fromMat(tan[0], up[0], out[0], tan[1], up[1], out[1], tan[2], up[2], out[2]);
+      const c = [Math.sin(th) * 0.1, 0.338, Math.cos(th) * 0.112 - 0.004];
+      const pdef = (l) => { const k2 = Math.sqrt(Math.max(0, (l[1] / 0.056 + 1) / 2)); l[0] *= 0.18 + 0.82 * k2; l[2] -= 3.2 * l[0] * l[0]; return l; };
+      R.add('blue', ellGrid(c, [0.0385, 0.056, 0.0085], { nu: 22, nv: 16, deform: pdef, q, center: v3.sub(c, v3.mul(out, 0.03)) }), W.rigid('Hips'));
+    }
+  }
+  // ---- legs: pink feathered thighs, thin yellow shins, webbed feet
+  for (const [sfx, s] of SIDES) {
+    const m = (p) => [p[0] * s, p[1], p[2]];
+    R.add('pink', tubeGrid([[0.046, 0.372, -0.004], [0.05, 0.315, 0], [0.053, 0.25, 0.012], [0.054, 0.207, 0.02]].map(m), [0.047, 0.045, 0.036, 0.027], { nu: 24, seg: 5, capEnd: true, capLen1: 0.018 }),
+      W.t([[0, 'Hips'], [0.22, 'UpperLeg' + sfx], [0.9, 'UpperLeg' + sfx], [1, 'LowerLeg' + sfx]]));
+    for (const [a, len] of [[d(-20), 0.05], [d(60), 0.042], [d(150), 0.046], [d(240), 0.038]]) { // feather points round the knee
+      const base = [0.054 + Math.sin(a) * 0.024, 0.226, 0.02 + Math.cos(a) * 0.024], tip = v3.add(base, [Math.sin(a) * 0.012, -len, Math.cos(a) * 0.012]);
+      R.add('pink', tubeGrid([m(base), m(v3.lerp(base, tip, 0.5)), m(tip)], [[0.0045, 0.012], [0.004, 0.009], [0.002, 0.003]], { nu: 12, seg: 4, ref: [Math.cos(a) * s, 0, -Math.sin(a)], capEnd: true, capLen1: 0.006 }), W.rigid('UpperLeg' + sfx));
+    }
+    R.add('leg', tubeGrid([[0.054, 0.214, 0.021], [0.055, 0.15, 0.015], [0.0555, 0.09, 0.008], [0.056, 0.026, 0.0]].map(m), [0.0118, 0.0112, 0.0106, 0.0102], { nu: 14, seg: 4 }),
+      W.t([[0, 'LowerLeg' + sfx], [0.86, 'LowerLeg' + sfx], [1, 'Foot' + sfx]]));
+    R.add('leg', ellGrid(m([0.056, 0.0215, 0.0]), [0.0135, 0.0125, 0.0135], { nu: 16, nv: 12 }), W.rigid('Foot' + sfx)); // the ankle rests right on the foot
+    // webbed foot: three pointed toes with scalloped webbing between, and toe ridges on top
+    const o = m([0.056, 0.007, 0.0]);
+    const web = [[0, -0.02], [-0.013, -0.006], [-0.044, 0.07], [-0.03, 0.064], [-0.016, 0.058], [-0.004, 0.096], [0.004, 0.096], [0.016, 0.058], [0.03, 0.064], [0.044, 0.07], [0.013, -0.006]].map((p) => [p[0] * s, p[1]]);
+    R.add('feet', pillow(s > 0 ? web : web.slice().reverse(), o, [1, 0, 0], [0, 0, 1], [0, 1, 0], 0.0048, 110, 8, 0.25), W.rigid('Foot' + sfx));
+    for (const tip of [[-0.042, 0.068], [0, 0.093], [0.042, 0.068]]) {
+      const a = v3.add(o, [0, 0.0085, 0.002]), b = v3.add(o, [tip[0] * s, 0.003, tip[1]]); // toe roots start inside the ankle
+      R.add('feet', tubeGrid([a, v3.lerp(a, b, 0.5), b], [0.0062, 0.0052, 0.0034], { nu: 10, seg: 4, capStart: true, capEnd: true, capLen1: 0.006 }), W.rigid('Foot' + sfx));
+    }
+    R.add('feet', tubeGrid([v3.add(o, [0, 0.0075, -0.003]), v3.add(o, [s * 0.003, 0.004, -0.018]), v3.add(o, [s * 0.004, 0.003, -0.028])], [0.005, 0.0044, 0.003], { nu: 10, seg: 4, capStart: true, capEnd: true }), W.rigid('Foot' + sfx));
+  }
+  // ---- jagged pink tail fan
+  for (const [x, y, z, w] of [[0, 0.255, -0.265, 0.036], [0.058, 0.275, -0.24, 0.03], [-0.058, 0.275, -0.24, 0.03], [0.03, 0.305, -0.258, 0.026], [-0.03, 0.305, -0.258, 0.026]]) {
+    const pts = [[x * 0.2, 0.37, -0.08], [x * 0.45, 0.345, -0.142], [x * 0.8, (0.345 + y) / 2, (-0.142 + z) / 2], [x, y, z]];
+    R.add('pink', tubeGrid(pts, [[w, 0.012], [w, 0.01], [w * 0.7, 0.0065], [w * 0.22, 0.003]], { nu: 18, seg: 5, ref: [1, 0, 0], capStart: true, capEnd: true, capLen1: 0.02 }),
+      W.t([[0, 'Hips'], [0.15, 'Tail_1'], [0.5, 'Tail_1'], [0.75, 'Tail_2'], [1, 'Tail_2']]));
+  }
+  // ---- wings: thick feathered blades along the wing bones, jagged trailing feathers
+  for (const [sfx, s] of SIDES) {
+    const m = (p) => [p[0] * s, p[1], p[2]];
+    const LE = crSample([m([0.056, 0.494, 0.026]), m(WS), m(WE), m(WW), m(WT)], 10);
+    const nOut = v3.norm([s, 0, 0.1]);
+    const NV = 84, NU = 26;
+    const at = (v) => {
+      const p = splineAt(LE, v), p2 = splineAt(LE, Math.min(1, v + 0.01)), p1 = splineAt(LE, Math.max(0, v - 0.01));
+      const span = v3.norm(v3.sub(p2, p1));
+      // feathers trail back and a little down, folded flat against her side
+      let chord = [0, -0.32, -1]; chord = v3.norm(v3.sub(chord, v3.mul(nOut, v3.dot(chord, nOut))));
+      const nrm = v3.norm(v3.cross(span, chord)); const thick = v3.dot(nrm, nOut) < 0 ? v3.mul(nrm, -1) : nrm;
+      const env = Math.pow(Math.max(0, Math.sin(PI * (0.08 + 0.92 * v))), 0.5);
+      const teeth = v > 0.42 ? 1 - 0.34 * frac((v - 0.42) * 5.2) : 1; // three big feather points down the trailing edge
+      const root = Math.sqrt(smooth(v / 0.07)), tipC = Math.min(1, (1 - v) / 0.035);
+      const c = 0.152 * env * teeth * root;
+      const b = 0.0135 * (1 - 0.5 * v) * root * tipC;
+      return { p, chord, thick, c, b };
+    };
+    const rows = []; for (let i = 0; i <= NV; i++) rows.push(at(i / NV));
+    const G = fnGrid(NU, NV, (u, v) => {
+      const r = rows[Math.round(v * NV)], al = -PI + 2 * PI * u, cp = (1 - Math.cos(al)) / 2, g = 1 - 0.55 * cp;
+      return v3.add(r.p, v3.add(v3.mul(r.chord, cp * r.c), v3.mul(r.thick, r.b * Math.sin(al) * g)));
+    }, (u, v) => { const r = rows[Math.round(v * NV)]; return v3.add(r.p, v3.mul(r.chord, r.c * 0.5)); }, true);
+    G.T = []; for (let i = 0; i <= NV; i++) for (let j = 0; j <= NU; j++) G.T.push(i / NV);
+    R.add('feathers', G, W.t([[0, 'Wing_Upper' + sfx], [0.4, 'Wing_Upper' + sfx], [0.52, 'Wing_Lower' + sfx], [0.68, 'Wing_Lower' + sfx], [0.8, 'Wing_Tip' + sfx], [1, 'Wing_Tip' + sfx]]));
+  }
+
+  // ---- drawn face: whites, pupils (bone driven), lids atlas (ringed eyes with lashes)
+  const ink = '#121212';
+  const eyePatch = { c: HC, r: HR, t0: d(-82), t1: d(82), p0: d(-30), p1: d(56), cw: 384, ch: 224, pad: 6 };
+  const whites = new Atlas({ ...eyePatch, key: 'whites', cols: 1, rows: 1, cells: [{ label: 'Whites', draw: (p) => { for (const s of S2) p.fill(ell(s * EYE.cx, EYE.cy, EYE.rx, EYE.ry, 64), '#ffffff'); } }] });
+  whites.drawAll();
+  R.mat('whites', { ...plastic('Klora_Eye_Whites', '#ffffff', whites.canvas), alphaTest: 0.5, poly: -1 });
+  R.add('whites', ellGrid(HC, HR, { nu: 44, nv: 26, t0: whites.t0, t1: whites.t1, p0: whites.p0, p1: whites.p1, off: 0.00045, uv: (u, v) => whites.uvMap(u, v) }), W.rigid('Head'));
+  const pupCv = mkCanvas(128, 128); { const c = pupCv.getContext('2d'); c.fillStyle = '#0c0c0c'; c.beginPath(); c.arc(64, 64, 58, 0, 2 * PI); c.fill(); c.fillStyle = '#ffffff'; c.beginPath(); c.arc(46, 44, 14, 0, 2 * PI); c.fill(); }
+  R.mat('pupil', { ...plastic('Klora_Pupils', '#ffffff', pupCv), alphaTest: 0.5, poly: -2 });
+  for (const [sfx, s] of SIDES) {
+    const a = (PUP * 1.06) / HR[0];
+    R.add('pupil', ellGrid(HC, HR, { nu: 14, nv: 14, t0: s * thc - a / Math.cos(phc), t1: s * thc + a / Math.cos(phc), p0: phc - a * EK, p1: phc + a * EK, off: 0.0009 }), W.rigid('Pupil' + sfx));
+  }
+  const E = (s) => ({ ...EYE, cx: s * EYE.cx });
+  const both = (spL, spR = spL) => (p) => { drawEye(p, E(1), 1, spL, RPC.lidHole(WHITE), ink); drawEye(p, E(-1), -1, spR, RPC.lidHole(WHITE), ink); };
+  const lidCells = [
+    ['Open (sheet)', { top: 0 }], ['Proud (lidded)', { top: 0.3 }], ['Half', { top: 0.5 }], ['Sleepy', { top: 0.68, bottom: 0.08 }],
+    ['Closed', { mode: 'closed' }], ['Happy ^^', { mode: 'happy' }], ['Worried', { top: 0.2, tilt: 0.9, brow: { inY: 0.012, outY: 0.003, curve: 0.002 } }],
+    ['Sad', { top: 0.42, tilt: 0.75 }], ['Angry', { top: 0.3, tilt: -1.0, brow: { inY: -0.001, outY: 0.009, curve: -0.001, w: 1.2 } }],
+    ['Surprised', { top: 0, thick: 1.25, brow: { inY: 0.013, outY: 0.012, curve: 0.004, w: 0.9 } }], ['Squeeze >_< (honk!)', { mode: 'squeeze' }], ['Wink (left)', { mode: 'happy' }, { top: 0 }],
+  ].map(([label, a, b]) => ({ label, draw: both(a, b || a) }));
+  for (let i = 0; i < 4; i++) lidCells.push({ label: 'Custom ' + (i + 1), draw: lidCells[0].draw });
+  const lids = new Atlas({ ...eyePatch, key: 'lids', label: 'Eyes', cols: 4, rows: 4, cells: lidCells, def: 0 });
+  lids.drawAll();
+  lids.guide = (p) => { for (const s of S2) p.fill(ell(s * EYE.cx, EYE.cy, EYE.rx, EYE.ry, 48), 'rgba(160,200,120,.45)'); };
+  R.mat('lids', { ...plastic('Klora_Eyelids_Drawn', '#ffffff'), color: '#ffffff', atlas: 'lids', alphaTest: 0.75, poly: -3, lidMask: true, order: 3 });
+  R.add('lids', ellGrid(HC, HR, { nu: 44, nv: 26, t0: lids.t0, t1: lids.t1, p0: lids.p0, p1: lids.p1, off: 0.0014, uv: (u, v) => lids.uvMap(u, v) }), W.rigid('Head'));
+  R.layers.push(lids);
+  // blush layer (drawn cheeks under the eyes)
+  const blush = (a) => (p) => { if (!a) return; for (const s of S2) p.fill(ell(s * 0.041, -0.012, 0.011, 0.0055, 32), `rgba(236,120,140,${a})`); };
+  const blushCells = [['None', 0], ['Light', 0.35], ['Rosy', 0.6], ['Flustered', 0.85]].map(([label, a]) => ({ label, draw: (p) => { blush(a)(p); if (label === 'Flustered') for (const s of S2) for (const k of [-1, 0, 1]) p.stroke([[s * 0.041 + k * 0.006 - 0.002, -0.009], [s * 0.041 + k * 0.006 + 0.002, -0.015]], 0.0012, 'rgba(200,60,90,.8)'); } }));
+  const blushA = new Atlas({ key: 'blush', label: 'Cheeks', c: HC, r: HR, t0: d(-82), t1: d(82), p0: d(-30), p1: d(20), cols: 2, rows: 2, cw: 384, ch: 160, pad: 6, cells: blushCells, def: 0 });
+  blushA.drawAll();
+  blushA.guide = lids.guide;
+  R.mat('blush', { ...plastic('Klora_Cheeks_Drawn', '#ffffff'), color: '#ffffff', atlas: 'blush', alphaTest: 0.05, poly: -1, transparent: true });
+  R.add('blush', ellGrid(HC, HR, { nu: 40, nv: 16, t0: blushA.t0, t1: blushA.t1, p0: blushA.p0, p1: blushA.p1, off: 0.0007, uv: (u, v) => blushA.uvMap(u, v) }), W.rigid('Head'));
+  R.layers.push(blushA);
+
+  {
+    const HK = 0.88, HC2 = [HC[0], HC[1] - 0.007, HC[2] - 0.002], crestBase = [0, 0.73, 0.03];
+    const headSet = new Set(['Head', 'Jaw', 'Eye.L', 'Eye.R', 'Pupil.L', 'Pupil.R'].map((n) => R.bi[n])), crestI = R.bi.Crest;
+    const mapHead = (p) => v3.add(HC2, v3.mul(v3.sub(p, HC), HK));
+    const crestShift = v3.sub(mapHead(crestBase), crestBase);
+    const TP = kloraTaper(HC2, HR[2] * HK), drawn = new Set(['whites', 'pupil', 'lids', 'blush']); // (what is drawn on her face follows the tapered head)
+    for (const [pkey, part] of Object.entries(R.parts)) for (let v = 0; v < part.P.length / 3; v++) {
+      const p = [part.P[v * 3], part.P[v * 3 + 1], part.P[v * 3 + 2]]; let wh = 0, wc = 0;
+      for (let k = 0; k < 4; k++) { const w = part.SW[v * 4 + k], b = part.SI[v * 4 + k]; if (!w) continue; if (headSet.has(b)) wh += w; else if (b === crestI) wc += w; }
+      if (!wh && !wc) continue;
+      let q = v3.add(v3.add(p, v3.mul(v3.sub(mapHead(p), p), wh)), v3.mul(crestShift, wc)); if (drawn.has(pkey)) q = TP.fwd(q);
+      part.P[v * 3] = q[0]; part.P[v * 3 + 1] = q[1]; part.P[v * 3 + 2] = q[2];
+    }
+    for (const n of ['Jaw', 'Eye.L', 'Eye.R', 'Pupil.L', 'Pupil.R']) { const b = R.bones[R.bi[n]]; b.pos = mapHead(b.pos); }
+    for (const [sfx, s] of SIDES) { const M = (th, ph) => TP.fwd(mapHead(ellPoint(HC, HR, th, ph))), e = 0.02, p0 = M(s * thc, phc); // each eye turns about a point straight behind it, so its pupil slides along the skin
+      let n = v3.norm(v3.cross(v3.sub(M(s * thc + e, phc), M(s * thc - e, phc)), v3.sub(M(s * thc, phc + e), M(s * thc, phc - e)))); if (v3.dot(n, v3.sub(p0, HC2)) < 0) n = v3.mul(n, -1);
+      R.bones[R.bi['Pupil' + sfx]].pos = p0; R.bones[R.bi['Eye' + sfx]].pos = v3.sub(p0, v3.mul(n, v3.len(v3.sub(mapHead(ellPoint(HC, HR, s * thc, phc)), HC2)) * 0.9)); }
+    R.extra.headC = HC2;
+    R.bones[crestI].pos = v3.add(R.bones[crestI].pos, crestShift);
+  }
+  R.extra.sculpt = (ch) => kloraSculpt(ch, { HC, HR, HCm: R.extra.headC });
+  R.extra.solidExtra = [{ bone: 'Head', name: 'Beak', region: 'Face', a: [0, 0.6835, 0.124], b: [0, 0.6745, 0.1705], r: 0.0145 }]; // her bill reaches 7 cm past her round head: it collides too (ground, camera, wings)
+  const lookMax = (EYE.rx - PUP - 0.0016) / HR[0] / D2R;
+  R.extra.face = {
+    eyesKind: 'drawn', look: { bones: ['Eye.L', 'Eye.R'], maxX: lookMax, maxY: (EYE.ry - PUP * EK - 0.0016) / HR[0] / D2R }, pupilBones: ['Pupil.L', 'Pupil.R'],
+    jaw: { bone: 'Jaw', max: 30 },
+    talk: { jaw: 22 },
+    parts: {
+      crest: { label: 'Crest', options: { 'Up (sheet)': {}, 'Swept back': { Crest: [-28, 0, 0] }, 'Perked forward': { Crest: [16, 0, 0] }, 'Drooping': { Crest: [-62, 0, 8] }, 'Tilted': { Crest: [-6, 0, 16] } } },
+    },
+    expressions: {
+      'Neutral (sheet)': { lids: 0, blush: 0, look: [0.3, 0.1], jaw: 0, pupil: 1, crest: 'Up (sheet)' },
+      'Happy': { lids: 5, blush: 1, look: [0, 0], jaw: 12, pupil: 1, crest: 'Perked forward' },
+      'Proud': { lids: 1, blush: 0, look: [0.4, 0.35], jaw: 0, pupil: 1, crest: 'Swept back' },
+      'Admiring herself': { lids: 1, blush: 2, look: [0, -0.8], jaw: 4, pupil: 1.1, crest: 'Up (sheet)' },
+      'Surprised': { lids: 9, blush: 0, look: [0, 0], jaw: 20, pupil: 0.72, crest: 'Perked forward' },
+      'Worried': { lids: 6, blush: 0, look: [-0.3, 0], jaw: 4, pupil: 0.9, crest: 'Tilted' },
+      'Sad': { lids: 7, blush: 0, look: [-0.5, -0.7], jaw: 0, pupil: 1, crest: 'Drooping' },
+      'Angry': { lids: 8, blush: 0, look: [0, 0], jaw: 6, pupil: 0.85, crest: 'Swept back' },
+      'Flustered': { lids: 6, blush: 3, look: [-0.6, -0.3], jaw: 3, pupil: 1, crest: 'Tilted' },
+      'Honk!': { lids: 10, blush: 0, look: [0, 0], jaw: 28, pupil: 1, crest: 'Perked forward' },
+      'Talking': { lids: 0, blush: 0, look: [0, 0], jaw: 14, pupil: 1 },
+      'Wink': { lids: 11, blush: 1, look: [0.3, 0], jaw: 8, pupil: 1 },
+      'Asleep': { lids: 4, blush: 0, look: [0, 0], jaw: 0, pupil: 1, crest: 'Drooping' },
+    },
+  };
+  // wing aim: rotate the upper wing so its span and feather direction match targets (char space), as Euler degrees
+  const wingAim = (s, span, chord) => {
+    const ortho = (a, b) => { const bn = v3.norm(b); return v3.norm(v3.sub(a, v3.mul(bn, v3.dot(a, bn)))); };
+    const s0 = v3.norm(v3.sub([WE[0] * s, WE[1], WE[2]], [WS[0] * s, WS[1], WS[2]])), c0 = ortho([0, -0.32, -1], s0);
+    const s1 = v3.norm(span), c1 = ortho(chord, s1);
+    const q = quat.frameToFrame([s0, c0, v3.cross(s0, c0)], [s1, c1, v3.cross(s1, c1)]);
+    return quat.toEulerXYZ(q).map((x) => x / D2R);
+  };
+  const raised = (s) => wingAim(s, [s * 0.62, 0.78, -0.08], [s * 0.45, -0.85, 0.12]);
+  R.extra.poses = {
+    'Rest (bind pose)': {},
+    'Standing, wings down': { rot: symPose({ 'Wing_Upper*': [0, 0, 3], Neck: [3, 0, 0], Neck_2: [-4, 0, 0], Head: [3, 0, 0], Tail_1: [-8, 0, 0] }), face: 'Neutral (sheet)' },
+    'Wings up (reference)': {
+      rot: { 'Wing_Upper.L': raised(1), 'Wing_Upper.R': raised(-1), Torso_Upper: [0, -10, 0], Neck: [-6, -8, 0], Neck_2: [4, -10, 0], Head: [0, -22, 0], 'UpperLeg.R': [-14, 0, 0], 'LowerLeg.R': [18, 0, 0], 'Foot.R': [-6, 0, 0], Tail_1: [0, 18, 0] },
+      face: 'Neutral (sheet)',
+    },
+    'Admiring her reflection': { rot: symPose({ Torso_Upper: [10, 0, 0], Neck: [26, 0, 0], Neck_2: [24, 0, 0], Neck_3: [18, 0, 0], Head: [22, 0, 0], 'Wing_Upper*': [-10, 0, 6], Tail_1: [-14, 0, 0] }), face: 'Admiring herself' },
+    'Flapping, wings up (feet planted)': { rot: { 'Wing_Upper.L': raised(1), 'Wing_Upper.R': raised(-1), Torso_Upper: [-4, 0, 0], Neck: [-14, 0, 0], Head: [-12, 0, 0] }, face: 'Happy' },
+    'Flapping, wings down (feet planted)': { rot: symPose({ Torso_Upper: [5, 0, 0], Neck: [-14, 0, 0], Head: [-10, 0, 0], 'Wing_Upper*': [-8, 0, 92], 'Wing_Lower*': [0, 0, 12], 'Wing_Tip*': [0, 0, 6] }), face: 'Happy' },
+    'Flight attempt': { pos: { Hips: [0, 0.014, 0] }, rot: symPose({ Hips: [16, 0, 0], Torso_Upper: [-6, 0, 0], Neck: [-12, 0, 0], Head: [-10, 0, 0], 'Wing_Upper*': [-8, 0, 92], 'Wing_Lower*': [0, 0, 12], 'Wing_Tip*': [0, 0, 6], 'UpperLeg*': [12, 0, 0], 'LowerLeg*': [10, 0, 0], 'Foot*': [30, 0, 0], Tail_1: [-20, 0, 0] }), face: 'Happy' },
+    'Proud (wing on hip)': { rot: { ...symPose({ Torso_Upper: [-6, 0, 0], Neck: [-8, 0, 0], Head: [-12, 0, 0] }), 'Wing_Upper.L': [-10, 0, 46], 'Wing_Lower.L': [-12, 0, -78], 'Wing_Tip.L': [0, 0, -30], 'Wing_Upper.R': [0, 0, 4] }, face: 'Proud' },
+    'Hiding behind her wings': { rot: symPose({ Torso_Upper: [12, 0, 0], Neck: [24, 0, 0], Neck_2: [10, 0, 0], Head: [10, 0, 0], 'Wing_Upper*': [-118, 0, 30], 'Wing_Lower*': [-40, 0, -24], 'Wing_Tip*': [-20, 0, 0] }), face: 'Worried' },
+    'Roosting (sat down)': { pos: { Hips: [0, -0.143, -0.02] }, rot: symPose({ Hips: [8, 0, 0], 'UpperLeg*': [-84, 0, 10], 'LowerLeg*': [112, 0, 0], 'Foot*': [-20, 0, 0], Neck: [8, 0, 0], Neck_2: [-6, 0, 0], Head: [6, 0, 0] }), face: 'Asleep' },
+    // ---- Episode 1 staging
+    'Looking at her wings': { rot: symPose({ Torso_Upper: [6, 0, 0], Neck: [18, 0, 0], Neck_2: [16, 0, 0], Neck_3: [10, 0, 0], Head: [16, 0, 0], Tail_1: [-6, 0, 0] }), ik: { 'Wing.L': { t: [0.1, 0.43, 0.2] }, 'Wing.R': { t: [-0.1, 0.43, 0.2] } }, face: 'Sad' },
+    'Pointing upward': { rot: { ...symPose({ Torso_Upper: [-6, 0, 0], Neck: [-10, 0, 0], Neck_2: [-6, 0, 0], Head: [-16, 0, 0], Tail_1: [-12, 0, 0] }), 'Wing_Upper.L': raised(1), 'Wing_Upper.R': [0, 0, 4] }, face: 'Proud' },
+    'Glaring': { rot: symPose({ Torso_Upper: [8, 0, 0], Neck: [-14, 0, 0], Neck_2: [16, 0, 0], Neck_3: [8, 0, 0], Head: [6, 0, 0], 'Wing_Upper*': [14, 0, 14], 'Wing_Lower*': [0, 0, -6], Tail_1: [-16, 0, 0] }), face: 'Angry' },
+    'Curious (head tilt)': { rot: { ...symPose({ 'Wing_Upper*': [0, 0, 3], Neck: [4, 0, 0], Tail_1: [-8, 0, 0] }), Neck_3: [0, 0, 8], Head: [6, 0, 18] }, face: 'Neutral (sheet)' },
+    'Lying inert': { pos: { Hips: [0, -0.21, 0] }, rot: { ...symPose({ 'UpperLeg*': [-20, 0, 0], 'LowerLeg*': [30, 0, 0], 'Foot*': [20, 0, 0], Tail_1: [0, 0, 0] }), 'UpperLeg.R': [-20, 0, 10], Hips: [0, 0, 84], Neck: [0, 0, -30], Neck_2: [0, 0, -24], Neck_3: [0, 0, -12], Head: [0, 0, -14], 'Wing_Upper.L': [0, 0, -10], 'Wing_Upper.R': [0, 0, 22] }, face: 'Asleep' },
+    'Lying inert (twitch)': { pos: { Hips: [0, -0.21, 0] }, rot: { ...symPose({ 'UpperLeg*': [-26, 0, 0], 'LowerLeg*': [40, 0, 0], 'Foot*': [10, 0, 0] }), 'UpperLeg.R': [-26, 0, 16], Hips: [0, 0, 80], Neck: [0, 0, -22], Neck_2: [0, 0, -18], Neck_3: [0, 0, -10], Head: [-8, 0, -6], 'Wing_Upper.L': [0, 0, -4], 'Wing_Upper.R': [0, 0, 34] }, face: 'Neutral (sheet)' },
+    'Startled (jumping back)': { pos: { Hips: [0, -0.02, 0] }, rot: symPose({ Torso_Upper: [-12, 0, 0], Neck: [-14, 0, 0], Neck_2: [-4, 0, 0], Head: [-6, 0, 0], 'Wing_Upper*': [-10, 0, 80], 'Wing_Lower*': [0, 0, 12], 'UpperLeg*': [-22, 0, 4], 'LowerLeg*': [30, 0, 0], 'Foot*': [-10, 0, 0], Tail_1: [-20, 0, 0] }), face: 'Surprised' },
+    // face-first, her head turned onto its side: her belly, her cheek and the side of her bill all rest on the ground (her bill never props her up, never goes into it)
+    'Face-plant': { pos: { Hips: [0, -0.1995, 0.04] }, rot: symPose({ Hips: [72, 0, 0], Neck: [55, 0, 0], Neck_2: [15, 0, 8], Neck_3: [-25, 0, 8], Head: [-96, 0, 66], 'Wing_Upper*': [-30, 0, 66], 'Wing_Lower*': [0, 0, 10], 'UpperLeg*': [38, 0, 8], 'LowerLeg*': [20, 0, 0], 'Foot*': [10, 0, 0], Tail_1: [-20, 0, 0] }), face: 'Flustered' },
+    'Frozen mid-step': { rot: { ...symPose({ 'Wing_Upper*': [0, 0, 26], 'Wing_Lower*': [0, 0, 6], Torso_Upper: [6, 0, 0], Neck: [10, 0, 0], Neck_2: [10, 0, 0], Head: [16, 0, 0], Tail_1: [-14, 0, 0] }), 'UpperLeg.R': [-24, 0, 0], 'LowerLeg.R': [14, 0, 0], 'Foot.R': [6, 0, 0], 'UpperLeg.L': [18, 0, 0], 'LowerLeg.L': [44, 0, 0], 'Foot.L': [26, 0, 0] }, face: 'Surprised' },
+    'Slipping off': { pos: { Hips: [0, -0.04, 0] }, rot: symPose({ Hips: [-40, 0, 0], Torso_Upper: [-6, 0, 0], Neck: [10, 0, 0], Head: [12, 0, 0], 'Wing_Upper*': [-20, 0, 108], 'Wing_Lower*': [0, 0, 14], 'UpperLeg*': [-64, 0, 8], 'LowerLeg*': [24, 0, 0], 'Foot*': [-10, 0, 0], Tail_1: [10, 0, 0] }), face: 'Surprised' },
+    // getting up off the ground in three stages, her feet planted on the same spot throughout (each stage rests on the ground, nothing in it)
+    'Pushing herself up': { pos: { Hips: [0, -0.175, -0.02] }, rot: symPose({ Hips: [54, 0, 0], Torso_Upper: [-8, 0, 0], Neck: [-19, 0, 0], Neck_2: [-15, 0, 0], Neck_3: [-6, 0, 0], Head: [-8, 0, 4], 'Wing_Upper*': [-60, 0, 20], 'Wing_Lower*': [-20, 0, -6], 'Wing_Tip*': [-10, 0, 0], 'Foot*': [-45, 0, 0], Tail_1: [-10, 0, 0] }), ik: { 'Leg.L': { t: [0.056, 0.036, 0] }, 'Leg.R': { t: [-0.056, 0.036, 0] } }, face: 'Flustered' },
+    'Getting up (crouching)': { pos: { Hips: [0, -0.14, -0.05] }, rot: symPose({ Hips: [32, 0, 0], Neck: [-11, 0, 0], Neck_2: [-8, 0, 0], Head: [-10, 0, 0], 'Wing_Upper*': [-10, 0, 24], 'Wing_Lower*': [0, 0, 6], 'Foot*': [-22, 0, 0], Tail_1: [-12, 0, 0] }), ik: { 'Leg.L': { t: [0.056, 0.036, 0] }, 'Leg.R': { t: [-0.056, 0.036, 0] } }, face: 'Worried' },
+    'Crouched, hiding': { pos: { Hips: [0, -0.137, -0.02] }, rot: symPose({ Hips: [12, 0, 0], 'UpperLeg*': [-84, 0, 10], 'LowerLeg*': [112, 0, 0], 'Foot*': [-20, 0, 0], Torso_Upper: [10, 0, 0], Neck: [22, 0, 0], Neck_2: [10, 0, 0], Head: [10, 0, 0], 'Wing_Upper*': [-110, 0, 26], 'Wing_Lower*': [-36, 0, -22], 'Wing_Tip*': [-18, 0, 0] }), face: 'Worried' },
+  };
+  R.extra.start = { pose: 'Standing, wings down', note: 'Not in the Episode 1 script: placed on her wake-up mark at the pool edge' };
+  R.extra.labelBone = 'Torso_Upper';
+  R.extra.gait = { waddle: 0.85, armSwing: 6, elbow: -4, flap: 9 };
+  R.extra.springs = { Crest: { k: 0.28, d: 0.2, g: 0.015 } };
+  R.extra.regionLabels = { Arms: 'Wings', Crest: 'Crest' };
+  return R.finish();
+}
+RPC.buildKlora = buildKlora;
+RPC.builders.klora = buildKlora;
+})();
+
 // ================================================================= OLLO (original character: a levitating felt star-sprite)
 // Modelled in a T-pose (arms straight out, legs straight down), sculpted as one sewn felt skin (sculpt.js), heat-weighted to the rig,
 // drawn face (eyes, lids, mouth atlases on the head's exact ellipsoid), glowing antenna bulb. He never walks: he hovers.

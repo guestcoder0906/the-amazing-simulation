@@ -83,7 +83,7 @@
   };
   // personality -> preferred voices and a pitch factor (1 = the voice's own pitch); factors stay in a natural range
   var PERSONA = [
-    { re: /showman|ringmaster|announcer|host|theatrical|circus/, m: ['am_fenrir', 'am_puck', 'am_michael'], f: ['af_bella', 'af_nova'], k: 0.97, s: 1.08 },
+    { re: /showman|ringmaster|announcer|host|theatrical|circus/, m: ['am_santa', 'am_fenrir', 'am_puck'], /* a deep lead (santa) with the energetic showman voices blended in underneath */ f: ['af_bella', 'af_nova'], k: 0.97, s: 1.08 },
     { re: /deep|booming|giant|ogre|titan|golem|dragon|monster/, m: ['am_onyx', 'am_fenrir', 'am_michael'], f: ['af_kore', 'af_alloy'], k: 0.88, s: 0.94 },
     { re: /gruff|grumpy|tough|pirate|knight|guard|raspy/, m: ['am_fenrir', 'am_onyx', 'am_eric'], f: ['af_kore', 'af_jessica'], k: 0.93, s: 0.98 },
     { re: /sly|smooth|villain|cool|detective/, m: ['am_eric', 'am_liam', 'am_michael'], f: ['af_river', 'af_kore'], k: 0.97, s: 0.97 },

@@ -1729,6 +1729,22 @@ function viewBuildSpot() { const dir = new THREE.Vector3(); camera.getWorldDirec
   return p; }
 function buildPlacement() { const b = mapBounds(), s = viewBuildSpot(); const f = (v) => v.toArray().map((x) => +x.toFixed(1));
   return `WHERE TO BUILD: put new things INSIDE the current map, on real ground (never past its edges, in the void, or floating) unless the user asks for another place.${b.isEmpty() ? '' : ` Map extent: x ${b.min.x.toFixed(0)}..${b.max.x.toFixed(0)}, z ${b.min.z.toFixed(0)}..${b.max.z.toFixed(0)}, ground around y ${b.min.y.toFixed(1)}..${b.max.y.toFixed(1)}.`} When the user should see what you make, build it near the player's current view: a good visible spot on the ground in front of their camera is [${f(s)}] (spread several things around it, a few metres apart; keep clear of characters).`; }
+/* AWARENESS FOR TALKING (not building): a character only "knows" what is around it - things within reach of its senses, nearest first, with
+   which way they are (ahead / left / right / behind). The rest of the world is not dumped into every message: it can ask for it with
+   find_things (by name / kind, or around a point). Short, so replies are fast and cheap. */
+function nearbyScene(c, radius = 18, max = 12) { const g = c.group; const o = g.position; const yaw = g.rotation.y || 0; const fx = Math.sin(yaw), fz = Math.cos(yaw); const items = [];
+  const dirOf = (p) => { const dx = p.x - o.x, dz = p.z - o.z; const ahead = dx * fx + dz * fz, side = dx * fz - dz * fx; return Math.abs(ahead) >= Math.abs(side) ? (ahead >= 0 ? 'ahead' : 'behind') : (side >= 0 ? 'to the left' : 'to the right'); };
+  for (const [id, ob] of SBX.placed) { if (ob === g || !ob.visible) continue; const b = worldBox(ob); if (b.isEmpty()) continue; const p = b.getCenter(new THREE.Vector3()); const d = Math.hypot(p.x - o.x, p.z - o.z); if (d > radius) continue; items.push([d, `${(ob.userData.sbx && ob.userData.sbx.name) || ob.name || id} (${id}) ${d.toFixed(1)} m ${dirOf(p)}`]); }
+  for (const k of CAST.CASTS) { if (k === c || !k.group.visible || SBX.placed.get('cast:' + k.id) === k.group) continue; const p = k.group.position; const d = Math.hypot(p.x - o.x, p.z - o.z); if (d > radius) continue; items.push([d, `${k.ch.name || k.id} (character ${k.id}) ${d.toFixed(1)} m ${dirOf(p)}`]); }
+  items.sort((a, b) => a[0] - b[0]); const total = SBX.placed.size + CAST.CASTS.filter((k) => k.group.visible).length; const shown = items.slice(0, max).map((x) => x[1]);
+  return (shown.length ? 'Around you: ' + shown.join('; ') + '.' : 'Nothing else close by.') + (total > shown.length + 1 ? ` (${total - shown.length - 1} more things elsewhere in the world: use find_things if you need them.)` : '') + (SYSTEMS.size ? ' Running: ' + [...SYSTEMS.values()].filter((x) => x.on).map((x) => x.def.name).slice(0, 6).join(', ') + '.' : ''); }
+function findThings(i, from) { const q = String(i.query || '').toLowerCase().trim(); const words = q.split(/\s+/).filter((w) => w.length > 1); const at = Array.isArray(i.near) && i.near.length === 3 ? new THREE.Vector3(...i.near) : from; const R = +i.radius || Infinity; const lim = clamp(+i.limit || 10, 1, 30); const out = [];
+  const test = (txt) => !words.length || words.some((w) => txt.includes(w));
+  for (const [id, ob] of SBX.placed) { const nm = String((ob.userData.sbx && ob.userData.sbx.name) || ob.name || id); const b = worldBox(ob); if (b.isEmpty()) continue; const p = b.getCenter(new THREE.Vector3()); const d = p.distanceTo(at); if (d > R || !test((nm + ' ' + id).toLowerCase())) continue; const sz = b.getSize(new THREE.Vector3()); out.push([d, { id, name: nm, at: p.toArray().map((v) => +v.toFixed(2)), size_m: sz.toArray().map((v) => +v.toFixed(2)), distance_m: +d.toFixed(1) }]); }
+  for (const k of CAST.CASTS) { if (!k.group.visible || SBX.placed.get('cast:' + k.id) === k.group) continue; const d = k.group.position.distanceTo(at); if (d > R || !test((String(k.ch.name) + ' ' + k.id + ' character').toLowerCase())) continue; out.push([d, { id: k.id, name: k.ch.name, character: true, at: k.group.position.toArray().map((v) => +v.toFixed(2)), distance_m: +d.toFixed(1) }]); }
+  if (!out.length && words.length) { try { for (const r2 of search(q, 'All', lim)) out.push([999, { library: r2.e.id, name: r2.e.name, note: 'in the library, not in the world' }]); } catch (e) { /* ok */ } }
+  out.sort((a, b) => a[0] - b[0]); return out.slice(0, lim).map((x) => x[1]); }
+SBX.nearbyScene = nearbyScene; SBX.findThings = findThings;
 function sceneSummary() {
   const lines = []; const o = ollo.group.position; lines.push(`Ollo: at [${o.x.toFixed(2)}, ${o.y.toFixed(2)}, ${o.z.toFixed(2)}], facing yaw ${(ollo.group.rotation.y * 180 / Math.PI).toFixed(0)}°, bounds ${JSON.stringify(SBX.olloBounds())}, wand ${wand.userData.held ? 'in hand' : 'set down'}.`);
   lines.push(`User camera: at [${camera.position.toArray().map((v) => v.toFixed(1))}] looking at [${controls.target.toArray().map((v) => v.toFixed(1))}].`);
@@ -2278,6 +2294,7 @@ function brainTools(acts) {
   const mine = () => PLAYER.c === ollo;
   const pt = (a) => { if (!Array.isArray(a) || a.length !== 3 || a.some((x) => typeof x !== 'number' || !isFinite(x))) throw new Error('need [x, y, z] numbers'); return a; };
   return [
+    B('find_things', 'Find things in the world that you cannot see from here: by name or kind (query), and / or around a point (near [x,y,z], radius m). Returns ids, names, positions, sizes and distances (nearest first).', { query: { type: 'string' }, near: { type: 'array', items: { type: 'number' } }, radius: { type: 'number' }, limit: { type: 'number' } }, [], async (i) => findThings(i, ollo.group.position)),
     B('say', 'Speak out loud (shown in a speech bubble and the chat, and voiced). Keep it short and natural: one or two sentences. Never use it to claim you cannot do something: you can, so do it with your tools.', { text: { type: 'string' } }, ['text'], (i) => { const t = String(i.text).slice(0, 300);
           /* never let Ollo / Caine talk themselves out of something they can do: a "can't" line is not spoken; the model is told to act instead */
           const tCant = t.replace(/\b(can'?t|cannot|can not) (wait|believe|help|stop|resist|get enough|imagine|tell you|complain|keep up)\b/gi, '');
@@ -2344,13 +2361,12 @@ TIME OF DAY: ${document.getElementById('clock')?.textContent || '?'}.
 YOUR LONG-TERM NOTES: ${BR.notes.length ? BR.notes.map((n) => '- ' + n).join('\n') : '(none yet)'}
 OLDER, FADED MEMORY: ${BR.faded || '(none)'}
 RECENT EVENTS AND CONVERSATION (oldest first):
-${BR.log.slice(-24).map((e) => `[${ago(e.t)} ago] ${e.who}: ${e.text}`).join('\n') || '(nothing yet)'}
+${BR.log.slice(-12).map((e) => `[${ago(e.t)} ago] ${e.who}: ${String(e.text).slice(0, 240)}`).join('\n') || '(nothing yet)'}
 CHARACTERS YOU GAVE MINDS TO: ${[...MINDS.values()].map((x) => `${x.c.id} (${x.personality.slice(0, 80)}${x.locked ? ', locked' : ''})`).join('; ') || 'none'}. You can give any character a mind (give_mind), even one the player controls (take_over).
 ${AGENT.history.length ? 'RECENT BUILD REQUESTS: ' + AGENT.history.slice(-4).map((x) => x.content.slice(0, 160)).join(' | ') : ''}
 
-THE WORLD RIGHT NOW:
-${sceneSummary().slice(0, 5000)}`;
-    if (ctl.signal.aborted) return; await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(brainTools(acts), 'Smart Ollo'), ...((imgs = imgs.concat(BR.earImgs && BR.canImg ? BR.earImgs.splice(0) : [])).length ? { images: imgs } : {}), ...(reason === 'idle' ? { model: 'local-quick', modelTier: 'quick', effort: 'low' } : { modelTier: 'default' }), cache: false, signal: ctl.signal });
+${nearbyScene(ollo)}`;
+    if (ctl.signal.aborted) return; await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(brainTools(acts), 'Smart Ollo'), ...((imgs = imgs.concat(BR.earImgs && BR.canImg ? BR.earImgs.splice(0) : [])).length ? { images: imgs } : {}), model: 'gemini', modelTier: 'quick', effort: 'minimal', cache: false, signal: ctl.signal }); /* talking runs on the fast model (gemini flash lite, minimal effort); building is handed to the build agent */
     // Safety net against lazy hallucination: if player explicitly asked to create/build/spawn something and AI only talked without calling build
     if (reason === 'heard' && lastHeardRaw && !AGENT.busy) {
       const askedBuild = ASK_MAKE_RX.test(lastHeardRaw) && !/\b(don'?t|do not|never|stop)\s+(make|create|build|spawn|add|bring|give)/i.test(lastHeardRaw);
@@ -2626,9 +2642,8 @@ HEARING: you hear through your own ears, where you stand: sound gets quieter and
 RECENT (oldest first):
 ${m.log.slice(-16).map((e) => `[${ago(e.t)} ago] ${e.who}: ${e.text}`).join('\n') || '(nothing yet)'}
 
-THE WORLD:
-${sceneSummary().slice(0, 3500)}`;
-  try { await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(mindTools(m, acts), 'mind'), ...(m.earImgs && m.earImgs.length ? { images: m.earImgs.splice(0) } : {}), ...(reason === 'heard' ? { modelTier: 'default' } : { model: 'local-quick', modelTier: 'quick', effort: 'low' }), cache: false }); if (acts.length) mindLog(m, 'event', 'you did: ' + acts.join(', ')); }
+${nearbyScene(c)}`;
+  try { await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(mindTools(m, acts).concat([{ name: 'find_things', description: 'Find things in the world beyond what is around you: by name or kind (query), and / or around a point (near [x,y,z], radius m).', inputSchema: { type: 'object', properties: { query: { type: 'string' }, near: { type: 'array', items: { type: 'number' } }, radius: { type: 'number' }, limit: { type: 'number' } }, required: [] }, execute: async (q) => JSON.stringify(findThings(q || {}, c.group.position)) }]), 'mind'), ...(m.earImgs && m.earImgs.length ? { images: m.earImgs.splice(0) } : {}), model: 'gemini', modelTier: 'quick', effort: 'minimal', cache: false }); if (acts.length) mindLog(m, 'event', 'you did: ' + acts.join(', ')); }
   catch (e) { if (e && e.code === 'rate_limited') m.next = performance.now() + 90000; else if (e && ['ai_offline', 'not_granted', 'sampling_disabled', 'tools_unavailable'].includes(e.code)) m.next = performance.now() + 600000; }
   finally { m.busy = false; m.idleN = /^idle/.test(String(reason)) ? (m.idleN || 0) + 1 : 0; try { const pp = playerPos(); if (m.idleP && pp.distanceTo(m.idleP) > 3) m.idleN = 0; m.idleP = pp; } catch (e) { /* ok */ } m.next = Math.max(m.next || 0, performance.now() + Math.min(150000, (14000 + Math.random() * 10000) * Math.pow(1.6, Math.min(m.idleN, 6)))); if (m.pending) { m.pending = false; setTimeout(() => mindThink(m, 'heard'), 30); } } }
 async function giveMind(id, o = {}) { const c = CAST.CASTS.find((k) => k.id === id); if (!c) throw new Error('Characters: ' + CAST.CASTS.map((k) => k.id).join(', ')); if (c === ollo) throw new Error('Ollo has his own mind (Smart Ollo)');

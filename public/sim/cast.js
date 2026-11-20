@@ -8850,6 +8850,16 @@ body.st-open #panel{max-height:calc(100% - var(--stH,0px) - 24px)}
   // ---- toon shading: one shared switch (rpToon 0..1) compiled into every lit material, so Toon/Natural costs nothing to flip
   const TOON_NL = 'float dotNL = saturate( dot( geometryNormal, directLight.direction ) );';
   const TOON_SH = '? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
+  /* surfaces painted (near) black - the inside of a mouth, black paint - get no fabric sheen and no rim light: those add colour at grazing angles,
+     which lit the stretched inside of an open mouth up in skin / fur colour */
+  const RP_INSIDE = `float rpLit = 1.0;
+#ifdef USE_COLOR
+  rpLit = smoothstep( 0.003, 0.03, dot( vColor.rgb, vec3( 0.3333 ) ) );
+#endif
+#ifdef USE_SHEEN
+  material.sheenColor *= rpLit;
+#endif
+`;
   const TOON_FN = `
 uniform float rpToon;
 uniform float rpRimT;
@@ -8882,7 +8892,7 @@ float rpToonSh( float s ) { return mix( s, smoothstep( 0.4, 0.6, s ), rpToon ); 
       sh.uniforms.rpToon = LK.toon; sh.uniforms.rpRimT = LK.rim; sh.uniforms.rpRimTC = LK.rimCol;
       let f = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + TOON_FN)
         .replace('#include <lights_physical_pars_fragment>', PF.replace(TOON_NL, 'float dotNL = rpToonNL( saturate( dot( geometryNormal, directLight.direction ) ) );'))
-        .replace('#include <lights_fragment_begin>', LB.split(TOON_SH).join('? rpToonSh( getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) ) : 1.0;'));
+        .replace('#include <lights_fragment_begin>', RP_INSIDE + LB.split(TOON_SH).join('? rpToonSh( getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) ) : 1.0;'));
       // the cast: cel shading that holds in any light. A key direction (the sun or moon, turned part-way to the camera so faces read) splits every
       // form into a lit side and a cool, slightly deeper shadow side with a clean edge, even in shade where only sky light reaches them; a second, softer
       // step shapes the lit side; and a thin stepped rim catches the edges that face the key
@@ -8896,7 +8906,7 @@ float rpToonSh( float s ) { return mix( s, smoothstep( 0.4, 0.6, s ), rpToon ); 
   float rpB = smoothstep( -0.06, 0.02, rpD ) * 0.8 + smoothstep( 0.5, 0.58, rpD ) * 0.2;
   outgoingLight *= mix( vec3( 1.0 ), mix( vec3( 0.66, 0.64, 0.78 ), vec3( 1.06, 1.05, 1.03 ), rpB ), rpToon );
   float rpE = 1.0 - saturate( dot( geometryNormal, geometryViewDir ) );
-  outgoingLight += ( rpRimTC * 0.35 + diffuseColor.rgb * 0.9 ) * ( rpRimT * rpToon * smoothstep( 0.6, 0.72, rpE ) * smoothstep( 0.05, 0.3, rpD ) );
+  outgoingLight += ( rpRimTC * 0.35 + diffuseColor.rgb * 0.9 ) * ( rpRimT * rpToon * smoothstep( 0.6, 0.72, rpE ) * smoothstep( 0.05, 0.3, rpD ) ) * rpLit;
 }
 #include <opaque_fragment>`);
       sh.fragmentShader = f;

@@ -25,6 +25,8 @@ if not exist "%LOCAL_AI_VENV%\installed.ok" (
   "%VPY%" -m pip install -r requirements.txt || exit /b 1
   echo ok> "%LOCAL_AI_VENV%\installed.ok"
 )
+rem fast engine (llama.cpp) + model files: downloaded on the first start, skipped afterwards
+"%VPY%" setup_llama.py || echo llama.cpp setup failed - the slower Python engine will be used
 rem private access key for requests through the public tunnel (made once, kept in local-ai\.ai_key)
 if not exist .ai_key powershell -NoProfile -Command "Set-Content -Path '.ai_key' -Value ([guid]::NewGuid().ToString('N')) -NoNewline -Encoding ascii"
 powershell -NoProfile -Command "$p = Start-Process -FilePath $env:VPY -ArgumentList 'api.py' -WindowStyle Hidden -RedirectStandardOutput 'api.out.log' -RedirectStandardError 'api.log' -PassThru; Set-Content -Path 'api.pid' -Value $p.Id -Encoding ascii; Write-Host ('Local AI started on http://127.0.0.1:8000 (PID ' + $p.Id + '). Logs: local-ai\api.log')"

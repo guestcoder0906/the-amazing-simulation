@@ -20,3 +20,5 @@ local-ai/.ai_key
 local-ai/.tunnel.json
 local-ai/tunnel_url.txt
 local-ai/DEVICE_LINK.txt
+local-ai/setup_llama.log
+local-ai/llama_server.log

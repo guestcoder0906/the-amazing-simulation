@@ -408,6 +408,7 @@ class Engine:
         self.plan = make_plan(self.hw)
         self.main = None          # (model, processor) or mlx tuple
         self.coder = None
+        self.llama = None  # llama.cpp server (fast path), when installed
         self.whisper = None
         self.adapter_on = False
         self.lock = threading.RLock()
@@ -436,6 +437,9 @@ class Engine:
 
     def unload(self):
         with self.lock:
+            if self.llama is not None:
+                self.llama.stop()
+                self.llama = None
             self.main = self.coder = self.whisper = None
             self.adapter_on = False
             gc.collect()
@@ -495,6 +499,14 @@ class Engine:
 
     def _load_all(self):
         p = self.plan
+        # fast path: llama.cpp (long prompts, prompt caching). A custom LoRA adapter needs the transformers path.
+        import llama_backend
+        if self.hw.backend != "mlx" and llama_backend.available() and not adapter_info():
+            self.llama = llama_backend.LlamaServer()
+            self.llama.start()
+            self.plan = Plan(QWEN_OMNI_7B, 4, notes=[f"llama.cpp, {self.llama.model_name}, context {self.llama.ctx}"])
+            self.main = (QWEN_OMNI_7B, "llama", None)
+            return
         log(f"loading {p.main} ({p.bits}-bit) on {self.hw.backend}...")
         if self.hw.backend == "mlx":
             self._load_mlx()
@@ -699,7 +711,8 @@ class Engine:
                     sys_parts.append(promptfit.THINK_INSTRUCTION if kind == "heavy" else promptfit.LIGHT_INSTRUCTION)
                 msgs = promptfit.compact_messages(self._prepare_media(msgs))
                 sys_text = "\n\n".join(p for p in sys_parts if p)
-                msgs, fitrep = promptfit.fit(sys_text, msgs, promptfit.default_budget(self.hw.total_gb))
+                budget = (self.llama.ctx - max_tokens - 256) if self.llama is not None else promptfit.default_budget(self.hw.total_gb)
+                msgs, fitrep = promptfit.fit(sys_text, msgs, budget)
                 if fitrep.get("dropped_turns") or fitrep.get("trimmed_results"):
                     log("prompt fitted to the GPU:", fitrep)
                 has_media = any(c["type"] in ("image", "audio") for m in msgs for c in m["content"])
@@ -749,6 +762,8 @@ class Engine:
         return merged
 
     def _generate(self, target, system, msgs, max_tokens, temperature):
+        if target[1] == "llama":
+            return self.llama.chat(system, msgs, max_tokens, temperature)
         if self.hw.backend == "mlx":
             return self._generate_mlx(target, system, msgs, max_tokens, temperature)
         import torch

@@ -16,6 +16,7 @@ if [ ! -f .venv/installed.ok ]; then
   fi
   touch .venv/installed.ok
 fi
+.venv/bin/python setup_llama.py || echo "llama.cpp setup failed - the slower Python engine will be used"
 [ -f .ai_key ] || .venv/bin/python -c "import secrets;open('.ai_key','w').write(secrets.token_hex(16))"
 nohup .venv/bin/python api.py > api.out.log 2> api.log &
 echo $! > api.pid

@@ -82,7 +82,7 @@
   };
   // personality -> preferred voices and a pitch factor (1 = the voice's own pitch); factors stay in a natural range
   var PERSONA = [
-    { re: /showman|ringmaster|announcer|host|theatrical|circus/, m: ['am_puck', 'am_michael', 'am_fenrir'], f: ['af_bella', 'af_nova'], k: 0.97, s: 1.08 },
+    { re: /showman|ringmaster|announcer|host|theatrical|circus/, m: ['am_fenrir', 'am_michael', 'am_onyx'], f: ['af_bella', 'af_nova'], k: 0.97, s: 1.08 },
     { re: /deep|booming|giant|ogre|titan|golem|dragon|monster/, m: ['am_onyx', 'am_fenrir', 'am_michael'], f: ['af_kore', 'af_alloy'], k: 0.88, s: 0.94 },
     { re: /gruff|grumpy|tough|pirate|knight|guard|raspy/, m: ['am_fenrir', 'am_onyx', 'am_eric'], f: ['af_kore', 'af_jessica'], k: 0.93, s: 0.98 },
     { re: /sly|smooth|villain|cool|detective/, m: ['am_eric', 'am_liam', 'am_michael'], f: ['af_river', 'af_kore'], k: 0.97, s: 0.97 },
@@ -113,7 +113,7 @@
     var show = !!(spec.showman || spec.timbre === 'showman' || /showman|ringmaster/.test(desc));
     var lead = uniq.slice(0, 3);
     if (!show && lead.length > 1) { var r = h % lead.length; lead = lead.slice(r).concat(lead.slice(0, r)); }
-    var W = show ? [0.45, 0.30, 0.25] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
+    var W = show ? [0.45, 0.35, 0.20] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
     var mix = lead.map(function (v, i) { return { voice: v, w: Math.max(0.05, W[i] || 0.1) }; });
     var voice = 'cv_' + String(key).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) + '_' + hash(JSON.stringify(mix)).toString(36);
     CUSTOM_VOICES[voice] = { mix: mix, seed: h, vary: 0.035 };
@@ -125,11 +125,11 @@
     k = Math.max(0.84, Math.min(1.18, k));
     k = 1 + (k - 1) * 0.5;
     var showman = !!(spec.showman || spec.timbre === 'showman');
-    if (showman) k = 1.02 + jit * 0.5; // mid baritone-tenor: bright, but never high or squeaky
+    if (showman) k = 0.93 + jit * 0.5; // lower baritone: full and grown-up, never high or squeaky
     var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
     if (showman) pace = Math.max(pace, 1.2); // manic, rapid-fire ringmaster pacing
     var pick = { voice: voice, k: k, pace: pace };
-    if (showman) pick.style = { expr: 1.75, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
+    if (showman) pick.style = { expr: 1.55, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
     used.set(key, { spec: spec, pick: pick });
     return pick;
   }

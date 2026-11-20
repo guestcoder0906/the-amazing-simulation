@@ -113,9 +113,9 @@
     var uniq = []; order.forEach(function (v) { if (uniq.indexOf(v) < 0) uniq.push(v); });
     var show = !!(spec.showman || spec.timbre === 'showman' || /showman|ringmaster/.test(desc));
     var lead = uniq.slice(0, 3);
-    if (show && prefs[0] === 'am_santa') lead = ['am_santa', 'am_onyx']; /* Caine: mainly the deep santa voice, blended with a deep American male voice */ var deepOnly = /santa/.test(String(spec.blend || '')) || (spec.showman && spec.only_lead);
+    if (show && prefs[0] === 'am_santa') lead = ['am_santa', 'am_michael', 'am_onyx']; /* Caine: mainly santa, with a clear, lively American voice (michael) and a little deep American (onyx) */ var deepOnly = /santa/.test(String(spec.blend || '')) || (spec.showman && spec.only_lead);
     if (!show && lead.length > 1) { var r = h % lead.length; lead = lead.slice(r).concat(lead.slice(0, r)); }
-    var W = show && lead[0] === 'am_santa' && lead.length === 2 ? [0.65, 0.35] : show && lead.length === 1 ? [1] : show ? [0.55, 0.25, 0.20] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
+    var W = show && lead[0] === 'am_santa' && lead.length === 3 ? [0.5, 0.32, 0.18] : show && lead[0] === 'am_santa' && lead.length === 2 ? [0.65, 0.35] : show && lead.length === 1 ? [1] : show ? [0.55, 0.25, 0.20] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
     if (deepOnly) { lead = lead.slice(0, 1); W = [1]; } /* Caine: the deep lead voice alone */
     var mix = lead.map(function (v, i) { return { voice: v, w: Math.max(0.05, W[i] || 0.1) }; });
     var voice = 'cv_' + String(key).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) + '_' + hash(JSON.stringify(mix)).toString(36);
@@ -128,11 +128,11 @@
     k = Math.max(0.84, Math.min(1.18, k));
     k = 1 + (k - 1) * 0.5;
     var showman = !!(spec.showman || spec.timbre === 'showman');
-    if (showman) k = 0.77 + jit * 0.3; // mid baritone-tenor, kept low: depth comes from the blend, not from dragging the pitch down
+    if (showman) k = 0.85 + jit * 0.3; /* a touch higher: deep, but not sunk */ // mid baritone-tenor, kept low: depth comes from the blend, not from dragging the pitch down
     var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
     if (showman) pace = Math.max(pace, 1.38); // manic, rapid-fire ringmaster pacing
     var pick = { voice: voice, k: k, pace: pace };
-    if (showman) pick.style = { expr: 3.1, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
+    if (showman) pick.style = { expr: 3.8, eq: 'brassy' }; /* wide, lively pitch swings (not monotone) */ // wide pitch swings, forward/brassy resonance with chest boom
     used.set(key, { spec: spec, pick: pick });
     return pick;
   }

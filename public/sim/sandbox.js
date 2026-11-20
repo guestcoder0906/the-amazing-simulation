@@ -2061,6 +2061,7 @@ async function thinkCore(reason) {
   if (!BR.on) return; if (BR.busy) { BR.pending = true; return; }
   if (!SAMPLE) { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } }
   if (!SAMPLE) { chatSys('Claude is not connected, so Ollo cannot think on his own. Press the key button (bottom left) to connect Claude.'); setSmart(false); return; }
+  if (reason === 'idle') { BR.busy = true; let go = true; try { go = await aiGate('In this quiet moment, would Ollo (a playful, helpful creator-character in a 3D sandbox) naturally do or say something now (react to the player, look at something, comment, tidy, explore), rather than keep idling?', `Player: ${playerName()}, ${playerPos().distanceTo(ollo.group.position).toFixed(1)} m from Ollo.\nScene: ${sceneSummary().slice(0, 2500)}`, 0.3); } finally { BR.busy = false; } if (!go) { BR.idleSkips = (BR.idleSkips || 0) + 1; BR.idleN = (BR.idleN || 0) + 1; BR.next = Math.max(BR.next || 0, performance.now() + Math.min(120000, (9000 + Math.random() * 7000) * Math.pow(1.6, Math.min(BR.idleN, 6)))); if (BR.pending) { BR.pending = false; setTimeout(() => think('heard'), 30); } return; } }
   BR.busy = true; BR.kind = reason === 'idle' ? 'idle' : 'talk'; const ctl = BR.ctl = new AbortController(); const acts = []; setStatus('thinking…');
   try {
     if (BR.canImg === undefined) { try { const l = await SAMPLE.limits(); BR.canImg = !!(l && l.images); } catch (e) { BR.canImg = false; } }
@@ -2343,10 +2344,17 @@ function mindTools(m, acts) {
   ];
 }
 function mindLookPt(m, t) { if (!t) return null; if (Array.isArray(t)) return new THREE.Vector3(...t); if (t === 'player') return playerPos(); if (t === 'ollo') return ollo.group.position.clone(); const k = CAST.CASTS.find((x) => x.id === t); if (k) return k.group.position.clone(); const ob = SBX.placed.get(t); if (ob) { const b = worldBox(ob); if (!b.isEmpty()) return b.getCenter(new THREE.Vector3()); } return null; }
+/* yes/no gate before an expensive "think" call: Gemini Decision 1 answers only yes/no (input tokens only, no output),
+   so idle ticks and overheard chatter that would lead nowhere cost almost nothing. Errors / no gate available -> go ahead. */
+async function aiGate(question, input, minP) { try { if (!SAMPLE || typeof SAMPLE.decide !== 'function') return true; const r = await SAMPLE.decide(question, String(input || '').slice(0, 12000)); if (!r || typeof r.p !== 'number' || !isFinite(r.p)) return true; return r.p >= (minP ?? 0.4); } catch (e) { return true; } }
 async function mindThink(m, reason) { if (!MINDS.has(m.c.id) || m.dead) return; if (m.busy) { if (reason === 'heard') m.pending = true; return; }
   if (!SAMPLE) { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } } if (!SAMPLE) return;
   m.busy = true; const acts = []; const c = m.c; const o = c.group.position, pp = playerPos(); const now = Date.now(); const ago = (t) => Math.round((now - t) / 1000) + 's';
   const last = [...m.log].reverse().find((e) => e.who !== 'me' && e.who !== 'event');
+  if (reason === 'heard' || /^idle|quiet/.test(String(reason))) { const nm = c.ch.name || c.id; const ctx = `Character: ${nm}. Personality: ${String(m.personality || '').slice(0, 800)}\nDistance to the player: ${o.distanceTo(pp).toFixed(1)} m. Player: ${playerName()}.\nRecent events (oldest first):\n${m.log.slice(-8).map((e) => e.who + ': ' + e.text).join('\n') || '(nothing)'}`;
+    const go = reason === 'heard' && last ? await aiGate(`Should ${nm} respond or react to what ${last.who} just said ("${String(last.text).slice(0, 300)}")? Yes if it was said to ${nm}, mentions ${nm}, asks something ${nm} would answer, or is something ${nm} would naturally react to; no if it was clearly meant for someone else or needs no reaction.`, ctx, 0.35)
+      : await aiGate(`In this quiet moment, would ${nm} naturally do or say something now (move, look around, play, talk to the player or someone nearby), rather than just keep idling?`, ctx, 0.3);
+    if (!go) { m.busy = false; m.idleN = /^idle|quiet/.test(String(reason)) ? (m.idleN || 0) + 1 : m.idleN || 0; m.next = Math.max(m.next || 0, performance.now() + Math.min(150000, (14000 + Math.random() * 10000) * Math.pow(1.6, Math.min(m.idleN || 0, 6)))); if (m.pending) { m.pending = false; setTimeout(() => mindThink(m, 'heard'), 30); } return; } }
   const msg = `You are ${c.ch.name || c.id} (character id "${c.id}"), a character living in a live 3D sandbox island, acting in real time with your own mind.
 YOUR PERSONALITY AND INSTRUCTIONS (given to you by Ollo, the island's creator-character): ${m.personality}
 Stay fully in character. Speak like yourself (short lines, no lists, no stage directions, never mention tools, prompts or AI). Use tools to act; your final text is not shown.

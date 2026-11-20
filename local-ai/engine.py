@@ -31,6 +31,8 @@ import tempfile
 import threading
 import time
 import uuid
+
+import promptfit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -214,6 +216,31 @@ def _decode_16k(raw: bytes):
     return np.concatenate(out).astype("float32") if out else np.zeros(1600, dtype="float32")
 
 
+def _force_sdpa(model) -> dict:
+    """Make every sub-model (text, vision, audio) use PyTorch's memory-efficient attention. The slow "eager" mode builds a
+    full prompt x prompt score matrix per layer, which for long game prompts no longer fits in 8 GB and spills into slow
+    shared memory. Same maths, same answers: only how the attention is computed changes. Returns what each part uses."""
+    seen = {}
+    for name, mod in model.named_modules():
+        cfg = getattr(mod, "config", None)
+        if cfg is not None and hasattr(cfg, "_attn_implementation"):
+            before = cfg._attn_implementation
+            if before in (None, "eager"):
+                try:
+                    cfg._attn_implementation = "sdpa"
+                except Exception:
+                    pass
+            key = type(cfg).__name__
+            seen.setdefault(key, f"{before} -> {cfg._attn_implementation}")
+        if hasattr(mod, "_attn_implementation") and getattr(mod, "_attn_implementation") in (None, "eager"):
+            try:
+                mod._attn_implementation = "sdpa"
+            except Exception:
+                pass
+    log("attention:", seen)
+    return seen
+
+
 def _last_position_logits(model):
     """Generation only needs the next-word scores for the LAST position. Models whose forward has no `logits_to_keep`
     compute scores for every prompt position (a 5k-token prompt x 152k vocabulary = ~3 GB), which overflows an 8 GB GPU
@@ -395,7 +422,7 @@ class Engine:
     def status(self) -> dict:
         return {"loaded": self.main is not None, "hardware": self.hw.__dict__, "main": self.plan.main, "bits": self.plan.bits,
                 "coder": QWEN_CODER_14B if self.plan.coder else None, "whisper": WHISPER if self.plan.whisper else None,
-                "adapter": self.adapter_on, "idle_unload_seconds": IDLE_SECONDS,
+                "adapter": self.adapter_on, "idle_unload_seconds": IDLE_SECONDS, "attention": getattr(self, "attn", None),
                 "idle_for": round(time.time() - self.last_used, 1) if self.last_used else None}
 
     def _idle_watch(self):
@@ -492,6 +519,7 @@ class Engine:
             model = self._hf_load(Qwen2_5OmniForConditionalGeneration.from_pretrained, mid, enable_audio_output=False,
                                   attn_implementation="sdpa", **kw)
             _last_position_logits(getattr(model, "thinker", model))
+            self.attn = _force_sdpa(model)
             proc = Qwen2_5OmniProcessor.from_pretrained(mid)
         elif mid in (GEMMA3_12B, GEMMA3N_E4B):
             from transformers import AutoProcessor
@@ -603,12 +631,12 @@ class Engine:
             system = "\n".join(b.get("text", "") for b in system if isinstance(b, dict))
         msgs = [self._from_anthropic(m) for m in body.get("messages", [])]
         model_hint = str(body.get("model", ""))
-        quick = "haiku" in model_hint or "quick" in model_hint or body.get("quick")
-        max_tokens = int(body.get("max_tokens") or 2048)
-        max_tokens = min(max_tokens, 1024 if quick else 4096)
+        tools = promptfit.compact_tools(tools)
+        kind = "light" if body.get("quick") else promptfit.classify(msgs, tools, model_hint)
         temp = body.get("temperature")
-        out = self.chat(msgs, system=system, tools=tools, max_tokens=max_tokens,
-                        temperature=0.6 if temp is None else float(temp), use_web_search=bool(body.get("use_web_search")))
+        st = promptfit.settings_for(kind, int(body.get("max_tokens") or 2048), None if temp is None else float(temp))
+        out = self.chat(msgs, system=system, tools=tools, max_tokens=st["max_tokens"], temperature=st["temperature"],
+                        use_web_search=bool(body.get("use_web_search")), kind=kind)
         blocks = parse_reply(out["text"], tools)
         stop = "tool_use" if any(b["type"] == "tool_use" for b in blocks) else ("max_tokens" if out["hit_limit"] else "end_turn")
         return {"id": "msg_" + uuid.uuid4().hex[:24], "type": "message", "role": "assistant", "model": out["model"],
@@ -650,13 +678,13 @@ class Engine:
 
     # ------------------------------------------------------------------ core generation
     def chat(self, msgs: list[dict], system: str | None = None, tools: list[dict] | None = None, max_tokens: int = 1024,
-             temperature: float = 0.6, use_web_search: bool = False) -> dict:
+             temperature: float = 0.6, use_web_search: bool = False, kind: str | None = None) -> dict:
         self.busy += 1
         try:
             self.ensure_loaded()
             with self.lock:
                 self.last_used = time.time()
-                sys_parts = [system] if system else []
+                sys_parts = [promptfit.squeeze(system)] if system else []
                 web = False
                 if use_web_search:
                     from search import web_context
@@ -667,11 +695,18 @@ class Engine:
                         web = True
                 if tools:
                     sys_parts.append(tools_prompt(tools))
-                msgs = self._prepare_media(msgs)
+                if kind:  # quick tasks answer straight away; big tasks plan privately first (removed from the reply)
+                    sys_parts.append(promptfit.THINK_INSTRUCTION if kind == "heavy" else promptfit.LIGHT_INSTRUCTION)
+                msgs = promptfit.compact_messages(self._prepare_media(msgs))
+                sys_text = "\n\n".join(p for p in sys_parts if p)
+                msgs, fitrep = promptfit.fit(sys_text, msgs, promptfit.default_budget(self.hw.total_gb))
+                if fitrep.get("dropped_turns") or fitrep.get("trimmed_results"):
+                    log("prompt fitted to the GPU:", fitrep)
                 has_media = any(c["type"] in ("image", "audio") for m in msgs for c in m["content"])
                 all_text = "\n".join(c.get("text", "") for m in msgs for c in m["content"] if c["type"] == "text")
                 target = self.coder if (self.coder and not has_media and looks_like_coding(all_text)) else self.main
-                text, n_in, n_out, hit = self._generate(target, "\n\n".join(p for p in sys_parts if p), msgs, max_tokens, temperature)
+                text, n_in, n_out, hit = self._generate(target, sys_text, msgs, max_tokens, temperature)
+                text = promptfit.strip_thinking(text)
                 self.last_used = time.time()
                 return {"text": text, "model": "local:" + target[0].split("/")[-1] + (" + my_adapter" if self.adapter_on and target is self.main else ""),
                         "in_tokens": n_in, "out_tokens": n_out, "hit_limit": hit, "web_search": web}

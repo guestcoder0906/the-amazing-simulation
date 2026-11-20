@@ -869,10 +869,41 @@ function registerPlaced(obj, meta) { const id = meta.id || uid('o'); obj.userDat
 /* THE CLASSIC CAST (Spondo, Rozy, Meno, Klora): their pre-built sculpted skins live in their own file (~4 MB) that loads only the first time
    one of them is placed, then only that character's skin is unpacked and the character is built - the page itself starts no slower. */
 let CLASSIC_DATA = null;
+/* THE CLASSIC CAST'S FACES, IN 3D: Spondo and Rozy get a real lipped mouth cut into the face where their drawn one was (measured from it), Klora
+   keeps her hinged beak and Meno his hinged jaw (already real 3D); Klora, Meno and Rozy's printed eyes become real eyeballs - a white with a
+   separate iris and pupil that roll as they look - placed and sized from where their printed eyes and pupils were. Spondo's bead eyes are
+   already real 3D eyes and stay. */
+const CLASSIC_FACE = {
+  spondo: { mouth: { at: [0, 0.4515, 0.1008], width: 0.062 }, hide: /Mouth_Drawn/ },
+  rozy: { mouth: { at: [0, 0.5379, 0.077], width: 0.076 }, hide: /Mouth_Drawn|Eye_Whites|Pupils|Eyelids_Drawn/, eyes: { iris: '#3b2a4a', pupil: '#0b0b10' } },
+  klora: { hide: /Eye_Whites|Pupils|Eyelids_Drawn/, eyes: { iris: '#2a2a2a', pupil: '#050505', irisSize: 0.42 } },
+  meno: { hide: /Eye_Whites|Pupils|Eyelids_Drawn/, eyes: { iris: '#2a2a2a', pupil: '#050505', irisSize: 0.4 } } };
+function classicFace3D(c, FC) { if (!c || !FC) return; const T3 = THREE;
+  if (FC.eyes) { /* measure each printed eye (bind pose) before hiding it */ const whites = c.meshes.find((m) => /Eye_Whites/.test(m.name)), pups = c.meshes.find((m) => /Pupils/.test(m.name)); const hi = headIdx(c);
+    if (whites && pups && hi !== undefined && c.bones[hi]) { const head = c.bones[hi]; const rest = c.ch.bones[hi].pos; const v = new T3.Vector3();
+      const sideBox = (m, sd) => { const P = m.geometry.attributes.position, b = new T3.Box3(); for (let i = 0; i < P.count; i++) { v.fromBufferAttribute(P, i).applyMatrix4(m.bindMatrix); if (Math.sign(v.x) === sd) b.expandByPoint(v); } return b; };
+      const hb = new T3.Box3(); { const body = c.meshes[0]; const P = body.geometry.attributes.position; for (let i = 0; i < P.count; i += 3) { v.fromBufferAttribute(P, i).applyMatrix4(body.bindMatrix); if (v.y > rest[1] - 0.02) hb.expandByPoint(v); } } const hc = hb.getCenter(new T3.Vector3());
+      const objs = [], eyes = [];
+      for (const sd of [1, -1]) { const wb = sideBox(whites, sd), pb = sideBox(pups, sd); if (wb.isEmpty() || pb.isEmpty()) continue; const ws = wb.getSize(new T3.Vector3()); const r = Math.min(ws.x, ws.y) * 0.42;
+        const front = new T3.Vector3((pb.min.x + pb.max.x) / 2, (pb.min.y + pb.max.y) / 2, pb.max.z); const dir = front.clone().sub(hc); dir.y *= 0.35; dir.normalize(); const centre = front.clone().addScaledVector(dir, -r * 0.62);
+        const pivot = new T3.Bone(); pivot.name = 'Eye_Pivot_' + (sd > 0 ? 'left_eye' : 'right_eye'); pivot.userData.sbxEye = true; pivot.position.set(centre.x - rest[0], centre.y - rest[1], centre.z - rest[2]); pivot.quaternion.setFromUnitVectors(new T3.Vector3(0, 0, 1), dir); head.add(pivot); objs.push(pivot);
+        const hold = new T3.Mesh(new T3.SphereGeometry(r * 1.05, 8, 6), new T3.MeshBasicMaterial()); hold.visible = false; hold.name = 'eye_centre'; pivot.add(hold);
+        const white = new T3.Mesh(new T3.SphereGeometry(r, 48, 32), new T3.MeshPhysicalMaterial({ color: '#f7f6f1', roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.05 })); white.name = 'Eye_White_' + (sd > 0 ? 'left' : 'right'); white.castShadow = false; pivot.add(white);
+        const cap = (rad, a, col, mat = {}) => { const m = new T3.Mesh(new T3.SphereGeometry(rad, 40, 12, 0, Math.PI * 2, 0, a), new T3.MeshStandardMaterial({ color: col, roughness: 0.3, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, ...mat })); m.rotation.x = Math.PI / 2; m.castShadow = false; return m; };
+        const ir = clamp(FC.eyes.irisSize || 0.5, 0.2, 0.8), pr = ir * 0.55; const iris = cap(r * 1.003, Math.asin(ir), FC.eyes.iris); iris.name = 'Eye_Iris'; pivot.add(iris); const pupil = cap(r * 1.006, Math.asin(pr), FC.eyes.pupil, { roughness: 0.1 }); pupil.name = 'Eye_Pupil'; pivot.add(pupil);
+        const hl = cap(r * 1.009, Math.asin(pr) * 0.4, '#ffffff', { emissive: '#ffffff', emissiveIntensity: 0.8 }); hl.name = 'Eye_Highlight'; hl.rotation.set(Math.PI / 2 - 0.25, 0, 0.3); pivot.add(hl);
+        eyes.push({ part: sd > 0 ? 'left eye' : 'right eye', pivot, r, dir, bone: hi, meshes: [white, iris, pupil, hl], pupil }); }
+      if (eyes.length) { c._eyes3d = { objs, eyes, opts: {}, n: eyes.length, style: 'pupils' }; if (c.ch.face) c.ch.face.eyesKind = '3d'; } } }
+  if (FC.hide) for (const m of c.meshes) if (FC.hide.test(m.name)) m.visible = false; /* the printed / drawn versions are gone once the 3D ones are in */
+  if (FC.mouth) { if (c.ch.face && c.ch.face.talk) delete c.ch.face.talk.mouth; const MC = c.ch._mouthCarve; const at = MC ? MC.at : FC.mouth.at, w = MC ? MC.width : FC.mouth.width; try { addMouth(c, { kind: '3d', style: 'lips', bones: 'more', at, width: w, cut: !MC, _found: MC ? { kind: 'hole', center: new T3.Vector3(...at), width: w } : undefined }); } catch (e) { console.warn('[classic cast] mouth', e); } }
+  try { if (c._eyes3d) eyeCheck(c); } catch (e) { /* ok */ } }
 function loadClassicData() { if (CLASSIC_DATA) return CLASSIC_DATA; CLASSIC_DATA = new Promise((res, rej) => { if (window.__CAST_SCULPT_LOADED) return res(true); const s2 = document.createElement('script'); s2.src = './sim/cast-sculpt.js'; s2.onload = () => res(true); s2.onerror = () => { CLASSIC_DATA = null; rej(new Error('could not load the cast skins')); }; document.head.appendChild(s2); }); return CLASSIC_DATA; }
 async function buildClassic(id) { const have = CAST.CASTS.find((k) => k.id === id); if (have) return have; toast('Bringing ' + id.charAt(0).toUpperCase() + id.slice(1) + ' in…'); try { await loadClassicData(); } catch (e) { toast(e.message + ' - sculpting live instead (slower)'); }
   try { const Z = RPC.SCULPT_DATA_Z && RPC.SCULPT_DATA_Z[id]; if (Z && !(RPC.SCULPT_DATA && RPC.SCULPT_DATA[id]) && typeof DecompressionStream !== 'undefined') { const bin = Uint8Array.from(atob(Z.z), (ch) => ch.charCodeAt(0)); const ds = new Blob([bin]).stream().pipeThrough(new DecompressionStream('deflate-raw')); const buf = new Uint8Array(await new Response(ds).arrayBuffer()); RPC.SCULPT_DATA = RPC.SCULPT_DATA || {}; RPC.SCULPT_DATA[id] = { head: Z.head, bytes: buf }; } } catch (e) { console.warn('[classic cast] skin', id, e); }
-  await nextFrame(); const live = RPC.SCULPT_LIVE; let c; try { RPC.SCULPT_LIVE = false; c = CAST.addCast(id); } finally { RPC.SCULPT_LIVE = live; }
+  await nextFrame(); const FC = CLASSIC_FACE[id] || {}; const live = RPC.SCULPT_LIVE; const b0 = RPC.builders[id]; let c;
+  if (FC.mouth) { /* a real lipped mouth is CUT into the sculpt (the mouth-hole tool), so this one character is sculpted live once */ RPC.builders[id] = (...a) => { const ch = b0(...a); const s0 = ch && ch.sculpt; if (typeof s0 === 'function') ch.sculpt = (cc) => { const sp = s0(cc); if (sp && Array.isArray(sp.parts)) { sp.mouth = { type: 'lips', at: FC.mouth.at.slice(), width: FC.mouth.width }; mouthCarve(cc || ch, sp); } return sp; }; return ch; }; toast('Sculpting ' + id.charAt(0).toUpperCase() + id.slice(1) + "'s mouth…"); await nextFrame(); }
+  try { RPC.SCULPT_LIVE = !!FC.mouth; c = CAST.addCast(id); } finally { RPC.SCULPT_LIVE = live; RPC.builders[id] = b0; }
+  try { classicFace3D(c, FC); } catch (e) { console.warn('[classic cast] face', id, e); }
   c.group.visible = true; try { fixArms(c); } catch (e) { /* ok */ } try { setIdle(c); } catch (e) { /* ok */ } try { chkForget(c); } catch (e) { /* ok */ } return c; }
 SBX.buildClassic = buildClassic;
 async function placeEntry(e, opt = {}) {

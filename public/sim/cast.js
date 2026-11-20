@@ -1200,7 +1200,13 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
   // ---------------- compile a spec ----------------
   // spec: { name, surface, voxel, targetTris, base (hex), parts:[{id, parent, bones:[...], color, k (inner blend), join:{c, r, k}, seam, prims:[{p, k, op:'add'|'sub'}]}],
   //         carve:[{p, k, parts?}], paint:[{test(x,y,z,nx,ny,nz,part) -> 0..1 coverage, color, seam?}], grooveDepth, seamWidth, lumps, grime }
+/* a join must be { c:[x,y,z], r, k } with real numbers: anything else (a missing point, true, a number, NaN) is dropped so the
+     engine adds its own automatic smooth join instead of crashing ("c is not iterable", "reading '0'") */
+  function fixJoins(spec) { if (!spec || !Array.isArray(spec.parts)) return spec; const num = (v) => typeof v === 'number' && isFinite(v);
+    for (const pt of spec.parts) { if (!pt || !('join' in pt) || pt.join == null) continue; const j = pt.join; const c = j && (Array.isArray(j.c) ? j.c : Array.isArray(j.center) ? j.center : Array.isArray(j) ? j : null);
+      if (!c || c.length < 3 || !c.slice(0, 3).every(num)) { delete pt.join; continue; } pt.join = { ...j, c: [c[0], c[1], c[2]], r: num(j.r) && j.r > 0 ? j.r : 0.03, k: num(j.k) && j.k >= 0 ? j.k : 0.012 }; delete pt.join.center; } return spec; }
   function compile(spec) {
+    fixJoins(spec);
     const parts = spec.parts.map((pt, i) => ({ ...pt, i, prims: pt.prims.map((q) => (q.f ? { p: q, k: pt.k || 0, op: 'add' } : { k: pt.k || 0, op: 'add', ...q })) }));
     const byId = new Map(parts.map((p) => [p.id, p]));
     for (const p of parts) { p.par = p.parent ? byId.get(p.parent) : null; const bs = p.prims.filter((q) => q.op !== 'sub').map((q) => q.p.box); p.box = [[0, 1, 2].map((k) => Math.min(...bs.map((b) => b[0][k]))), [0, 1, 2].map((k) => Math.max(...bs.map((b) => b[1][k])))];
@@ -1708,7 +1714,7 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
     }));
     return true;
   }
-  R0.sculpt = { P, build, compile, boneHeat, conform, apply, signature, decodeAll, smin, smax, rotM, frameM, noise3, fbm };
+  R0.sculpt = { P, build, compile, fixJoins, boneHeat, conform, apply, signature, decodeAll, smin, smax, rotM, frameM, noise3, fbm };
 })();
 
 // ===================== CHARACTERS =====================

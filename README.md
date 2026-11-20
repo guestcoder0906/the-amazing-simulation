@@ -53,6 +53,11 @@ The Vercel site calls `http://127.0.0.1:8000` from the visitor's browser, so it 
 computer. Chrome may ask to allow access to devices on your local network the first time: allow it.
 To point the site at another address, open it with `?ai=http://host:port` (remembered in that browser).
 
+**Access key on every device automatically:** in Vercel, open the project → Settings → Environment Variables and add
+`VITE_LOCAL_AI_KEY` with the key from `local-ai/.ai_key` (created by the first `start.bat`), then redeploy. Every device
+then has the key built in. Anyone who opens your site can then use your AI while it runs; to keep it private instead, leave
+the variable unset and open `local-ai/DEVICE_LINK.txt` once on each of your own devices.
+
 ## Deploy on Vercel
 
 Import this repository in Vercel. Framework preset: **Vite** (build `npm run build`, output `dist`). No environment

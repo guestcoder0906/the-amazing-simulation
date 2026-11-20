@@ -122,13 +122,16 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       return (localStorage.getItem('sbx_local_ai_url') || '').replace(/\/+$/, '');
     } catch (e) { return ''; }
   })();
-  // private access key for the public tunnel: open the site once with ?key=... on each device (it is remembered)
+  // access key for the public tunnel. Comes from the Vercel environment variable VITE_LOCAL_AI_KEY (filled in by Vite at
+  // build time, so every device has it), or from ?key=... opened once on a device (remembered there).
+  var BUILD_KEY = '%VITE_LOCAL_AI_KEY%';
+  if (BUILD_KEY.charAt(0) === '%') BUILD_KEY = ''; // not set on this deployment
   var AI_KEY = (function () {
     try {
       var k = new URLSearchParams(location.search).get('key');
       if (k) { localStorage.setItem('sbx_local_ai_key', k); try { var u = new URL(location.href); u.searchParams.delete('key'); history.replaceState(null, '', u.toString()); } catch (e) { /* ok */ } return k; }
-      return localStorage.getItem('sbx_local_ai_key') || '';
-    } catch (e) { return ''; }
+      return BUILD_KEY || localStorage.getItem('sbx_local_ai_key') || '';
+    } catch (e) { return BUILD_KEY; }
   })();
   var AI_URL = OVERRIDE || LOCAL_URL;
   function hdr(extra) { var h = Object.assign({}, extra || {}); if (AI_KEY) h['x-ai-key'] = AI_KEY; return h; }

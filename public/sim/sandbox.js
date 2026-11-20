@@ -1693,10 +1693,9 @@ function safetyStep() { const ok = (v) => Number.isFinite(v.x) && Number.isFinit
   const op = ollo.group.position; if (ok(op) && Number.isFinite(ollo.group.rotation.y)) SAFE.op = op.clone(); else if (SAFE.op) { op.copy(SAFE.op); ollo.group.rotation.set(0, 0, 0); OH.vel.set(0, 0, 0); OH.target = null; console.warn('[guard] Ollo’s position was broken — restored'); }
   if (!(ollo.group.scale.x > 1e-3 && ollo.group.scale.x < 1e3)) ollo.group.scale.set(1, 1, 1); }
 // the AI accepts at most 16 tools per call
-function cap16(t, who) { if (t.length > 16) console.error(`${who}: ${t.length} tools, only 16 allowed — dropping: ${t.slice(16).map((x) => x.name).join(', ')}`);
-  // each tool description may be at most 1 KB (UTF-8): trim longer ones at a word boundary so a call is never rejected
-  const enc = new TextEncoder(); const fit = (s, max) => { s = String(s || ''); if (enc.encode(s).length <= max) return s; let lo = 0, hi = s.length; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (enc.encode(s.slice(0, mid)).length <= max - 4) lo = mid; else hi = mid - 1; } const cut = s.lastIndexOf(' ', lo); return s.slice(0, cut > lo - 80 ? cut : lo) + ' …'; };
-  return t.slice(0, 16).map((x) => { const d = fit(x.description, 1000); if (d !== x.description) console.warn(`${who}: tool ${x.name} description trimmed to 1 KB`); const props = x.inputSchema && x.inputSchema.properties; if (props) for (const k of Object.keys(props)) if (props[k] && props[k].description) props[k].description = fit(props[k].description, 1000); return d === x.description ? x : { ...x, description: d }; }); }
+/* the local AI has no tool-count or description-size limits (those were Claude API limits): every tool and its full
+   description is sent, so Ollo / Caine always have body, build and everything else */
+function cap16(t, who) { return t; }
 async function runAgent(userText, opt = {}) { if (AGENT.busy) { toast('Already creating — wait or press Stop'); return; }
   try { if (!opt.fromOllo && BR.busy && BR.kind === 'idle' && BR.ctl) BR.ctl.abort(); } catch (e) { /* ok */ }
   try { return await runAgentInner(userText, opt); } catch (e) { console.error('Create failed:', e); finish('Failed'); } finally { if (AGENT.busy) { if (AGENT.ctl && AGENT.ctl.signal.aborted) stoppedByUser(); else finish('Stopped'); } } }
@@ -1759,7 +1758,7 @@ async function runAgentInner(userText, opt = {}) { AGENT.lastText = String(userT
 }
 function stoppedByUser() { if (!AGENT.busy) return; feed('err', 'Stopped manually by user — the request was not finished.'); AGENT.history.push({ role: 'user', content: 'Earlier request (STOPPED by the user before it was finished): ' + (AGENT.lastText || '') }); return finish('Stopped manually by user'); }
 function finish(label) { AGENT.busy = false; progEta.textContent = ''; progTxt.textContent = label; progStep.textContent = ''; progBar.classList.add('done'); stopBtn.hidden = true; goBtn.disabled = false; setTimeout(() => { if (!AGENT.busy) progEl.hidden = true; }, 4000); }
-function errCopy(e) { return ({ ai_offline: e.message, not_granted: 'The local AI refused this page.', sampling_disabled: 'The local AI is turned off.', rate_limited: 'The local AI is busy or out of GPU memory — try again in a moment.', tools_unavailable: 'This view cannot run the AI’s tools.', images_unavailable: 'This view cannot send images.', prompt_too_large: 'The request got too large — try a smaller ask.' })[e.code] || ('The AI hit an error: ' + (e.message || e.code)); }
+function errCopy(e) { return ({ ai_offline: e.message, not_granted: e.message || 'The local AI needs its access key.', sampling_disabled: 'The local AI is turned off.', rate_limited: 'The local AI is busy or out of GPU memory — try again in a moment.', tools_unavailable: 'This view cannot run the AI’s tools.', images_unavailable: 'This view cannot send images.', prompt_too_large: 'The request got too large — try a smaller ask.' })[e.code] || ('The AI hit an error: ' + (e.message || e.code)); }
 SBX.runAgent = runAgent;
 // lookups the AI's code commonly reaches for: sbx.get('id' | 'cast:id' | name) -> the object / character group
 SBX.get = (id) => { if (id && id.isObject3D) return id; const s = String(id || ''); if (SBX.placed.has(s)) return SBX.placed.get(s); const cid = s.replace(/^cast:/, ''); const c = CAST.CASTS.find((k) => k.id === cid); if (c) return c.group; for (const [, ob] of SBX.placed) if ((ob.userData.sbx && ob.userData.sbx.name === s) || ob.name === s) return ob; return scene.getObjectByName(s) || null; };

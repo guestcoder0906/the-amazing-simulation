@@ -140,7 +140,7 @@ function shape(x, sr, sh) {
       const fr = m1 > m0 ? Math.max(0, Math.min(1, (ta - m0) / (m1 - m0))) : 0, pa = p0 + (p1 - p0) * fr;
       if (sing) { driftV += (rnd() - 0.5) * 0.8 - drift * 0.03; driftV *= 0.92; drift = Math.max(-7, Math.min(7, drift + driftV)); }
       let ratio = sing ? targetHz(ts) / (sr / pa) : sh.ratio;
-      if (!sing && sh.expr && f0 > 0) ratio = (ratio || 1) * Math.min(1.18, Math.pow(Math.max(0.6, Math.min(1.7, (sr / pa) / f0)), sh.expr - 1)); /* peaks capped so excitement never jumps up into a thin, nerdy register */ // widen the natural intonation: big theatrical pitch excursions
+      if (!sing && sh.expr && f0 > 0) ratio = (ratio || 1) * Math.max(0.72, Math.min(1.3, Math.pow(Math.max(0.6, Math.min(1.7, (sr / pa) / f0)), sh.expr - 1))); /* peaks capped so excitement never jumps up into a thin, nerdy register */ // widen the natural intonation: big theatrical pitch excursions
       const fryOn = !sing && sh.fry && ts > L * 0.72; if (fryOn) ratio = (ratio || 1) * 0.8; // frustration: the line drops low into gravelly fry
       ratio = Math.max(0.5, Math.min(2.2, ratio || 1));
       /* real voices are never machine-perfect: ~0.5% cycle-to-cycle timing jitter and ~2% loudness shimmer while singing */

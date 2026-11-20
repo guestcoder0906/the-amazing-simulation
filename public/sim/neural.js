@@ -129,7 +129,7 @@
     var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
     if (showman) pace = Math.max(pace, 1.38); // manic, rapid-fire ringmaster pacing
     var pick = { voice: voice, k: k, pace: pace };
-    if (showman) pick.style = { expr: 2.15, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
+    if (showman) pick.style = { expr: 2.6, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
     used.set(key, { spec: spec, pick: pick });
     return pick;
   }

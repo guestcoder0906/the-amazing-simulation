@@ -589,7 +589,27 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   }, 1000);
   window.localAI.worldLevel = worldLevel;
   var DICTATION = null;
-  window.claude = { use: async function (name) { if (name === 'sample') return sample; if (name === 'dictation') return DICTATION || (DICTATION = makeDictation()); return null; } };
+  /* permanent local library store (IndexedDB) used when the page has no host database: same collection/doc API */
+  var LOCALDB = null;
+  function makeLocalDb() {
+    var open = new Promise(function (res, rej) { var r = indexedDB.open('amazing-sim-db', 1); r.onupgradeneeded = function () { r.result.createObjectStore('docs'); }; r.onsuccess = function () { res(r.result); }; r.onerror = function () { rej(r.error); }; });
+    function tx(mode, fn) { return open.then(function (d) { return new Promise(function (res, rej) { var t = d.transaction('docs', mode), st = t.objectStore('docs'), out = fn(st); t.oncomplete = function () { res(out && 'result' in out ? out.result : undefined); }; t.onerror = function () { rej(t.error); }; }); }); }
+    function clone(v) { try { return JSON.parse(JSON.stringify(v)); } catch (e) { return v; } }
+    function snapDoc(id, v) { return { id: id, exists: v !== undefined, data: function () { return v === undefined ? undefined : clone(v); } }; }
+    function docRef(path) { var id = path.slice(path.lastIndexOf('/') + 1); return {
+      id: id,
+      get: function () { return tx('readonly', function (s) { return s.get(path); }).then(function (v) { return snapDoc(id, v); }); },
+      set: function (v, o) { return (o && o.merge ? docRef(path).get().then(function (s) { return Object.assign({}, s.data() || {}, clone(v)); }) : Promise.resolve(clone(v))).then(function (val) { return tx('readwrite', function (s) { s.put(val, path); }); }); },
+      update: function (v) { return docRef(path).set(v, { merge: true }); },
+      delete: function () { return tx('readwrite', function (s) { s.delete(path); }); } }; }
+    function coll(name, lim) { var pre = name + '/'; return {
+      doc: function (id) { return docRef(pre + String(id == null ? Math.random().toString(36).slice(2) : id)); },
+      add: function (v) { var r = docRef(pre + Math.random().toString(36).slice(2) + Date.now().toString(36)); return r.set(v).then(function () { return r; }); },
+      limit: function (n) { return coll(name, n); },
+      get: function () { return open.then(function (d) { return new Promise(function (res, rej) { var t = d.transaction('docs', 'readonly'), docs = [], rq = t.objectStore('docs').openCursor(IDBKeyRange.bound(pre, pre + '\uffff')); rq.onsuccess = function () { var c = rq.result; if (c && (!lim || docs.length < lim)) { var k = String(c.key); if (k.indexOf('/', pre.length) < 0) docs.push(snapDoc(k.slice(pre.length), c.value)); c.continue(); } else res({ docs: docs, size: docs.length, empty: !docs.length, forEach: function (f) { docs.forEach(f); } }); }; rq.onerror = function () { rej(rq.error); }; }); }); } }; }
+    return { collection: function (n) { return coll(String(n)); }, doc: function (p) { return docRef(String(p)); }, local: true };
+  }
+  window.claude = { use: async function (name) { if (name === 'db') { try { return LOCALDB || (LOCALDB = makeLocalDb()); } catch (e) { return null; } } if (name === 'sample') return sample; if (name === 'dictation') return DICTATION || (DICTATION = makeDictation()); return null; } };
 
   // small status note: shown only while the local AI cannot be reached
   var note = null;

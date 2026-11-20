@@ -1355,10 +1355,14 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
       }
       for (let i = 0; i < n; i++) W[i * NB + b] = Math.max(0, x[i]);
     }
+    // which bones may move a vertex: its own part's bones and the bones right next to them (parent / child), so the skin still blends
+    // smoothly across each joint. Heat diffuses over the whole connected skin, and without this a foot also kept faint weights from the
+    // hips, the other leg or the spine (an ankle pulled inward, a hand dragged by the chest when they moved).
+    const par = opt.parent || null; const okSets = partBones.map((pb) => { if (!par) return null; const st = new Set(pb); for (const b of pb) { if (par[b] >= 0) st.add(par[b]); } for (let j = 0; j < par.length; j++) if (pb.includes(par[j])) st.add(j); return st; });
     // top 4 per vertex, drop slivers, normalise
     const SI = new Uint16Array(n * 4), SW = new Float32Array(n * 4);
     for (let i = 0; i < n; i++) {
-      const row = []; for (const b of used) { const w = W[i * NB + b]; if (w > 0.002) row.push([b, w]); }
+      const ok = okSets[labels[i]]; const row = []; for (const b of used) { if (ok && !ok.has(b)) continue; const w = W[i * NB + b]; if (w > 0.002) row.push([b, w]); }
       if (!row.length) { const b = near[i][0] ?? 0; row.push([b, 1]); }
       row.sort((a, c) => c[1] - a[1]); const top = row.slice(0, 4).filter((e, k) => k === 0 || e[1] > 0.02); const s = top.reduce((a, e) => a + e[1], 0);
       for (let k = 0; k < 4; k++) { SI[i * 4 + k] = top[k] ? top[k][0] : 0; SW[i * 4 + k] = top[k] ? top[k][1] / s : 0; }
@@ -1540,13 +1544,13 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
     const nT = Ii.length / 3; const triL = new Uint8Array(nT);
     for (let t = 0; t < nT; t++) { const a = Ii[t * 3], b = Ii[t * 3 + 1], c = Ii[t * 3 + 2]; field.f((Pp[a * 3] + Pp[b * 3] + Pp[c * 3]) / 3, (Pp[a * 3 + 1] + Pp[b * 3 + 1] + Pp[c * 3 + 1]) / 3, (Pp[a * 3 + 2] + Pp[b * 3 + 2] + Pp[c * 3 + 2]) / 3); let bi = 0; for (let i = 1; i < D.length; i++) if (D[i] < D[bi]) bi = i; triL[t] = bi; }
     // per-vertex labels for the heat sources: majority of the surrounding triangles
-    const vl = new Uint8Array(nP); { const cnt = new Map(); for (let t = 0; t < nT; t++) for (let q = 0; q < 3; q++) { const v = Ii[t * 3 + q]; const k = v * 64 + triL[t]; cnt.set(k, (cnt.get(k) || 0) + 1); } const best = new Int32Array(nP).fill(-1); for (const [k, n] of cnt) { const v = Math.floor(k / 64), l = k % 64; if (best[v] < n) { best[v] = n; vl[v] = l; } } }
+    const vl = new Uint8Array(nP); { const cnt = new Map(); for (let t = 0; t < nT; t++) for (let q = 0; q < 3; q++) { const v = Ii[t * 3 + q]; const k = v * 256 + triL[t]; cnt.set(k, (cnt.get(k) || 0) + 1); } const best = new Int32Array(nP).fill(-1); for (const [k, n] of cnt) { const v = Math.floor(k / 256), l = k % 256; /* 256: a key of 64 mixed up the parts of characters with more than 64 parts */ if (best[v] < n) { best[v] = n; vl[v] = l; } } }
     // ---- weights (bone heat on the welded, cut mesh; split per body part)
     let SIw, SWw, PpT = Pp, NwT = Nw, restOverlap = [];
     if (!spec.static) {
       const bones = ch.bones.map((b, i) => TP.boneT(i));
       const partBones = C.parts.map((p) => p.bones.map((nm) => { const i = ch.bi[nm]; if (i === undefined) throw new Error('sculpt: no bone ' + nm); return i; }));
-      const wts = boneHeat(Pf, Ii, vl, partBones, bones, spec.heat || {}); SIw = wts.SI; SWw = wts.SW; log.push('weights ' + wts.ms + 'ms/' + wts.iters + 'it');
+      const wts = boneHeat(Pf, Ii, vl, partBones, bones, { ...(spec.heat || {}), parent: ch.bones.map((b) => b.parent) }); SIw = wts.SI; SWw = wts.SW; log.push('weights ' + wts.ms + 'ms/' + wts.iters + 'it');
       // rigid zones: skin that carries drawn decals (eyes, mouths) follows its bone exactly, fading in from the joint
       for (const rg of spec.rigid || []) {
         const pt = C.byId.get(rg.part); const bi = ch.bi[rg.bone]; if (!pt || bi === undefined) continue; const j = pt.join || { c: pt.box[0].map((v, k) => (v + pt.box[1][k]) / 2), r: 0.05 };

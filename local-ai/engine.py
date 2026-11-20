@@ -186,16 +186,50 @@ def load_image(data: Any):
 def load_audio(data: Any):
     """16 kHz mono float32 numpy array from bytes, base64 / data URL or a path (wav, mp3, m4a, ogg, webm...)."""
     import numpy as np
-    from faster_whisper.audio import decode_audio
     if isinstance(data, np.ndarray):
         return data.astype("float32")
     if isinstance(data, str):
         if data.startswith("data:"):
             data = data.split(",", 1)[1]
         if os.path.exists(data):
-            return decode_audio(data, sampling_rate=16000)
-        data = base64.b64decode(data)
-    return decode_audio(io.BytesIO(data), sampling_rate=16000)
+            data = Path(data).read_bytes()
+        else:
+            data = base64.b64decode(data)
+    return _decode_16k(data)
+
+
+def _decode_16k(raw: bytes):
+    """Any audio container (wav, webm/opus, mp3, m4a, ogg...) -> 16 kHz mono float32, using PyAV directly."""
+    import av
+    import numpy as np
+    out = []
+    with av.open(io.BytesIO(raw), mode="r") as c:
+        stream = next(s for s in c.streams if s.type == "audio")
+        rs = av.AudioResampler(format="flt", layout="mono", rate=16000)
+        for frame in c.decode(stream):
+            for f in rs.resample(frame):
+                out.append(f.to_ndarray().reshape(-1))
+        for f in rs.resample(None):  # flush
+            out.append(f.to_ndarray().reshape(-1))
+    return np.concatenate(out).astype("float32") if out else np.zeros(1600, dtype="float32")
+
+
+def _last_position_logits(model):
+    """Generation only needs the next-word scores for the LAST position. Models whose forward has no `logits_to_keep`
+    compute scores for every prompt position (a 5k-token prompt x 152k vocabulary = ~3 GB), which overflows an 8 GB GPU
+    into slow shared memory. This makes the output layer score only the last position while generating."""
+    lm = getattr(model, "lm_head", None)
+    if lm is None or getattr(lm, "_last_only", False):
+        return
+    orig = lm.forward
+
+    def forward(h, *a, **k):
+        if not lm.training and h.dim() == 3 and h.shape[1] > 1:
+            h = h[:, -1:, :]
+        return orig(h, *a, **k)
+
+    lm.forward = forward
+    lm._last_only = True
 
 
 def write_wav(arr) -> str:
@@ -216,8 +250,10 @@ def tools_prompt(tools: list[dict]) -> str:
         "<tool_call>",
         '{"name": "tool_name", "input": {"arg": "value"}}',
         "</tool_call>",
-        "You may call several tools in one reply. After your calls, stop: the results come back as <tool_result> blocks,",
-        "then continue. Never pretend a tool ran: only real tool calls change anything. Use only these tools:",
+        "If the request needs several actions (e.g. make something AND walk), put one <tool_call> block for EACH action in",
+        "the same reply. Never describe an action in words instead of calling its tool: an action written as text does",
+        "nothing. After your calls, stop: the results come back as <tool_result> blocks, then continue.",
+        "Use only these tools:",
     ]
     for t in tools:
         schema = t.get("input_schema") or t.get("inputSchema") or {"type": "object", "properties": {}}
@@ -260,14 +296,74 @@ def parse_reply(text: str, tools: list[dict]) -> list[dict]:
         pos = m.end()
     rest = text[pos:].strip()
     if rest:
-        # a model that forgot the tags but answered with one bare tool-call object
-        obj = _loads_lenient(rest) if names and rest.lstrip().startswith(("{", "```")) else None
-        if isinstance(obj, dict) and obj.get("name") in names and not any(b["type"] == "tool_use" for b in blocks):
-            args = obj.get("input", obj.get("arguments", {}))
-            blocks.append({"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:24], "name": obj["name"], "input": args or {}})
+        # a model that forgot the tags but wrote tool calls as bare JSON objects (one or several): use every one
+        bare, leftover = _bare_calls(rest, names) if names else ([], rest)
+        if bare:
+            if leftover.strip():
+                blocks.append({"type": "text", "text": leftover.strip()})
+            for obj in bare:
+                args = obj.get("input", obj.get("arguments", obj.get("parameters", {})))
+                if isinstance(args, str):
+                    args = _loads_lenient(args) or {}
+                blocks.append({"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:24], "name": obj["name"], "input": args or {}})
         else:
-            blocks.append({"type": "text", "text": rest})
+            # an action written as text instead of a call, e.g. "(body part=move pose=walk)" or body(part="move", pose="walk"):
+            # turn it into the real tool call it describes, so it actually happens
+            kept = rest
+            for m in PSEUDO_RX.finditer(rest):
+                name, argstr = m.group(1) or m.group(3), m.group(2) or m.group(4) or ""
+                if name not in names:
+                    continue
+                args = {k: v.strip().strip("\"'") for k, v in KV_RX.findall(argstr)}
+                if not args:
+                    continue
+                blocks.append({"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:24], "name": name, "input": args})
+                kept = kept.replace(m.group(0), "")
+            if kept.strip():
+                blocks.insert(len([b for b in blocks if b["type"] == "text"]), {"type": "text", "text": kept.strip()})
     return blocks or [{"type": "text", "text": ""}]
+
+
+def _bare_calls(text: str, names: set) -> tuple[list[dict], str]:
+    """Every top-level {...} JSON object in text that names a known tool, plus the text left around them."""
+    found, keep, i, n = [], [], 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            keep.append(text[i])
+            i += 1
+            continue
+        depth, j, in_str, esc = 0, i, False, False
+        while j < n:
+            ch = text[j]
+            if in_str:
+                esc = (ch == "\\" and not esc)
+                if ch == '"' and not esc:
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        chunk = text[i:j + 1]
+        try:
+            obj = json.loads(chunk)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict) and obj.get("name") in names:
+            found.append(obj)
+        else:
+            keep.append(chunk)
+        i = j + 1
+    left = re.sub(r"```(json)?\s*```", "", "".join(keep))
+    return found, left
+
+
+PSEUDO_RX = re.compile(r"\(\s*([A-Za-z_]\w*)\s+([^()]*=[^()]*)\)|\b([A-Za-z_]\w*)\s*\(([^()]*=[^()]*)\)")
+KV_RX = re.compile(r"(\w+)\s*[=:]\s*(\"[^\"]*\"|'[^']*'|[^,\s)]+)")
 
 
 CODE_RX = re.compile(r"```|\b(function|class|def|const|let|var|return|import|javascript|typescript|python|code|script|bug|debug|"
@@ -391,11 +487,11 @@ class Engine:
             kw["device_map"] = {"": 0}  # everything on the GPU: never spill into system RAM
         if mid == QWEN_OMNI_7B:
             from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor
-            model = self._hf_load(Qwen2_5OmniForConditionalGeneration.from_pretrained, mid, **kw)
-            try:
-                model.disable_talker()  # text answers only: frees the speech generator
-            except Exception:
-                pass
+            # text answers only: never build the speech generator (talker + token2wav), which would eat ~1.5 GB of VRAM
+            # that long prompts need; memory-efficient attention keeps long game prompts inside 8 GB
+            model = self._hf_load(Qwen2_5OmniForConditionalGeneration.from_pretrained, mid, enable_audio_output=False,
+                                  attn_implementation="sdpa", **kw)
+            _last_position_logits(getattr(model, "thinker", model))
             proc = Qwen2_5OmniProcessor.from_pretrained(mid)
         elif mid in (GEMMA3_12B, GEMMA3N_E4B):
             from transformers import AutoProcessor
@@ -636,7 +732,14 @@ class Engine:
                 inputs = proc(text=text, images=images, audio=audios, return_tensors="pt", padding=True)
                 inputs = inputs.to(model.device, dtype=torch.bfloat16)
                 with torch.inference_mode():
-                    ids = model.generate(**inputs, return_audio=False, use_audio_in_video=False, **gen_kw)
+                    # text answers come from the "thinker" (the speech "talker" is switched off to save VRAM)
+                    base = getattr(model, "base_model", None)
+                    base = getattr(base, "model", base) if base is not None and hasattr(model, "peft_config") else model
+                    thinker = getattr(base, "thinker", None)
+                    if thinker is not None:
+                        ids = thinker.generate(**inputs, use_audio_in_video=False, **gen_kw)
+                    else:
+                        ids = model.generate(**inputs, return_audio=False, use_audio_in_video=False, **gen_kw)
                 if isinstance(ids, tuple):
                     ids = ids[0]
                 new = ids[0][inputs["input_ids"].shape[1]:]

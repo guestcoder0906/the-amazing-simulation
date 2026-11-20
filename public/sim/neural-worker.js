@@ -72,7 +72,7 @@ function shape(x, sr, sh) {
   if (sh.trim) x = trimSilence(x, sr);
   const hop = Math.round(sr * 0.005), f = pitchTrack(x, sr, hop), f0 = median(f) || 0;
   const sing = Array.isArray(sh.notes) && sh.notes.length;
-  if (!sing && (!sh.ratio || Math.abs(sh.ratio - 1) < 0.004)) return { pcm: x, f0 };
+  if (!sing && !sh.expr && !sh.fry && (!sh.ratio || Math.abs(sh.ratio - 1) < 0.004)) return { pcm: x, f0 };
   const N = x.length, nF = f.length;
   const voicedF = (i) => f[Math.min(nF - 1, Math.max(0, i))] > 0;
   const per = (i) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(i / hop)))]; return v > 0 ? sr / v : 0; };
@@ -139,9 +139,12 @@ function shape(x, sr, sh) {
     if (p0 && p1) {
       const fr = m1 > m0 ? Math.max(0, Math.min(1, (ta - m0) / (m1 - m0))) : 0, pa = p0 + (p1 - p0) * fr;
       if (sing) { driftV += (rnd() - 0.5) * 0.8 - drift * 0.03; driftV *= 0.92; drift = Math.max(-7, Math.min(7, drift + driftV)); }
-      let ratio = sing ? targetHz(ts) / (sr / pa) : sh.ratio; ratio = Math.max(0.5, Math.min(2.2, ratio || 1));
+      let ratio = sing ? targetHz(ts) / (sr / pa) : sh.ratio;
+      if (!sing && sh.expr && f0 > 0) ratio = (ratio || 1) * Math.pow(Math.max(0.6, Math.min(1.7, (sr / pa) / f0)), sh.expr - 1); // widen the natural intonation: big theatrical pitch excursions
+      const fryOn = !sing && sh.fry && ts > L * 0.72; if (fryOn) ratio = (ratio || 1) * 0.8; // frustration: the line drops low into gravelly fry
+      ratio = Math.max(0.5, Math.min(2.2, ratio || 1));
       /* real voices are never machine-perfect: ~0.5% cycle-to-cycle timing jitter and ~2% loudness shimmer while singing */
-      step = (pa / ratio) * (sing ? 1 + (rnd() - 0.5) * 0.01 : 1); const half = Math.round(pa), w0 = Math.min(1, step / pa) * (sing ? 1 + (rnd() - 0.5) * 0.04 : 1), d0 = Math.round(ts);
+      step = (pa / ratio) * (sing ? 1 + (rnd() - 0.5) * 0.01 : fryOn ? 1 + (rnd() - 0.5) * 0.35 : 1); const half = Math.round(pa), w0 = Math.min(1, step / pa) * (sing ? 1 + (rnd() - 0.5) * 0.04 : fryOn ? (rnd() < 0.5 ? 0.55 : 1.15) : 1), d0 = Math.round(ts);
       for (let k = -half; k <= half; k++) {
         const di = d0 + k; if (di < 0 || di >= y.length) continue;
         const a0 = m0 + k, a1 = m1 + k; const v0 = a0 >= 0 && a0 < N ? x[a0] : 0, v1 = a1 >= 0 && a1 < N ? x[a1] : 0;

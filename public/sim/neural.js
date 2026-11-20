@@ -124,9 +124,12 @@
     if (g === 'c') k += 0.06;
     k = Math.max(0.84, Math.min(1.18, k));
     k = 1 + (k - 1) * 0.5;
-    if (spec.showman || spec.timbre === 'showman') k = Math.min(k, 1.0); // energetic, never squeaky
+    var showman = !!(spec.showman || spec.timbre === 'showman');
+    if (showman) k = 1.02 + jit * 0.5; // mid baritone-tenor: bright, but never high or squeaky
     var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
+    if (showman) pace = Math.max(pace, 1.2); // manic, rapid-fire ringmaster pacing
     var pick = { voice: voice, k: k, pace: pace };
+    if (showman) pick.style = { expr: 1.75, eq: 'brassy' }; // wide pitch swings, forward/brassy resonance with chest boom
     used.set(key, { spec: spec, pick: pick });
     return pick;
   }

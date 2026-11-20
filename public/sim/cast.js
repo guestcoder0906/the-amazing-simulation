@@ -1209,15 +1209,18 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
     fixJoins(spec);
     const parts = spec.parts.map((pt, i) => ({ ...pt, i, prims: pt.prims.map((q) => (q.f ? { p: q, k: pt.k || 0, op: 'add' } : { k: pt.k || 0, op: 'add', ...q })) }));
     const byId = new Map(parts.map((p) => [p.id, p]));
+    /* SIZE: the blend limits below were tuned for toy-sized characters (~0.45 m). A character built at its real size (1.5 m, 3 m...) needs
+       proportionally larger blends, or its shapes meet in hard creases and look like lumps of primitives. S scales them to this character. */
+    let yLo = Infinity, yHi = -Infinity; for (const p of parts) for (const q of p.prims) { const b = q.p && q.p.box; if (b && Number.isFinite(b[0][1]) && Number.isFinite(b[1][1])) { yLo = Math.min(yLo, b[0][1]); yHi = Math.max(yHi, b[1][1]); } } const S = Number.isFinite(yHi - yLo) ? Math.max(1, (yHi - yLo) / 0.45) : 1; spec._sizeS = S;
     for (const p of parts) { p.par = p.parent ? byId.get(p.parent) : null; const bs = p.prims.filter((q) => q.op !== 'sub').map((q) => q.p.box); p.box = [[0, 1, 2].map((k) => Math.min(...bs.map((b) => b[0][k]))), [0, 1, 2].map((k) => Math.max(...bs.map((b) => b[1][k])))];
       // a minimum blend radius scaled to the part's own size: shapes inside a part flow into each other, and a part flows into its parent,
       // instead of meeting in hard creases / lumpy seams (the model stays true to its design: the floor is a small fraction of each size)
       const ext = (b) => Math.max(1e-4, Math.min(b[1][0] - b[0][0], b[1][1] - b[0][1], b[1][2] - b[0][2]));
-      for (const q of p.prims) if (q.op !== 'sub' && q.p && q.p.box) q.k = Math.max(q.k || 0, Math.min(0.024, 0.1 * ext(q.p.box)));
-      if (p.join && !p.seamHard) p.join = { ...p.join, k: Math.max(p.join.k || 0, Math.min(0.045, 0.16 * ext(p.box))) }; }
+      for (const q of p.prims) if (q.op !== 'sub' && q.p && q.p.box) q.k = Math.max(q.k || 0, Math.min(0.024 * S, 0.1 * ext(q.p.box)));
+      if (p.join && !p.seamHard) p.join = { ...p.join, k: Math.max(p.join.k || 0, Math.min(0.045 * S, 0.16 * ext(p.box))), r: Math.max(p.join.r || 0, 0.02 * S) }; }
     for (const p of parts) { if (!p.par || p.join || p.floating) continue; const par = p.par; const fP = (x, y, z) => { let d = 1e9; for (const q of par.prims) if (q.op !== 'sub') d = Math.min(d, q.p.f(x, y, z)); return d; }; const fC = (x, y, z) => { let d = 1e9; for (const q of p.prims) if (q.op !== 'sub') d = Math.min(d, q.p.f(x, y, z)); return d; };
       let best = null; const N = 7; for (let a = 0; a <= N; a++) for (let b = 0; b <= N; b++) for (let c3 = 0; c3 <= N; c3++) { const x = p.box[0][0] + (p.box[1][0] - p.box[0][0]) * a / N, y = p.box[0][1] + (p.box[1][1] - p.box[0][1]) * b / N, z = p.box[0][2] + (p.box[1][2] - p.box[0][2]) * c3 / N; if (fC(x, y, z) > 0.002) continue; const dp = fP(x, y, z); if (!best || dp < best.d) best = { d: dp, c: [x, y, z] }; }
-      const e0 = Math.max(1e-4, Math.min(p.box[1][0] - p.box[0][0], p.box[1][1] - p.box[0][1], p.box[1][2] - p.box[0][2])); if (best && best.d < e0 * 0.6) p.join = { c: best.c, r: Math.max(0.01, e0 * 0.9), k: Math.min(0.03, 0.14 * e0), auto: true }; } /* an automatic smooth join where a part meets its parent (an omitted join left a hard seam) */
+      const e0 = Math.max(1e-4, Math.min(p.box[1][0] - p.box[0][0], p.box[1][1] - p.box[0][1], p.box[1][2] - p.box[0][2])); if (best && best.d < e0 * 0.6) p.join = { c: best.c, r: Math.max(0.01 * S, e0 * 0.9), k: Math.min(0.03 * S, 0.14 * e0), auto: true }; } /* an automatic smooth join where a part meets its parent (an omitted join left a hard seam) */
     // tree order: parents before children
     const order = []; const seen = new Set(); const visit = (p) => { if (seen.has(p.id)) return; if (p.par) visit(p.par); seen.add(p.id); order.push(p); }; parts.forEach(visit);
     const carves = (spec.carve || []).map((c) => ({ k: 0.002, ...c, partSet: c.parts ? new Set(c.parts.map((id) => byId.get(id).i)) : null }));
@@ -1362,7 +1365,7 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
     // top 4 per vertex, drop slivers, normalise
     const SI = new Uint16Array(n * 4), SW = new Float32Array(n * 4);
     for (let i = 0; i < n; i++) {
-      const ok = okSets[labels[i]]; const row = []; for (const b of used) { if (ok && !ok.has(b)) continue; const w = W[i * NB + b]; if (w > 0.002) row.push([b, w]); }
+      const row = []; for (const b of used) { const w = W[i * NB + b]; if (w > 0.002) row.push([b, w]); } /* (no per-part mask: the heat diffusion already keeps weights local, and a mask made hard creases where parts meet) */
       if (!row.length) { const b = near[i][0] ?? 0; row.push([b, 1]); }
       row.sort((a, c) => c[1] - a[1]); const top = row.slice(0, 4).filter((e, k) => k === 0 || e[1] > 0.02); const s = top.reduce((a, e) => a + e[1], 0);
       for (let k = 0; k < 4; k++) { SI[i * 4 + k] = top[k] ? top[k][0] : 0; SW[i * 4 + k] = top[k] ? top[k][1] / s : 0; }
@@ -1441,7 +1444,7 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
     if (!(h > 0) || !Number.isFinite(h)) h = 0.0024;
     { /* memory guard: a big character at a fine voxel size made a grid of hundreds of millions of cells and crashed the tab. Coarsen the voxel so the grid stays within budget */
       const ext = [0, 1, 2].map((k) => mx[k] - mn[k] + 8 * h + 0.008); if (Math.max(...ext) > 40) throw new Error('sculpt is ' + Math.max(...ext).toFixed(1) + ' m across: a primitive has a huge size or position (check units: metres)');
-      const BUDGET = 1.6e7; const cells = (ext[0] / h) * (ext[1] / h) * (ext[2] / h); if (cells > BUDGET) { const h2 = h * Math.cbrt(cells / BUDGET); log.push('voxel ' + h.toFixed(4) + '→' + h2.toFixed(4) + ' (size guard)'); h = h2; if (6 * h > BAND) { BAND = 6 * h; field = makeField(C, BAND); } } }
+      const BUDGET = 2.5e8; /* the grid is sparse (only blocks near the surface are filled), so only an absurd size needs coarsening */ const cells = (ext[0] / h) * (ext[1] / h) * (ext[2] / h); if (cells > BUDGET) { const h2 = h * Math.cbrt(cells / BUDGET); log.push('voxel ' + h.toFixed(4) + '→' + h2.toFixed(4) + ' (size guard)'); h = h2; if (6 * h > BAND) { BAND = 6 * h; field = makeField(C, BAND); } } }
     mn = mn.map((v) => v - 4 * h - 0.004); mx = mx.map((v) => v + 4 * h + 0.004);
     let { V, F: Fc } = polygonize(F, [mn, mx], h); log.push('nets ' + Math.round(performance.now() - t0));
     Fc = dropIslands(V, Fc, 40);

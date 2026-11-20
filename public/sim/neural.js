@@ -113,9 +113,9 @@
     var uniq = []; order.forEach(function (v) { if (uniq.indexOf(v) < 0) uniq.push(v); });
     var show = !!(spec.showman || spec.timbre === 'showman' || /showman|ringmaster/.test(desc));
     var lead = uniq.slice(0, 3);
-    if (show && prefs[0] === 'am_santa') lead = ['am_santa']; /* Caine: the deep santa voice alone */ var deepOnly = /santa/.test(String(spec.blend || '')) || (spec.showman && spec.only_lead);
+    if (show && prefs[0] === 'am_santa') lead = ['am_santa', 'am_onyx']; /* Caine: mainly the deep santa voice, blended with a deep American male voice */ var deepOnly = /santa/.test(String(spec.blend || '')) || (spec.showman && spec.only_lead);
     if (!show && lead.length > 1) { var r = h % lead.length; lead = lead.slice(r).concat(lead.slice(0, r)); }
-    var W = show && lead.length === 1 ? [1] : show ? [0.55, 0.25, 0.20] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
+    var W = show && lead[0] === 'am_santa' && lead.length === 2 ? [0.65, 0.35] : show && lead.length === 1 ? [1] : show ? [0.55, 0.25, 0.20] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
     if (deepOnly) { lead = lead.slice(0, 1); W = [1]; } /* Caine: the deep lead voice alone */
     var mix = lead.map(function (v, i) { return { voice: v, w: Math.max(0.05, W[i] || 0.1) }; });
     var voice = 'cv_' + String(key).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) + '_' + hash(JSON.stringify(mix)).toString(36);

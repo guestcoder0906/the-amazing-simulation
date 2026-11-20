@@ -2006,7 +2006,7 @@ function speakSynced(c, u, text) { const id = LIPID++; const est = Math.max(0.3,
 const VOICE = { full: 4, range: 40, speaking: false, q: [], gen: 0 };
 const SYN = (() => { try { return window.speechSynthesis && window.SpeechSynthesisUtterance ? window.speechSynthesis : null; } catch (e) { return null; } })();
 // Ollo's / Caine's voice: select the warmest, highest-quality natural / neural voice (never flat or robotic)
-let SYNV = null; const pickSynVoice = () => { try { const vs = SYN.getVoices(); const en = vs.filter((v) => /^en/i.test(v.lang));
+let SYNV = null, SYNV_US = null; const pickSynVoice = () => { try { const vs = SYN.getVoices(); const en = vs.filter((v) => /^en/i.test(v.lang));
   const MALE = /(andrew|christopher|guy|davis|brian|steffan|eric|roger|tony|ryan|daniel|arthur|oliver|george|thomas|alex|aaron|evan|nathan|tom|david|mark|matthew|google uk english male|\bmale\b)/i;
   const FEMALE = /(female|aria|jenny|ava|emma|michelle|sonia|libby|samantha|allison|nicky|serena|kate|fiona|karen|moira|tessa|victoria|zira)/i;
   const score = (v) => {
@@ -2021,16 +2021,18 @@ let SYNV = null; const pickSynVoice = () => { try { const vs = SYN.getVoices(); 
     return sc;
   };
   const ranked = (en.length ? en : vs).slice().sort((a, b) => score(b) - score(a));
-  SYNV = ranked[0] || null; } catch (e) { SYNV = null; } };
+  SYNV = ranked[0] || null;
+  /* Caine is American: only US English voices, never a UK / Australian / Irish one (names like Arthur, Oliver, George are UK voices) */ const us = en.filter((v) => /^en[-_]US/i.test(v.lang) && !/(uk|british|england|arthur|oliver|george|thomas|daniel|ryan|libby|sonia|maisie)/i.test(v.name || '')); SYNV_US = us.slice().sort((a, b) => score(b) - score(a))[0] || SYNV; } catch (e) { SYNV = null; } };
 // natural expressive delivery: warm, human-scaled melodic contour without squeaky spikes
 function olloProsody(part, i, n) { const t = String(part).trim(); let p = 1.0, r = 0.98; const big = /!\s*$/.test(t), ask = /\?\s*$/.test(t), trail = /(…|\.\.\.)\s*$/.test(t), caps = /\b[A-Z]{3,}\b/.test(t), herald = /\b(ladies|gentlemen|behold|presenting|welcome|step right up|marvel|amazing|astonishing|spectacular|tonight|introducing)\b/i.test(t);
   if (big) { p += 0.06; r += 0.04; } if (ask) { p += 0.05; r += 0.01; } if (trail) { p -= 0.04; r -= 0.08; } if (caps) { p += 0.04; } if (herald) { p -= 0.02; r -= 0.05; } if (i === 0 && n > 1) r -= 0.02; if (i === n - 1 && !big && !ask) { p -= 0.03; r -= 0.03; }
   const wob = Math.sin(i * 2.1 + t.length * 0.4) * 0.02;
   // Caine: confident, lively American showman — warm baritone-tenor with natural theatrical lift (never shrill or squeaky)
   if (SBX.altSkin && SBX.altSkin.on) {
-    let cp = 0.98 + (big ? 0.07 : 0) + (ask ? 0.05 : 0) + (caps ? 0.05 : 0) + (trail ? -0.05 : 0) + (i === n - 1 && !big && !ask ? -0.04 : 0) + wob;
-    let cr = 1.1 + (big ? 0.04 : 0) + (herald ? -0.06 : 0) + (trail ? -0.08 : 0) - wob * 0.3;
-    return { pitch: clamp(cp, 0.86, 1.15), rate: clamp(cr, 0.94, 1.24) };
+    /* a big-top showman: punchy, sweeping, selling every line - big swings up on exclamations and announcements, a dramatic slow-down on the reveal word, quick patter in between */
+    let cp = 0.97 + (big ? 0.11 : 0) + (ask ? 0.07 : 0) + (caps ? 0.08 : 0) + (herald ? 0.05 : 0) + (trail ? -0.07 : 0) + (i === n - 1 && !big && !ask ? -0.05 : 0) + wob * 1.8;
+    let cr = 1.14 + (big ? 0.06 : 0) + (herald ? -0.12 : 0) + (trail ? -0.1 : 0) + (caps ? -0.04 : 0) - wob * 0.4;
+    return { pitch: clamp(cp, 0.84, 1.2), rate: clamp(cr, 0.92, 1.3) };
   }
   return { pitch: clamp(p + wob, 0.88, 1.18), rate: clamp(r - wob * 0.4, 0.86, 1.14) }; }
 if (SYN) { pickSynVoice(); try { SYN.onvoiceschanged = pickSynVoice; } catch (e) { /* ok */ } }
@@ -2050,7 +2052,7 @@ function olloVoiceLegacy(text) { try { const m = (typeof ALT !== 'undefined' && 
 function olloVoiceBrowser(text) { text = speakable(text); window.__spoke = true; const gen = ++VOICE.gen; const parts = String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)];
   VOICE.speaking = true; // (no cancel: the browser has one speech queue, shared with the other characters' voices)
   const done = () => { if (gen === VOICE.gen) { VOICE.speaking = false; VOICE.until = performance.now() + 600; } };
-  if (SYN) { let i = 0; const next = () => { if (gen !== VOICE.gen || i >= parts.length) return done(); const v = earVol(); const u = new SpeechSynthesisUtterance(parts[i++]); if (SYNV) u.voice = SYNV; { const pr = olloProsody(parts[i - 1], i - 1, parts.length); u.pitch = pr.pitch; u.rate = pr.rate; } u.volume = v; u.onend = u.onerror = next; if (v < 0.03) { lipStart(ollo, RPC.lipsync.fromText(parts[i - 1], parts[i - 1].length / 13.5), wallClock()); setTimeout(next, parts[i - 1].length * 74); return; } speakSynced(ollo, u, parts[i - 1]); try { SYN.speak(u); } catch (e) { next(); } }; next(); return; }
+  if (SYN) { let i = 0; const next = () => { if (gen !== VOICE.gen || i >= parts.length) return done(); const v = earVol(); const u = new SpeechSynthesisUtterance(parts[i++]); { const vv = SBX.altSkin && SBX.altSkin.on ? (SYNV_US || SYNV) : SYNV; if (vv) u.voice = vv; } { const pr = olloProsody(parts[i - 1], i - 1, parts.length); u.pitch = pr.pitch; u.rate = pr.rate; } u.volume = v; u.onend = u.onerror = next; if (v < 0.03) { lipStart(ollo, RPC.lipsync.fromText(parts[i - 1], parts[i - 1].length / 13.5), wallClock()); setTimeout(next, parts[i - 1].length * 74); return; } speakSynced(ollo, u, parts[i - 1]); try { SYN.speak(u); } catch (e) { next(); } }; next(); return; }
   if (tts && earVol() > 0.08 && !(typeof dictOn !== 'undefined' && dictOn)) { lipStart(ollo, RPC.lipsync.fromText(String(text)), wallClock(0.25)); tts.speak(String(text).slice(0, 1900), { voice: 'buttery' }).catch(() => {}).finally(() => { lipEnd(ollo); done(); }); return; }
   lipStart(ollo, RPC.lipsync.fromText(String(text)), wallClock()); setTimeout(done, String(text).length * 74); }
 async function ensureVoice() { try { neuStart(); } catch (e) { /* ok */ } if (!SYN && !tts) { try { tts = await window.claude?.use?.('tts'); } catch (e) { tts = null; } } return voiceOK(); }

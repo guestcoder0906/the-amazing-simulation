@@ -1429,10 +1429,15 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
   }
   function build(ch, spec, opt = {}) {
     const TP = tposeSetup(ch, spec); spec = TP.spec;
-    const t0 = performance.now(); const h = opt.voxel || spec.voxel || 0.0024; const C = compile(spec); const log = [];
-    const kmax = Math.max(0.01, ...C.parts.map((p) => (p.join ? p.join.k : 0))); const BAND = Math.max(6 * h, kmax * 1.5);
-    const field = makeField(C, BAND); const F = (x, y, z) => field.f(x, y, z);
+    const t0 = performance.now(); let h = opt.voxel || spec.voxel || 0.0024; const C = compile(spec); const log = [];
+    const kmax = Math.max(0.01, ...C.parts.map((p) => (p.join ? p.join.k : 0))); let BAND = Math.max(6 * h, kmax * 1.5);
+    let field = makeField(C, BAND); const F = (x, y, z) => field.f(x, y, z);
     let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity]; for (const p of C.parts) for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], p.box[0][k]); mx[k] = Math.max(mx[k], p.box[1][k]); }
+    if (![...mn, ...mx].every(Number.isFinite)) throw new Error('sculpt has no valid parts (empty, NaN or infinite primitive sizes / positions)');
+    if (!(h > 0) || !Number.isFinite(h)) h = 0.0024;
+    { /* memory guard: a big character at a fine voxel size made a grid of hundreds of millions of cells and crashed the tab. Coarsen the voxel so the grid stays within budget */
+      const ext = [0, 1, 2].map((k) => mx[k] - mn[k] + 8 * h + 0.008); if (Math.max(...ext) > 40) throw new Error('sculpt is ' + Math.max(...ext).toFixed(1) + ' m across: a primitive has a huge size or position (check units: metres)');
+      const BUDGET = 1.6e7; const cells = (ext[0] / h) * (ext[1] / h) * (ext[2] / h); if (cells > BUDGET) { const h2 = h * Math.cbrt(cells / BUDGET); log.push('voxel ' + h.toFixed(4) + '→' + h2.toFixed(4) + ' (size guard)'); h = h2; if (6 * h > BAND) { BAND = 6 * h; field = makeField(C, BAND); } } }
     mn = mn.map((v) => v - 4 * h - 0.004); mx = mx.map((v) => v + 4 * h + 0.004);
     let { V, F: Fc } = polygonize(F, [mn, mx], h); log.push('nets ' + Math.round(performance.now() - t0));
     Fc = dropIslands(V, Fc, 40);

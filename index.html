@@ -212,10 +212,14 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var last = null;
     for (var attempt = 0; attempt < 5; attempt++) {
       var r, own = !!CLAUDE_KEY;
+      /* per-attempt time limit: a request that hangs (network stall, proxy cut off) is abandoned and retried, never waited on forever */
+      var tc = new AbortController(), timedOut = false, tm = setTimeout(function () { timedOut = true; tc.abort(); }, own ? 240000 : 290000);
+      var onUser = function () { tc.abort(); }; if (signal) { if (signal.aborted) tc.abort(); else signal.addEventListener('abort', onUser, { once: true }); }
       try {
-        r = own ? await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: claudeHeaders(CLAUDE_KEY), body: JSON.stringify(body), signal: signal })
-                : await fetch('/api/claude', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal });
-      } catch (e) { if (e && e.name === 'AbortError') throw e; last = err('api_error', 'Could not reach Claude: ' + (e.message || e)); await new Promise(function (res) { setTimeout(res, 1500 * Math.pow(2, attempt)); }); continue; }
+        r = own ? await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: claudeHeaders(CLAUDE_KEY), body: JSON.stringify(body), signal: tc.signal })
+                : await fetch('/api/claude', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: tc.signal });
+      } catch (e) { clearTimeout(tm); if (signal) signal.removeEventListener('abort', onUser); if (e && e.name === 'AbortError' && !timedOut) throw e; if (timedOut) { console.warn('[claude] request took too long, retrying'); last = err('api_error', 'Claude took too long to answer'); continue; } last = err('api_error', 'Could not reach Claude: ' + (e.message || e)); await new Promise(function (res) { setTimeout(res, 1500 * Math.pow(2, attempt)); }); continue; }
+      clearTimeout(tm); if (signal) signal.removeEventListener('abort', onUser);
       if (r.ok) return r.json();
       var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
       var msg = 'Claude ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }

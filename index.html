@@ -543,7 +543,9 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       msgs.push({ role: 'assistant', content: res.content });
       if (res.stop_reason === 'pause_turn') continue; // a long server-side web search: let Claude carry on
       if (res.stop_reason !== 'tool_use' || !tu.length) break;
-      var results = []; for (var u of tu) { var out; try { var t = byName[u.name]; out = t && t.execute ? await t.execute(u.input || {}) : 'unknown tool'; } catch (e) { out = 'error: ' + (e.message || e); } results.push({ type: 'tool_result', tool_use_id: u.id, content: typeof out === 'string' ? out.slice(0, 20000) : JSON.stringify(out === undefined ? 'ok' : out).slice(0, 20000) }); }
+      var runOne = async function (u) { var out; try { var t = byName[u.name]; out = t && t.execute ? await t.execute(u.input || {}) : 'unknown tool'; } catch (e) { out = 'error: ' + (e.message || e); } return { type: 'tool_result', tool_use_id: u.id, content: typeof out === 'string' ? out.slice(0, 20000) : JSON.stringify(out === undefined ? 'ok' : out).slice(0, 20000) }; };
+      /* a character's live mind (talking, moving, looking) does several things at once: its tool calls in one reply run together; building (heavy model) keeps them in order, so world edits never collide */
+      var results = model === OPUS ? [] : await Promise.all(tu.map(runOne)); if (model === OPUS) for (var u of tu) results.push(await runOne(u));
       msgs.push({ role: 'user', content: results });
     }
     return { text: text, modelApplied: true };

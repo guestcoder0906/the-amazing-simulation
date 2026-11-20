@@ -2100,7 +2100,7 @@ function neuralSpeak(c, text, spec, mood, key, hint, onFail) { if (!NV || !c || 
   const reqs = parts.map((p) => { const ex = /!\s*$/.test(p), q = /\?\s*$/.test(p), tr = /(…|\.\.\.)\s*$/.test(p), caps = /\b[A-Z]{3,}\b/.test(p); const k = clamp(pick.k * moodK * (ex ? 1.015 : 1) * (q ? 1.01 : 1), 0.82, show ? 1.08 : 1.2); const sp = pick.pace * moodS * (show && (ex || caps) ? 1.14 : 1) * (tr ? 0.9 : 1);
     /* showman lines swing: shouting on CAPS / !!, gravelly fry when frustrated, silky warm over-enunciation otherwise */
     const shout = show && (caps || /!!|!\?|\?!/.test(p)), fry = show && (/\b(ugh+|argh+|grr+|hmph|no no|enough|stop it|seriously|why won'?t|ruin|annoy|frustrat)/i.test(p) || /Angry|Annoyed|Frustrat|Grumpy/i.test(md));
-    return { p, k: shout ? k * 1.02 : k, sp: shout ? sp * 1.05 : sp, shout, fry }; });
+    return { p, k: k, sp: shout ? sp * 1.05 : sp, shout, fry }; });
   const proms = reqs.map((r) => { const pr = NV.gen(r.p, pick.voice, r.sp, Object.assign({ ratio: r.k }, pick.style ? { expr: r.shout ? pick.style.expr + 0.2 : pick.style.expr } : {}, r.fry ? { fry: true } : {})); pr.catch(() => {}); return pr; });
   c._nq = (c._nq || Promise.resolve()).then(async () => { for (let i = 0; i < reqs.length; i++) { if (gen !== VOICE.gen) return; let a; try { a = await proms[i]; } catch (e) { if (i === 0) throw e; return; } if (gen !== VOICE.gen) return; await neuPlay(c, a, 1, reqs[i].p, pick.style ? { eq: pick.style.eq, shout: reqs[i].shout } : null); /* pitch already shaped in the worker, formants kept */ } })
     .catch((e) => { console.warn('[voice] natural voice failed for this line, using fallback:', e && e.message); try { onFail && onFail(); } catch (e2) { /* ok */ } });

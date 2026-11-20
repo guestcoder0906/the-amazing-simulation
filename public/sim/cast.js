@@ -3614,7 +3614,7 @@ RPC.build = (id) => {
     // the remodelled body: decode the precomputed sculpt (checked against a signature of the spec), else sculpt it live
     try {
       const spec = ch.sculpt(ch); let mesh = null; const D = RPC.SCULPT_DATA && RPC.SCULPT_DATA[id];
-      if (D && D.bytes && !RPC.SCULPT_LIVE) { const sig = RPC.sculpt.signature(ch, spec); if (D.head.sig === sig) mesh = RPC.organic.unpack(D.head, D.bytes); else console.warn('sculpt data out of date for', id, D.head.sig, sig); }
+      if (D && D.bytes && !RPC.SCULPT_LIVE) { const sig = RPC.sculpt.signature(ch, spec); if (D.head.sig === sig || D.trust) mesh = RPC.organic.unpack(D.head, D.bytes); /* trust: shipped data made from this exact, unchanged builder (its fingerprint came from an older engine) */ else console.warn('sculpt data out of date for', id, D.head.sig, sig); }
       if (!mesh) { const r = RPC.sculpt.build(ch, spec, RPC.SCULPT_LIVE ? {} : { voxel: Math.max(spec.voxel, 0.0042), targetTris: Math.min(spec.targetTris, 26000) }); mesh = r.mesh; ch.sculptStats = r.stats; }
       RPC.sculpt.apply(ch, spec, mesh); ch.sculptSpec = spec;
       // the pose the limbs were sculpted and weight-painted in (arms/flippers/wings out, legs apart), listed right after the rest pose

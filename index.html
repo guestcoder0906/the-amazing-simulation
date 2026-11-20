@@ -323,14 +323,119 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     for (var k = 0; k < pcm.length; k++) { var v = Math.max(-1, Math.min(1, pcm[k])); out.setInt16(44 + k * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
     return new Blob([out.buffer], { type: 'audio/wav' });
   }
+  // ---- offline listening (used only when Gemini is not available): words + sounds from the listen worker, and a full
+  // acoustic analysis of the clip itself (pitch, pitch movement, loudness, speaking rate, ending contour, pauses,
+  // breathiness, roughness, brightness, music tempo), turned into emotion / tone / energy / voice / sounds.
+  var LISTEN = { w: null, ready: null, n: 1, pend: new Map() };
+  function listenWorker() {
+    if (LISTEN.ready) return LISTEN.ready;
+    LISTEN.ready = new Promise(function (res, rej) {
+      try {
+        var w = new Worker(new URL('sim/listen-worker.js', location.href), { type: 'module' }); LISTEN.w = w;
+        w.onmessage = function (ev) { var m = ev.data || {}; if (m.type === 'ready') res(w); else if (m.type === 'heard' || m.type === 'error') { var p = LISTEN.pend.get(m.id); if (m.id === -1) { rej(new Error(m.text)); LISTEN.ready = null; } if (p) { LISTEN.pend.delete(m.id); m.type === 'heard' ? p.res(m) : p.rej(new Error(m.text)); } } };
+        w.onerror = function (e) { rej(e); LISTEN.ready = null; };
+        w.postMessage({ type: 'load', device: navigator.gpu ? 'webgpu' : 'wasm' });
+      } catch (e) { rej(e); LISTEN.ready = null; }
+    });
+    return LISTEN.ready;
+  }
+  async function toPcm16k(blob) {
+    var ac = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 16000, 16000);
+    var buf = await ac.decodeAudioData(await blob.arrayBuffer());
+    var len = Math.max(1, Math.ceil(buf.duration * 16000)), oc = new OfflineAudioContext(1, len, 16000), src = oc.createBufferSource();
+    src.buffer = buf; src.connect(oc.destination); src.start();
+    return (await oc.startRendering()).getChannelData(0).slice(0);
+  }
+  function acoustics(x, sr) {
+    var hop = 160, win = 640, n = Math.floor((x.length - win) / hop), f0 = [], rms = [], zcr = [], per = [];
+    for (var i = 0; i < n; i++) {
+      var o = i * hop, e = 0, z = 0;
+      for (var k = 0; k < win; k++) { e += x[o + k] * x[o + k]; if (k && (x[o + k] >= 0) !== (x[o + k - 1] >= 0)) z++; }
+      e = Math.sqrt(e / win); rms.push(e); zcr.push(z / win);
+      var best = 0, bl = 0, lo = Math.floor(sr / 450), hi = Math.floor(sr / 70);
+      if (e > 0.01) for (var lag = lo; lag <= hi; lag++) { var s = 0, e1 = 0, e0 = 0; for (var q = 0; q + lag < win; q += 2) { s += x[o + q] * x[o + q + lag]; e0 += x[o + q] * x[o + q]; e1 += x[o + q + lag] * x[o + q + lag]; } var r = s / Math.sqrt(e0 * e1 + 1e-12); if (r > best) { best = r; bl = lag; } }
+      f0.push(best > 0.55 && bl ? sr / bl : 0); per.push(best);
+    }
+    var voiced = f0.filter(function (v) { return v > 0; }), loud = rms.filter(function (v) { return v > 0.01; });
+    var med = function (a) { if (!a.length) return 0; var b = a.slice().sort(function (p, q) { return p - q; }); return b[b.length >> 1]; };
+    var semis = voiced.map(function (v) { return 12 * Math.log2(v / (med(voiced) || 1)); }), mean = semis.reduce(function (a, b) { return a + b; }, 0) / (semis.length || 1);
+    var pitchVar = Math.sqrt(semis.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / (semis.length || 1));
+    var jit = 0, jn = 0; for (var j = 1; j < f0.length; j++) if (f0[j] > 0 && f0[j - 1] > 0) { jit += Math.abs(Math.log2(f0[j] / f0[j - 1])); jn++; } jit = jn ? jit / jn * 1200 : 0; // cents between frames
+    var tail = voiced.slice(-Math.max(3, Math.floor(voiced.length * 0.15))), head = voiced.slice(0, Math.max(3, Math.floor(voiced.length * 0.6)));
+    var rise = tail.length && head.length ? med(tail) / (med(head) || 1) : 1;
+    var peaks = 0, sm = rms.map(function (v, i) { return (rms[i - 1] || v) * 0.25 + v * 0.5 + (rms[i + 1] || v) * 0.25; }), thr = med(loud) * 0.6;
+    for (var p = 1; p < sm.length - 1; p++) if (sm[p] > thr && sm[p] > sm[p - 1] && sm[p] >= sm[p + 1]) { peaks++; p += 6; }
+    var dur = x.length / sr, active = loud.length * hop / sr, pauses = 0, run = 0;
+    for (var a = 0; a < rms.length; a++) { if (rms[a] < 0.008) run++; else { if (run > 25) pauses++; run = 0; } }
+    var db = 20 * Math.log10((med(loud) || 1e-4)), peakDb = 20 * Math.log10(Math.max.apply(null, rms.concat([1e-4])));
+    var periodic = med(per.filter(function (v, i) { return rms[i] > 0.01; })), bright = med(zcr.filter(function (v, i) { return rms[i] > 0.01; }));
+    // music tempo from the loudness onsets
+    var on = []; for (var b = 1; b < rms.length; b++) on.push(Math.max(0, rms[b] - rms[b - 1]));
+    var bestLag = 0, bestR = 0; for (var L = 25; L <= 100; L++) { var r2 = 0; for (var c = 0; c + L < on.length; c++) r2 += on[c] * on[c + L]; if (r2 > bestR) { bestR = r2; bestLag = L; } }
+    return { f0: med(voiced), pitchVar: pitchVar, jitter: jit, rise: rise, syllPerSec: active > 0.3 ? peaks / active : 0, pauses: pauses, db: db, peakDb: peakDb,
+             voicedShare: voiced.length / (loud.length || 1), periodicity: periodic, brightness: bright, dur: dur, tempo: bestLag ? Math.round(60 / (bestLag * hop / sr)) : 0 };
+  }
+  function interpret(A, words, tags) {
+    var top = function (re) { return tags.filter(function (t) { return re.test(t.label) && t.score > 0.08; }); };
+    var speech = top(/^(Speech|Male speech|Female speech|Child speech|Conversation|Narration|Babbling)/).length > 0 || !!words;
+    var laugh = top(/Laugh|Giggle|Chuckle|Snicker|Belly laugh/), cry = top(/Crying|Sobbing|Whimper|Wail/), shout = top(/Shout|Yell|Screaming|Bellow/), whisper = top(/Whispering/), sing = top(/Singing|Choir|Chant|Rapping/), music = top(/Music|Song|Instrument|Guitar|Piano|Drum|Orchestra|Synthesizer|Pop|Rock|Hip hop|Jazz|Electronic|Classical|Techno|Country|Blues|Reggae|Funk|Disco|Ambient|Soundtrack|Lullaby|Carnival|Circus/);
+    var loud = A.db > -20 || A.peakDb > -6, quiet = A.db < -34, fast = A.syllPerSec > 5.2, slow = A.syllPerSec > 0 && A.syllPerSec < 3, lively = A.pitchVar > 3.2, flat = A.pitchVar < 1.6;
+    var txt = String(words || ''), excl = /!/.test(txt), q = /\?\s*$/.test(txt) || A.rise > 1.12;
+    var pos = /\b(yay|wow|awesome|amazing|love|great|haha|cool|nice|thanks|happy|fun|yes)\b/i.test(txt), neg = /\b(sad|sorry|hate|no|stop|ugh|tired|hurt|scared|help|afraid|angry|bad)\b/i.test(txt);
+    var emotion = 'calm';
+    if (laugh.length) emotion = 'amused'; else if (cry.length) emotion = 'sad (crying)';
+    else if (shout.length || (loud && A.brightness > 0.12 && flat && neg)) emotion = neg ? 'angry' : 'excited';
+    else if (loud && lively) emotion = neg ? 'alarmed' : 'excited';
+    else if (lively && pos) emotion = 'happy';
+    else if (quiet && slow) emotion = neg ? 'sad' : 'tired';
+    else if (A.jitter > 60 && neg) emotion = 'nervous';
+    else if (neg) emotion = 'upset'; else if (pos) emotion = 'cheerful';
+    var tone = whisper.length || (quiet && A.voicedShare < 0.45) ? 'whispering' : shout.length || A.peakDb > -3 ? 'shouting' : sing.length ? 'singing' : q ? 'questioning' : excl || lively ? 'emphatic' : flat ? 'matter-of-fact' : 'conversational';
+    if (/\b(just kidding|lol|haha|jk)\b/i.test(txt)) tone = 'joking';
+    var energy = (loud || fast || lively) && !quiet ? 'high' : quiet || slow ? 'low' : 'medium';
+    var pitchWord = !A.f0 ? '' : A.f0 < 140 ? 'low-pitched' : A.f0 < 200 ? 'mid-low pitched' : A.f0 < 270 ? 'mid-high pitched' : 'high-pitched';
+    var age = top(/Child speech/).length || A.f0 > 300 ? 'child-like' : top(/Female speech/).length ? 'adult (likely female)' : top(/Male speech/).length ? 'adult (likely male)' : '';
+    var texture = A.periodicity < 0.6 ? 'breathy' : A.jitter > 70 ? 'rough / shaky' : 'clear';
+    var voice = speech ? [age, pitchWord, texture, fast ? 'fast talker' : slow ? 'slow, deliberate' : ''].filter(Boolean).join(', ') : '';
+    var other = tags.filter(function (t) { return t.score > 0.1 && !/^(Speech|Male speech|Female speech|Child speech|Conversation|Narration|Inside, small room|Silence)$/.test(t.label); }).slice(0, 5).map(function (t) { return t.label.toLowerCase(); });
+    var sounds = other.join(', ');
+    if (music.length && A.tempo) sounds += (sounds ? '; ' : '') + 'music around ' + A.tempo + ' BPM' + (A.tempo > 120 ? ' (upbeat)' : A.tempo < 85 ? ' (slow)' : '');
+    var summary = speech ? 'Someone ' + (tone === 'conversational' ? 'speaks' : tone === 'singing' ? 'sings' : 'speaks, ' + tone + ',') + ' sounding ' + emotion + (sounds ? ', with ' + sounds + ' in the background' : '') + '.'
+                         : sounds ? 'No speech; you hear ' + sounds + '.' : 'Near silence.';
+    return { transcript: txt, language: speech ? 'English' : '', emotion: emotion, tone: tone, energy: energy, voice: voice, sounds: sounds, summary: summary,
+             measured: { pitch_hz: Math.round(A.f0), pitch_variation_semitones: +A.pitchVar.toFixed(1), loudness_db: +A.db.toFixed(1), syllables_per_s: +A.syllPerSec.toFixed(1), ending: A.rise > 1.12 ? 'rising' : A.rise < 0.88 ? 'falling' : 'level', pauses: A.pauses, tempo_bpm: music.length && A.tempo ? A.tempo : null },
+             heard_by: 'in-browser listening (Gemini unavailable)' };
+  }
+  async function localHear(blob, context) {
+    var pcm = await toPcm16k(blob);
+    var A = acoustics(pcm, 16000);
+    var w = await listenWorker(), id = LISTEN.n++;
+    var out = await new Promise(function (res, rej) { LISTEN.pend.set(id, { res: res, rej: rej }); w.postMessage({ type: 'listen', id: id, pcm: pcm, speech: A.voicedShare > 0.1 || A.syllPerSec > 0.5, device: navigator.gpu ? 'webgpu' : 'wasm' }, [pcm.buffer]); setTimeout(function () { if (LISTEN.pend.has(id)) { LISTEN.pend.delete(id); rej(new Error('listening timed out')); } }, 60000); });
+    var res = interpret(A, out.text, out.tags || []);
+    // best judgement: when Claude is reachable, it reads the measurements + words + sounds and settles emotion / tone
+    if (PROVIDER === 'claude') {
+      try {
+        var r = await callClaude({ model: HAIKU, max_tokens: 300, output_config: { effort: 'low' }, messages: [{ role: 'user', content: [{ type: 'text', text:
+          'You judge how an audio clip sounds from measurements (you cannot hear it). Reply with ONLY one JSON object with keys emotion, tone, energy, voice, sounds, summary (same meaning as in the draft). Keep what the evidence supports; correct what it contradicts.\n'
+          + (context ? 'Context: ' + context + '\n' : '') + 'Draft analysis and measurements: ' + JSON.stringify(res) + '\nTop detected sound classes: ' + JSON.stringify((out.tags || []).slice(0, 10)) }] }] });
+        var t = (r.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
+        var i = t.indexOf('{'), j = t.lastIndexOf('}'); var fix = JSON.parse(t.slice(i, j + 1));
+        ['emotion', 'tone', 'energy', 'voice', 'sounds', 'summary'].forEach(function (k) { if (fix[k]) res[k] = fix[k]; });
+        res.heard_by += ', judged by Claude Haiku 5.5';
+      } catch (e) { /* the measured analysis stands on its own */ }
+    }
+    return res;
+  }
+  window.__listen = { local: localHear, auto: function (b, c) { return hearAudio(b, c); } }; // for checking listening from the console
   async function hearAudio(blob, context) {
     if (PROVIDER === 'local') {
       await resolveUrl(); var r0 = await fetch(AI_URL + '/hear', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: await b64(blob), context: context || undefined }) });
       setStatus(r0.ok); return r0.ok ? r0.json() : null;
     }
-    if (GEMINI_OFF) return null;
-    var wav = await toWav(blob);
-    var res = await callGemini({ model: GEMINI, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: await b64(wav) } }, { type: 'text', text: HEAR_PROMPT + (context ? '\nContext: ' + context : '') }] }] });
+    if (GEMINI_OFF) return localHear(blob, context);
+    var wav = await toWav(blob), res;
+    try { res = await callGemini({ model: GEMINI, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: await b64(wav) } }, { type: 'text', text: HEAR_PROMPT + (context ? '\nContext: ' + context : '') }] }] }); }
+    catch (e) { console.info('[listen] Gemini unavailable (' + (e && e.message) + '): listening in the browser'); return localHear(blob, context); }
     var txt = (res.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
     var i = txt.indexOf('{'), j = txt.lastIndexOf('}'); try { return JSON.parse(i >= 0 && j > i ? txt.slice(i, j + 1) : txt); } catch (e) { return { transcript: txt.trim() }; }
   }

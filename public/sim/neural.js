@@ -65,7 +65,9 @@
     var id = nextId++;
     return new Promise(function (res, rej) {
       var now = performance.now(); if (!pending.size) busyUntil = now; pending.set(id, { res: res, rej: rej, t: now });
-      worker.postMessage({ type: 'gen', id: id, text: text, voice: voice, speed: Math.max(0.5, Math.min(2, speed || 1)), shape: shape || null, device: device });
+      var cv = CUSTOM_VOICES[voice];
+      worker.postMessage({ type: 'gen', id: id, text: text, voice: voice, speed: Math.max(0.5, Math.min(2, speed || 1)), shape: shape || null, device: device,
+        mix: cv ? cv.mix : null, seed: cv ? cv.seed : 0, vary: cv ? cv.vary : 0 });
       setTimeout(function () { if (pending.has(id)) { pending.delete(id); rej(new Error('neural voice timeout')); } }, 45000);
     });
   }
@@ -81,15 +83,16 @@
   // personality -> preferred voices and a pitch factor (1 = the voice's own pitch); factors stay in a natural range
   var PERSONA = [
     { re: /showman|ringmaster|announcer|host|theatrical|circus/, m: ['am_puck', 'am_michael', 'am_fenrir'], f: ['af_bella', 'af_nova'], k: 0.97, s: 1.08 },
-    { re: /deep|booming|giant|ogre|titan|golem|dragon|monster/, m: ['am_onyx', 'am_fenrir', 'bm_george'], f: ['af_kore', 'af_alloy'], k: 0.88, s: 0.94 },
-    { re: /gruff|grumpy|tough|pirate|knight|guard|raspy/, m: ['am_fenrir', 'am_onyx', 'bm_lewis'], f: ['af_kore', 'af_jessica'], k: 0.93, s: 0.98 },
-    { re: /sly|smooth|villain|cool|detective/, m: ['am_eric', 'am_liam', 'bm_fable'], f: ['bf_isabella', 'af_river'], k: 0.97, s: 0.97 },
+    { re: /deep|booming|giant|ogre|titan|golem|dragon|monster/, m: ['am_onyx', 'am_fenrir', 'am_michael'], f: ['af_kore', 'af_alloy'], k: 0.88, s: 0.94 },
+    { re: /gruff|grumpy|tough|pirate|knight|guard|raspy/, m: ['am_fenrir', 'am_onyx', 'am_eric'], f: ['af_kore', 'af_jessica'], k: 0.93, s: 0.98 },
+    { re: /sly|smooth|villain|cool|detective/, m: ['am_eric', 'am_liam', 'am_michael'], f: ['af_river', 'af_kore'], k: 0.97, s: 0.97 },
     { re: /soft|shy|gentle|quiet|timid|whisper|ghost/, m: ['am_echo', 'am_liam'], f: ['af_nicole', 'af_sky'], k: 1.02, s: 0.92 },
-    { re: /calm|warm|kind|friendly|mentor|gentleman/, m: ['am_michael', 'bm_george'], f: ['af_heart', 'bf_emma'], k: 1, s: 0.98 },
+    { re: /calm|warm|kind|friendly|mentor|gentleman/, m: ['am_michael', 'am_echo'], f: ['af_heart', 'af_aoede'], k: 1, s: 0.98 },
     { re: /bright|cheerful|bubbly|happy|fairy|princess/, m: ['am_puck', 'am_liam'], f: ['af_bella', 'af_heart', 'af_nova'], k: 1.04, s: 1.05 },
     { re: /small|cute|tiny|child|kid|baby|plush|youth|squeak/, m: ['am_puck', 'am_echo'], f: ['af_sky', 'af_nova'], k: 1.12, s: 1.04 }
   ];
-  var used = new Map(); // character key -> voice, so different characters get different voices where possible
+  var used = new Map(); // character key -> its voice
+  var CUSTOM_VOICES = {}; // cv_name -> { mix, seed, vary }: recipes the worker builds the voices from
   function hash(s) { var h = 2166136261; s = String(s || ''); for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
   function match(spec, key, hint) {
     spec = spec || {}; key = String(key || 'x');
@@ -102,16 +105,25 @@
     if (g === 'c' && !persona) prefs = ['af_sky', 'am_puck'];
     var pool = gb ? (g === 'f' || g === 'c' ? V.gbF : V.gbM) : (g === 'f' || g === 'c' ? V.usF : V.usM);
     var order = prefs.filter(function (v) { return gb ? /^b/.test(v) : /^a/.test(v); }).concat(prefs, pool);
-    var taken = new Set(); used.forEach(function (v, k) { if (k !== key) taken.add(v.pick.voice); });
-    var h = hash(key), voice = null;
-    for (var j = 0; j < order.length && !voice; j++) if (!taken.has(order[j])) voice = order[j];
-    if (!voice) voice = order[h % Math.max(1, Math.min(order.length, 4))] || 'af_heart';
+    var h = hash(key);
+    // the character's own voice: a blend of up to three ingredient voices from its gender/accent/personality, in
+    // proportions set by the character (the main one leads; a showman keeps its energetic lead), plus a small personal
+    // timbre offset in the worker - so every character sounds like itself and never like a stock voice
+    var uniq = []; order.forEach(function (v) { if (uniq.indexOf(v) < 0) uniq.push(v); });
+    var show = !!(spec.showman || spec.timbre === 'showman' || /showman|ringmaster/.test(desc));
+    var lead = uniq.slice(0, 3);
+    if (!show && lead.length > 1) { var r = h % lead.length; lead = lead.slice(r).concat(lead.slice(0, r)); }
+    var W = show ? [0.45, 0.30, 0.25] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
+    var mix = lead.map(function (v, i) { return { voice: v, w: Math.max(0.05, W[i] || 0.1) }; });
+    var voice = 'cv_' + String(key).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) + '_' + hash(JSON.stringify(mix)).toString(36);
+    CUSTOM_VOICES[voice] = { mix: mix, seed: h, vary: 0.035 };
     // personal pitch / pace: persona base x the character's own natural-pitch setting x a tiny per-character offset
     var np = typeof spec.np === 'number' ? spec.np : 1, nr = typeof spec.nr === 'number' ? spec.nr : 1;
     var jit = (((h >>> 9) % 7) - 3) * 0.008;
     var k = (persona ? persona.k : 1) * (0.55 + 0.45 * np) + jit;
     if (g === 'c') k += 0.06;
     k = Math.max(0.84, Math.min(1.18, k));
+    k = 1 + (k - 1) * 0.5;
     if (spec.showman || spec.timbre === 'showman') k = Math.min(k, 1.0); // energetic, never squeaky
     var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
     var pick = { voice: voice, k: k, pace: pace };

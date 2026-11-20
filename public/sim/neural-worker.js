@@ -112,7 +112,7 @@ function shape(x, sr, sh) {
   const ns = sing ? sh.notes.length : 1, glide = 0.06 * sr, style = String(sh.style || '');
   const sad = /sad|lullaby|ballad|blues|spooky/.test(style), opera = /opera/.test(style), rock = /rock|punk|hype/.test(style);
   const scoopC = opera ? 25 : sad ? 45 : rock ? 60 : 35;
-  let drift = 0, driftV = 0; const seed = (sh.notes[0] || 1) * 7.3;
+  let drift = 0, driftV = 0; const seed = ((sh.notes && sh.notes[0]) || sh.ratio || 1) * 7.3;
   const rnd = (() => { let s = Math.floor(seed * 1000) >>> 0 || 1; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); })();
   const targetHz = (ts) => {
     const pos = (ts / L) * ns, k = Math.min(ns - 1, Math.floor(pos)); let hz = sh.notes[k];
@@ -253,6 +253,46 @@ function psolaOLA(x, sr, mk, L, A, ratioAt, rnd, human) {
 }
 
 // one request at a time (the model is not re-entrant); requests queue in order
+
+// ---------------------------------------------------------------- custom character voices (no stock voices)
+// Every character gets its OWN voice, built here from its traits: a weighted blend of the model's voice embeddings plus a
+// small per-character variation (seeded by the character), so no two characters share a voice and none is a stock preset.
+// The model asks for voice files by URL; requests for "cv_..." names are answered with the blended embedding.
+const VOICE_BASE = 'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices/';
+const CUSTOM = new Map();   // cv_name -> Float32Array (510 x 256 style table)
+const BASES = new Map();    // stock embedding name -> Promise<Float32Array> (ingredients only, never used directly)
+const realFetch = self.fetch.bind(self);
+function baseVec(name) {
+  if (!BASES.has(name)) BASES.set(name, realFetch(VOICE_BASE + name + '.bin').then((r) => { if (!r.ok) throw new Error('voice ' + name + ' ' + r.status); return r.arrayBuffer(); }).then((b) => new Float32Array(b)));
+  return BASES.get(name);
+}
+function seeded(seed) { let s = seed >>> 0 || 1; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+async function makeVoice(name, mix, seed, vary) {
+  if (CUSTOM.has(name)) return;
+  const parts = await Promise.all(mix.map((m) => baseVec(m.voice)));
+  const n = parts[0].length, out = new Float32Array(n);
+  const tot = mix.reduce((a, m) => a + m.w, 0) || 1;
+  mix.forEach((m, i) => { const v = parts[i], w = m.w / tot; for (let k = 0; k < n; k++) out[k] += v[k] * w; });
+  // personal variation: the same small offset on every row (a consistent timbre shift, not noise)
+  const rnd = seeded(seed), dims = 256, off = new Float32Array(dims);
+  let sd = 0; for (let k = 0; k < n; k++) sd += out[k] * out[k]; sd = Math.sqrt(sd / n);
+  for (let d = 0; d < dims; d++) off[d] = (rnd() * 2 - 1) * sd * (vary || 0.04);
+  for (let k = 0; k < n; k++) out[k] += off[k % dims];
+  CUSTOM.set(name, out);
+}
+self.fetch = (input, init) => {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  const m = /\/voices\/(cv_[A-Za-z0-9_]+)\.bin(\?|$)/.exec(url);
+  if (m && CUSTOM.has(m[1])) return Promise.resolve(new Response(CUSTOM.get(m[1]).buffer.slice(0), { status: 200, headers: { 'content-type': 'application/octet-stream' } }));
+  return realFetch(input, init);
+};
+function allowCustom(t) {
+  if (t._cvPatched) return;
+  const orig = t._validate_voice.bind(t);
+  t._validate_voice = (v) => (/^cv_/.test(v) ? 'a' : orig(v)); // custom voices speak American English
+  t._cvPatched = true;
+}
+
 let chain = Promise.resolve();
 self.onmessage = (ev) => {
   const msg = ev.data || {};
@@ -273,6 +313,8 @@ self.onmessage = (ev) => {
     chain = chain.then(async () => {
       try {
         const t = await load(msg.device);
+        allowCustom(t);
+        if (msg.mix && /^cv_/.test(msg.voice || '')) await makeVoice(msg.voice, msg.mix, msg.seed || 1, msg.vary);
         const out = await t.generate(String(msg.text || '').slice(0, 900), { voice: msg.voice || 'af_heart', speed: msg.speed || 1 });
         let pcm = out.audio instanceof Float32Array ? out.audio : new Float32Array(out.audio);
         const sr = out.sampling_rate || 24000;
@@ -282,7 +324,7 @@ self.onmessage = (ev) => {
         else if (msg.shape) { const r = shape(pcm, sr, msg.shape); pcm = r.pcm; f0 = r.f0; }
         postMessage({ type: 'audio', id: msg.id, pcm, sr, f0, starts, failed }, [pcm.buffer]);
       } catch (e) {
-        postMessage({ type: 'error', id: msg.id, text: String((e && e.message) || e) });
+        postMessage({ type: 'error', id: msg.id, text: String((e && (e.stack || e.message)) || e).slice(0, 600) });
       }
     });
   }

@@ -1855,7 +1855,10 @@ const earDist = () => camera.position.distanceTo(new THREE.Vector3(0, 0.5, 0).ap
 const earVol = () => { const d = earDist(); return d <= VOICE.full ? 1 : clamp(1 - (d - VOICE.full) / (VOICE.range - VOICE.full), 0, 1) ** 1.6; };
 const voiceOK = () => !!(SYN || tts);
 function olloVoice(text) { let spec = null, key = 'ollo', hint = 'friendly felt star sprite'; try { if (ALT.on) { spec = caineM().voiceP; key = 'caine'; hint = 'ringmaster showman'; } } catch (e) { spec = null; } if (!spec) spec = { gender: 'male', timbre: 'bright', preset: 'small cute', np: 1.02, nr: 1 }; window.__spoke = true; if (neuralSpeak(ollo, text, spec, '', key, hint, () => olloVoiceLegacy(text))) return; olloVoiceLegacy(text); }
-function olloVoiceLegacy(text) { window.__spoke = true; const gen = ++VOICE.gen; const parts = String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)];
+let OLLO_M = null;
+function olloVoiceLegacy(text) { try { const m = (typeof ALT !== 'undefined' && ALT.on) ? caineM() : (OLLO_M || (OLLO_M = { c: ollo, log: [], notes: [], mood: '' })); mindVoiceLegacy(m, text); return; } catch (e) { /* fall through */ }
+  olloVoiceBrowser(text); }
+function olloVoiceBrowser(text) { window.__spoke = true; const gen = ++VOICE.gen; const parts = String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)];
   VOICE.speaking = true; // (no cancel: the browser has one speech queue, shared with the other characters' voices)
   const done = () => { if (gen === VOICE.gen) { VOICE.speaking = false; VOICE.until = performance.now() + 600; } };
   if (SYN) { let i = 0; const next = () => { if (gen !== VOICE.gen || i >= parts.length) return done(); const v = earVol(); const u = new SpeechSynthesisUtterance(parts[i++]); if (SYNV) u.voice = SYNV; { const pr = olloProsody(parts[i - 1], i - 1, parts.length); u.pitch = pr.pitch; u.rate = pr.rate; } u.volume = v; u.onend = u.onerror = next; if (v < 0.03) { lipStart(ollo, RPC.lipsync.fromText(parts[i - 1], parts[i - 1].length / 13.5), wallClock()); setTimeout(next, parts[i - 1].length * 74); return; } speakSynced(ollo, u, parts[i - 1]); try { SYN.speak(u); } catch (e) { next(); } }; next(); return; }
@@ -2217,7 +2220,7 @@ function mindVoiceNatural(m, text, v) { const vol = () => { const d = camera.pos
     speakSynced(m.c, u, cleanPart); try { SYN.speak(u); } catch (e) { return false; } }
   return true; }
 async function mindVoice(m, text) { if (ttsOn) { const v = voiceFor(m); if (v.engine !== 'toy') { const key = (typeof CAINE_M !== 'undefined' && m === CAINE_M) ? 'caine' : m.c.id; const hint = ((m.c.ch && ((m.c.ch.name || '') + ' ' + (m.c.ch.description || ''))) || '') + ' ' + (m.personality || ''); window.__spoke = true; if (neuralSpeak(m.c, text, v, m.mood, key, hint, () => mindVoiceLegacy(m, text))) return; } } return mindVoiceLegacy(m, text); }
-async function mindVoiceLegacy(m, text) { window.__spoke = true; if (!ttsOn) { lipStart(m.c, RPC.lipsync.fromText(String(text)), wallClock()); return; } const v0 = voiceFor(m); if (v0.engine !== 'toy' && SYN && mindVoiceNatural(m, text, v0)) return; const api = CAST.studio && CAST.studio.api; const ac = mac();
+async function mindVoiceLegacy(m, text) { window.__spoke = true; if (!ttsOn) { lipStart(m.c, RPC.lipsync.fromText(String(text)), wallClock()); return; } /* no OS / browser stock voices: until the custom natural voices are ready (or if they cannot run), the game's own voice synthesizer speaks, shaped per character */ const api = CAST.studio && CAST.studio.api; const ac = mac();
   if (api && api.samPcm && ac) { try { const v = voiceFor(m); const pcm = await api.samPcm(String(text).slice(0, 500), v, m.mood || ''); if (pcm && pcm.length) {
         const buf = ac.createBuffer(1, pcm.length, 22050); buf.copyToChannel(pcm, 0); const src = ac.createBufferSource(); src.buffer = buf;
         const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = v.hp; const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = v.lp;
@@ -2231,7 +2234,7 @@ async function mindVoiceLegacy(m, text) { window.__spoke = true; if (!ttsOn) { l
         const at = ac.currentTime + 0.04, lat = (ac.outputLatency || 0) + (ac.baseLatency || 0);
         /* realistic formant & prosody shaping (section 22: voicePolish) */ try { voicePolish(ac, m, src, buf, String(text), at, lp, cmp); } catch (e) { /* ok */ }
         src.start(at); lipStart(m.c, lip, () => ac.currentTime - at - lat, { id: lid }); return; } } catch (e) { console.warn('toy voice', m.c.id, e); } }
-  mindVoiceSyn(m, text); }
+  lipStart(m.c, RPC.lipsync.fromText(String(text)), wallClock()); }
 function mindVoiceUpdate(m) { if (!m.voiceGain) return; const p = m.c.group.position; const d = camera.position.distanceTo(p); const vol = d <= 4 ? 1 : clamp(1 - (d - 4) / 36, 0, 1) ** 1.6; m.voiceGain.gain.setTargetAtTime(vol * 1.6 * (m.voiceVol || 1), MAC.currentTime, 0.05);
   if (m.voicePan) { const rel = p.clone().applyMatrix4(camera.matrixWorldInverse); m.voicePan.pan.setTargetAtTime(clamp(rel.x / Math.max(1, Math.hypot(rel.x, rel.z)), -0.9, 0.9), MAC.currentTime, 0.05); } }
 function mindVoiceSyn(m, text) { if (!ttsOn) return; const vol = () => { const d = camera.position.distanceTo(m.c.group.position); return d <= 4 ? 1 : clamp(1 - (d - 4) / 36, 0, 1) ** 1.6; };
@@ -3251,7 +3254,7 @@ SBX.aiCommands = chkAICommands;
 // Caine's own voice, made with the same procedural voice system the AI uses for new characters: a bright, fast, bombastic American
 // ringmaster (wide, sudden pitch swings, punchy stresses, a little rasp), used for everything he says while copyright safe is off
 VOICE_PRESETS['ringmaster'] = { pitch: 66, mouth: 134, throat: 130, speed: 70, pres: 2.5, warm: 2.5, gender: 'male', accent: 'en-US', np: 1.02, nr: 1.12, vol: 1.08, hp: 90, lp: 7200 };
-const CAINE_VOICE = { preset: 'ringmaster', label: 'Caine (ringmaster)', engine: 'natural', gender: 'male', accent: 'en-US', pitch: 66, mouth: 134, throat: 130, speed: 70, pres: 2.5, warm: 2.5, hp: 90, lp: 7200, natural_pitch: 0.93, natural_rate: 1.15, timbre: 'showman', showman: true, volume: 1.08 };
+const CAINE_VOICE = { preset: 'ringmaster', label: 'Caine (ringmaster)', engine: 'natural', gender: 'male', accent: 'en-US', pitch: 64, mouth: 138, throat: 126, speed: 84, pres: 3, warm: 2.2, hp: 90, lp: 7600, natural_pitch: 0.93, natural_rate: 1.18, timbre: 'showman', showman: true, volume: 1.08 };
 let CAINE_M = null;
 function caineM() { if (!CAINE_M) { const vp = cleanVoice(CAINE_VOICE); CAINE_M = { c: ollo, log: [], notes: [], mood: 'Excited', voiceP: vp }; chkLog('Voice — Caine: ' + vp.label + ' (' + vp.engine + ', male, ' + vp.accent + ', pitch x' + vp.np + ', pace x' + vp.nr + ')'); } return CAINE_M; }
 /* EVERY line Ollo says while Caine is shown is spoken in Caine's voice, whatever path it took to get here: each spoken line passes through

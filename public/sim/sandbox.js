@@ -2294,6 +2294,11 @@ function brainTools(acts) {
   const mine = () => PLAYER.c === ollo;
   const pt = (a) => { if (!Array.isArray(a) || a.length !== 3 || a.some((x) => typeof x !== 'number' || !isFinite(x))) throw new Error('need [x, y, z] numbers'); return a; };
   return [
+    B('recall', 'Look up what you do not carry in mind all the time: what = "notes" (your long-term notes), "memory" (older faded memory), "conversation" (earlier conversation beyond the last few lines; optional query to filter), "minds" (characters you gave minds to, their personality and lock), "builds" (recent build requests and how they went). Only ask for what you need.', { what: { type: 'string', enum: ['notes', 'memory', 'conversation', 'minds', 'builds'] }, query: { type: 'string' }, limit: { type: 'number' } }, ['what'], async (i) => { const lim = clamp(+i.limit || 12, 1, 40); const q = String(i.query || '').toLowerCase(); const f = (t) => !q || String(t).toLowerCase().includes(q);
+      if (i.what === 'notes') return BR.notes.filter(f).slice(-lim).join('\n') || '(no notes)'; if (i.what === 'memory') return BR.faded || '(nothing faded)';
+      if (i.what === 'conversation') { const now = Date.now(); return BR.log.slice(0, -6).filter((e) => f(e.who + ' ' + e.text)).slice(-lim).map((e) => `[${Math.round((now - e.t) / 1000)}s ago] ${e.who}: ${String(e.text).slice(0, 300)}`).join('\n') || '(nothing earlier)'; }
+      if (i.what === 'minds') return [...MINDS.values()].filter((x) => f(x.c.id + ' ' + x.personality)).slice(0, lim).map((x) => `${x.c.id}: ${x.personality.slice(0, 200)}${x.locked ? ' (locked)' : ''}`).join('\n') || '(no minds given yet; you can give any character one with give_mind)';
+      if (i.what === 'builds') return AGENT.history.filter((x) => f(x.content)).slice(-lim).map((x) => x.role + ': ' + String(x.content).slice(0, 240)).join('\n') || '(no builds yet)'; return 'unknown'; }),
     B('find_things', 'Find things in the world that you cannot see from here: by name or kind (query), and / or around a point (near [x,y,z], radius m). Returns ids, names, positions, sizes and distances (nearest first).', { query: { type: 'string' }, near: { type: 'array', items: { type: 'number' } }, radius: { type: 'number' }, limit: { type: 'number' } }, [], async (i) => findThings(i, ollo.group.position)),
     B('say', 'Speak out loud (shown in a speech bubble and the chat, and voiced). Keep it short and natural: one or two sentences. Never use it to claim you cannot do something: you can, so do it with your tools.', { text: { type: 'string' } }, ['text'], (i) => { const t = String(i.text).slice(0, 300);
           /* never let Ollo / Caine talk themselves out of something they can do: a "can't" line is not spoken; the model is told to act instead */
@@ -2342,7 +2347,7 @@ async function thinkCore(reason) {
   BR.busy = true; BR.kind = reason === 'idle' ? 'idle' : 'talk'; const ctl = BR.ctl = new AbortController(); const acts = []; setStatus('thinking…');
   try {
     if (BR.canImg === undefined) { try { const l = await SAMPLE.limits(); BR.canImg = !!(l && l.images); } catch (e) { BR.canImg = false; } }
-    let imgs = []; if (BR.canImg) { try { updatePov(); imgs = [await toBlob(renderCapture(povCam, 640, 360, hideOllo), 0.8)]; } catch (e) { imgs = []; } }
+    let imgs = []; if (BR.canImg) { try { updatePov(); imgs = [await toBlob(renderCapture(povCam, 448, 252, hideOllo), 0.72)]; } catch (e) { imgs = []; } }
     const o = ollo.group.position, pp = playerPos(); const now = Date.now(); const ago = (t) => { const s = Math.round((now - t) / 1000); return s < 60 ? s + 's' : Math.round(s / 60) + 'min'; };
     const lastHeard = [...BR.log].reverse().find((e) => e.who === 'player');
     const lastHeardRaw = lastHeard ? String(lastHeard.text || '').replace(/^\([^)]*\)\s*/, '').trim() : '';
@@ -2358,12 +2363,9 @@ YOU: at ${v3s(o)}, ${OH.target ? 'flying to ' + v3s(OH.target.p) : 'hovering'}${
 HEARING: your voice carries about 40 m (quieter with distance); you hear spoken voices up to ~30 m (clearly within 12 m); typed chat always reaches you. If the player is far and talking to you, go closer.
 TIME OF DAY: ${document.getElementById('clock')?.textContent || '?'}.
 
-YOUR LONG-TERM NOTES: ${BR.notes.length ? BR.notes.map((n) => '- ' + n).join('\n') : '(none yet)'}
-OLDER, FADED MEMORY: ${BR.faded || '(none)'}
+MORE YOU CAN ASK FOR when it matters (recall): your long-term notes${BR.notes.length ? ' (' + BR.notes.length + ')' : ''}, older memory, earlier conversation, characters you gave minds to${MINDS.size ? ' (' + MINDS.size + ')' : ''}, recent build requests${AGENT.history.length ? ' (' + AGENT.history.length + ')' : ''}; anything in the world beyond what is around you (find_things).
 RECENT EVENTS AND CONVERSATION (oldest first):
-${BR.log.slice(-12).map((e) => `[${ago(e.t)} ago] ${e.who}: ${String(e.text).slice(0, 240)}`).join('\n') || '(nothing yet)'}
-CHARACTERS YOU GAVE MINDS TO: ${[...MINDS.values()].map((x) => `${x.c.id} (${x.personality.slice(0, 80)}${x.locked ? ', locked' : ''})`).join('; ') || 'none'}. You can give any character a mind (give_mind), even one the player controls (take_over).
-${AGENT.history.length ? 'RECENT BUILD REQUESTS: ' + AGENT.history.slice(-4).map((x) => x.content.slice(0, 160)).join(' | ') : ''}
+${BR.log.slice(-6).map((e) => `[${ago(e.t)} ago] ${e.who}: ${String(e.text).slice(0, 240)}`).join('\n') || '(nothing yet)'}
 
 ${nearbyScene(ollo)}`;
     if (ctl.signal.aborted) return; await SAMPLE([{ role: 'user', content: msg }], { tools: cap16(brainTools(acts), 'Smart Ollo'), ...((imgs = imgs.concat(BR.earImgs && BR.canImg ? BR.earImgs.splice(0) : [])).length ? { images: imgs } : {}), model: 'gemini', modelTier: 'quick', effort: 'minimal', cache: false, signal: ctl.signal }); /* talking runs on the fast model (gemini flash lite, minimal effort); building is handed to the build agent */

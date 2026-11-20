@@ -114,7 +114,7 @@
     var show = !!(spec.showman || spec.timbre === 'showman' || /showman|ringmaster/.test(desc));
     var lead = uniq.slice(0, 3);
     if (!show && lead.length > 1) { var r = h % lead.length; lead = lead.slice(r).concat(lead.slice(0, r)); }
-    var W = show ? [0.55, 0.30, 0.15] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
+    var W = show ? [0.55, 0.25, 0.20] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
     var mix = lead.map(function (v, i) { return { voice: v, w: Math.max(0.05, W[i] || 0.1) }; });
     var voice = 'cv_' + String(key).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) + '_' + hash(JSON.stringify(mix)).toString(36);
     CUSTOM_VOICES[voice] = { mix: mix, seed: h, vary: 0.035 };
@@ -126,7 +126,7 @@
     k = Math.max(0.84, Math.min(1.18, k));
     k = 1 + (k - 1) * 0.5;
     var showman = !!(spec.showman || spec.timbre === 'showman');
-    if (showman) k = 0.81 + jit * 0.3; // mid baritone-tenor, kept low: depth comes from the blend, not from dragging the pitch down
+    if (showman) k = 0.77 + jit * 0.3; // mid baritone-tenor, kept low: depth comes from the blend, not from dragging the pitch down
     var pace = Math.max(0.8, Math.min(1.3, (persona ? persona.s : 1) * (0.5 + 0.5 * nr)));
     if (showman) pace = Math.max(pace, 1.38); // manic, rapid-fire ringmaster pacing
     var pick = { voice: voice, k: k, pace: pace };

@@ -9,7 +9,14 @@ type Req = IncomingMessage & { body?: unknown };
 type Res = ServerResponse & { status: (c: number) => Res; json: (b: unknown) => Res; send: (b: unknown) => Res };
 
 const MODEL = 'gemini-3.5-flash-lite';
-const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+// models this proxy may call, with the thinking levels each one accepts (3.8 Flash and 4 Hydrogen have no 'minimal')
+const MODELS: Record<string, { levels: string[]; maxOut: number }> = {
+  'gemini-3.5-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], maxOut: 8192 },
+  'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], maxOut: 32768 },
+  'gemini-4-hydrogen': { levels: ['low', 'medium', 'high', 'xhigh'], maxOut: 32768 },
+};
+const endpointFor = (m: string) => `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`;
+const DECISIONS = 'https://generativelanguage.googleapis.com/v1beta/decisions';
 
 type Block = { type: string; [k: string]: any };
 type Msg = { role: string; content: string | Block[] };
@@ -25,7 +32,7 @@ function readJson(req: Req): Promise<any> {
   });
 }
 
-function toGemini(body: any) {
+function toGemini(body: any, model: string = MODEL) {
   const names: Record<string, string> = {}; // tool_use id -> tool name (Gemini answers function results by name)
   const contents: any[] = [];
   for (const m of (body.messages || []) as Msg[]) {
@@ -54,7 +61,7 @@ function toGemini(body: any) {
   const sys = Array.isArray(body.system) ? body.system.map((x: any) => x.text || '').join('\n') : body.system;
   const req: any = {
     contents,
-    generationConfig: { maxOutputTokens: Math.min(Number(body.max_tokens) || 4096, 8192), thinkingConfig: { thinkingLevel: 'minimal' } },
+    generationConfig: { maxOutputTokens: Math.min(Number(body.max_tokens) || 4096, MODELS[model].maxOut), thinkingConfig: { thinkingLevel: pickLevel(model, body.thinking) } },
   };
   if (sys) req.systemInstruction = { parts: [{ text: String(sys) }] };
   const tools = (body.tools || []).filter((t: any) => t && t.name && !t.type);
@@ -65,7 +72,12 @@ function toGemini(body: any) {
   return req;
 }
 
-function fromGemini(g: any) {
+function pickLevel(model: string, want: any) {
+  const lv = MODELS[model].levels; const w = String(want || (model === MODEL ? 'minimal' : 'medium')).toLowerCase();
+  if (lv.includes(w)) return w; return w === 'minimal' ? lv[0] : 'medium';
+}
+
+function fromGemini(g: any, model: string = MODEL) {
   const cand = (g.candidates || [])[0] || {};
   const content: Block[] = [];
   let calls = 0;
@@ -82,7 +94,7 @@ function fromGemini(g: any) {
   if (!content.length) content.push({ type: 'text', text: '' });
   const u = g.usageMetadata || {};
   return {
-    id: 'msg_g' + Math.random().toString(36).slice(2, 14), type: 'message', role: 'assistant', model: MODEL, content,
+    id: 'msg_g' + Math.random().toString(36).slice(2, 14), type: 'message', role: 'assistant', model, content,
     stop_reason: calls ? 'tool_use' : cand.finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'end_turn', stop_sequence: null,
     usage: { input_tokens: u.promptTokenCount || 0, output_tokens: u.candidatesTokenCount || 0 },
   };
@@ -98,8 +110,22 @@ export default async function handler(req: Req, res: Res) {
   if (!key) return res.status(503).json({ error: { code: 'not_granted', message: 'GEMINI_API_KEY is not set on this deployment.' } });
   let body: any;
   try { body = await readJson(req); } catch { return res.status(400).json({ error: { code: 'invalid_request', message: 'Invalid JSON body' } }); }
+  // yes/no questions: gemini-decision-1 through the Decisions API (answers only, no text)
+  if (body.decision) {
+    const d = body.decision; const q: any = { type: 'noul', instructions: String(d.question || '').slice(0, 4000) };
+    if (d.true_description || d.false_description) q.criteria = { true_description: d.true_description || undefined, false_description: d.false_description || undefined };
+    try {
+      const up = await fetch(DECISIONS, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify({ model: 'gemini-decision-1', input: String(d.input || d.question || '').slice(0, 200000), questions: { q } }) });
+      const text = await up.text();
+      if (!up.ok) return res.status(up.status === 429 ? 429 : up.status === 404 ? 410 : up.status >= 500 ? 529 : up.status).json({ error: { code: up.status === 404 ? 'model_unavailable' : 'api_error', message: 'Gemini decisions: ' + text.slice(0, 300) } });
+      const a = (JSON.parse(text).answers || {}).q || {}; const p = Number(a.noul);
+      return res.status(200).json({ model: 'gemini-decision-1', yes: p >= 0.5, p, confidence: Number(a.confidence) || Math.max(p, 1 - p) });
+    } catch (e) { return res.status(502).json({ error: { code: 'api_error', message: 'Failed to reach Gemini decisions: ' + (e instanceof Error ? e.message : String(e)) } }); }
+  }
   if (!Array.isArray(body.messages) || !body.messages.length) return res.status(400).json({ error: { code: 'invalid_request', message: 'messages array is required' } });
-  const payload = JSON.stringify(toGemini(body));
+  const model = MODELS[String(body.model)] ? String(body.model) : MODEL;
+  const ENDPOINT = endpointFor(model);
+  const payload = JSON.stringify(toGemini(body, model));
   try {
     const started = Date.now();
     let up = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body: payload });
@@ -113,9 +139,9 @@ export default async function handler(req: Req, res: Res) {
     if (!up.ok) {
       let message = text.slice(0, 400);
       try { message = JSON.parse(text).error.message || message; } catch { /* ok */ }
-      return res.status(up.status === 429 ? 429 : up.status >= 500 ? 529 : up.status).json({ error: { code: up.status === 429 ? 'rate_limited' : 'api_error', message: 'Gemini: ' + message } });
+      return res.status(up.status === 429 ? 429 : up.status === 404 ? 410 : up.status >= 500 ? 529 : up.status).json({ error: { code: up.status === 429 ? 'rate_limited' : up.status === 404 ? 'model_unavailable' : 'api_error', message: 'Gemini (' + model + '): ' + message } });
     }
-    return res.status(200).json(fromGemini(JSON.parse(text)));
+    return res.status(200).json(fromGemini(JSON.parse(text), model));
   } catch (e) {
     return res.status(502).json({ error: { code: 'api_error', message: 'Failed to reach Gemini: ' + (e instanceof Error ? e.message : String(e)) } });
   }

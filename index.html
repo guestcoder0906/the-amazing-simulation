@@ -177,6 +177,18 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     } catch (e) { return 'claude'; }
   })();
   var HAIKU = 'claude-haiku-5-5', OPUS = 'claude-opus-5-5', GEMINI = 'gemini-3.5-flash-lite';
+  var HYDROGEN = 'gemini-4-hydrogen', FLASH38 = 'gemini-3.8-flash', DECIDER = 'gemini-decision-1';
+  /* fallback chains (each step is tried in order until one answers):
+     big work (default):  Claude Opus 5.5 -> Claude Haiku 5.5 -> Gemini 4 Hydrogen (medium) -> Gemini 3.8 Flash (medium) -> Gemini 3.5 Flash-Lite (medium) -> local AI
+     quick / menial work: Gemini 3.5 Flash-Lite (minimal) -> Claude Haiku 5.5 -> local AI
+     Haiku itself:        Claude Haiku 5.5 -> Gemini 3.5 Flash-Lite (minimal) -> local AI
+     yes / no questions:  Gemini Decision 1 -> Gemini 3.5 Flash-Lite (minimal) -> Claude Haiku 5.5 -> local AI */
+  var CHAINS = {};
+  CHAINS[OPUS] = [{ c: OPUS }, { c: HAIKU }, { g: HYDROGEN, t: 'medium' }, { g: FLASH38, t: 'medium' }, { g: GEMINI, t: 'medium' }, { l: 1 }];
+  CHAINS[HAIKU] = [{ c: HAIKU }, { g: GEMINI, t: 'minimal' }, { l: 1 }];
+  CHAINS[GEMINI] = [{ g: GEMINI, t: 'minimal' }, { c: HAIKU }, { l: 1 }];
+  var DOWN = {}; // models that answered "not available" this session are skipped
+
   var GEMINI_OFF = false; // set when this deployment has no GEMINI_API_KEY: quick tasks then use Claude Haiku 5.5
   var QUICK = function () { return GEMINI_OFF ? HAIKU : GEMINI; };
   var CLAUDE_KEY = (function () { try { return localStorage.getItem('sbx_claude_api_key') || ''; } catch (e) { return ''; } })();
@@ -295,19 +307,55 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       if (r.ok) return r.json();
       var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
       var msg = 'Gemini ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
-      if (r.status === 503 || r.status === 404 || r.status === 405) { GEMINI_OFF = true; throw err('gemini_off', msg); }
+      if (r.status === 503 || r.status === 405) { GEMINI_OFF = true; throw err('gemini_off', msg); }
+      if (r.status === 410 || r.status === 404) throw err('model_unavailable', msg);
       if (r.status === 429 || r.status === 529 || r.status >= 500) { last = err('rate_limited', msg); await new Promise(function (res) { setTimeout(res, 2000 * Math.pow(2, attempt)); }); continue; }
       throw err('api_error', msg);
     }
     throw last;
   }
+  function stripGsig(msgs) { return (msgs || []).map(function (m) { return !Array.isArray(m.content) ? m : Object.assign({}, m, { content: m.content.map(function (b) { if (!b || !b._gsig) return b; var c = Object.assign({}, b); delete c._gsig; return c; }) }); }); }
   async function call(body, signal) {
     if (PROVIDER === 'local') return callLocal(body, signal);
-    if (body.model === GEMINI) {
-      try { return await callGemini(body, signal); }
-      catch (e) { if (e.code !== 'gemini_off') throw e; body = Object.assign({}, body, { model: HAIKU, output_config: { effort: 'low' }, messages: cacheMarks(body.messages) }); }
+    var chain = CHAINS[body.model] || [{ c: body.model }].concat(CHAINS[OPUS].slice(1)), last = null;
+    for (var i = 0; i < chain.length; i++) {
+      var s = chain[i];
+      if (signal && signal.aborted) throw err('cancelled', 'cancelled');
+      try {
+        if (s.g) {
+          if (GEMINI_OFF || DOWN[s.g]) continue;
+          var gb = { model: s.g, thinking: s.t, max_tokens: body.max_tokens, messages: body.messages, system: body.system };
+          if (body.tools) gb.tools = body.tools.filter(function (t) { return !t.type; });
+          return await callGemini(gb, signal);
+        }
+        if (s.c) {
+          if (DOWN[s.c]) continue;
+          var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)), output_config: { effort: 'low' } }); delete cb.thinking;
+          if (s.c !== OPUS && cb.tools) cb.tools = cb.tools.filter(function (t) { return !t.type; }); // server web search is an Opus extra
+          if (!cb.max_tokens || cb.max_tokens > (s.c === OPUS ? 16000 : 8192)) cb.max_tokens = s.c === OPUS ? 16000 : 8192;
+          return await callClaude(cb, signal);
+        }
+        if (s.l) { await resolveUrl(); if (!AI_URL) continue; return await callLocal(Object.assign({}, body, { messages: stripGsig(body.messages) }), signal); }
+      } catch (e) {
+        if (e && (e.name === 'AbortError' || e.code === 'cancelled')) throw e;
+        if (e && e.code === 'model_unavailable') DOWN[s.g || s.c] = true;
+        last = e; console.info('[ai] ' + (s.g || s.c || 'local AI') + ' failed (' + (e && e.message) + ') - trying the next model');
+      }
     }
-    return callClaude(body, signal);
+    throw last || err('api_error', 'No AI model is available right now');
+  }
+  /* yes / no questions: Gemini Decision 1 answers with a probability (no text); then the quick chain answers in JSON */
+  async function decide(question, input, opt) {
+    opt = opt || {};
+    if (!GEMINI_OFF && !DOWN[DECIDER]) {
+      try { var r = await fetch('/api/gemini', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decision: { question: question, input: input || question, true_description: opt.yes, false_description: opt.no } }), signal: opt.signal });
+        if (r.ok) { var d = await r.json(); if (typeof d.p === 'number' && isFinite(d.p)) return { yes: !!d.yes, p: d.p, confidence: d.confidence, model: DECIDER }; }
+        else if (r.status === 503) GEMINI_OFF = true; else if (r.status === 410 || r.status === 404) DOWN[DECIDER] = true;
+      } catch (e) { if (e && e.name === 'AbortError') throw e; }
+    }
+    var q = 'Answer this yes/no question about the input. Question: ' + question + (opt.yes ? '\nYes means: ' + opt.yes : '') + (opt.no ? '\nNo means: ' + opt.no : '') + '\nInput:\n' + String(input || '').slice(0, 20000) + '\nReply with ONLY JSON {"yes": true|false, "confidence": 0..1}.';
+    var j = await sample.json(q, { model: 'quick', signal: opt.signal }); var y = !!(j && (j.yes === true || j.answer === 'yes'));
+    return { yes: y, p: y ? (j.confidence || 0.8) : 1 - (j && j.confidence || 0.8), confidence: (j && j.confidence) || 0.8, model: 'quick' };
   }
   // ---- audio listening (voice chat + live game sound): Gemini 3.5 Flash-Lite hears the clip itself
   var HEAR_PROMPT = 'Listen to this audio clip carefully, the way a person with good ears would. Reply with ONLY one JSON object, no prose: '
@@ -507,6 +555,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var s = t.indexOf('{'), a = t.indexOf('['); var i = s < 0 ? a : a < 0 ? s : Math.min(s, a); var j = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
     try { return JSON.parse(i >= 0 && j > i ? t.slice(i, j + 1) : t); } catch (e) { return null; }
   };
+  sample.decide = decide; /* yes/no questions: Gemini Decision 1 first */
   sample.limits = async function () { return { images: true, maxCount: 4, local: PROVIDER === 'local', provider: PROVIDER, remaining: null }; };
   window.localAI = { get url() { return AI_URL; }, resolve: resolveUrl, sample: sample, health: async function () { await resolveUrl(); return fetch(AI_URL + '/health', { headers: hdr() }).then(function (r) { return r.json(); }); } };
   // the game asks for capabilities by name; only 'sample' (the AI) is provided here

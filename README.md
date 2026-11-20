@@ -11,6 +11,14 @@ The game uses **Claude** and **Gemini** through two Vercel serverless functions 
 | Building, 3D modeling, coding, the builder's checks | Claude Opus 5.5 (low effort) | `CLAUDE_API_KEY` |
 | Quick tasks: talking, moving, looking, reactions | Gemini 3.5 Flash-Lite (minimal thinking) | `GEMINI_API_KEY` |
 | Listening: voice chat and live in-game sound | Gemini 3.5 Flash-Lite (minimal thinking) | `GEMINI_API_KEY` |
+| Yes/no questions | Gemini Decision 1 | `GEMINI_API_KEY` |
+
+Fallbacks (each step is tried until one answers):
+
+- **Big work:** Opus 5.5 → Haiku 5.5 → Gemini 4 Hydrogen (medium) → Gemini 3.8 Flash (medium) → Gemini 3.5 Flash-Lite (medium) → local AI
+- **Quick work:** Gemini 3.5 Flash-Lite (minimal) → Haiku 5.5 → local AI
+- **Haiku:** Haiku 5.5 → Gemini 3.5 Flash-Lite (minimal) → local AI
+- **Yes/no:** Gemini Decision 1 → Gemini 3.5 Flash-Lite (minimal) → Haiku 5.5 → local AI
 
 Without `GEMINI_API_KEY`, quick tasks fall back to Claude Haiku 5.5 and listening is off.
 Visitors can also use their own Claude API key: the key button (bottom left) → **Connect to Claude** opens their API keys

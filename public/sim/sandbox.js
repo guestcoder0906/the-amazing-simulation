@@ -3540,7 +3540,7 @@ async function placePack(e, o = {}) { const sc = await packScene(e.pack.p); cons
 try { const _pe = placeEntry; placeEntry = async function (e, o) { if (e && e.kind === 'pack') return placePack(e, o || {}); return _pe(e, o); }; } catch (err) { console.warn('[library] could not hook placing', err); }
 SBX.placePack = placePack;
 (async () => { try { const m = await (await fetch(PACKLIB.manifest)).json(); PACKLIB.meta = m;
-    const KEEP = new Set(['wand', 'cast', 'anim', 'creation', 'system', 'script', 'world', 'music', 'pack']); let gone = 0; for (let k = SBX.entries.length - 1; k >= 0; k--) { if (!KEEP.has(SBX.entries[k].kind)) { SBX.entries.splice(k, 1); gone++; } }
+    const KEEP = new Set(['wand', 'cast', 'castdef', 'anim', 'creation', 'system', 'script', 'world', 'music', 'pack']); let gone = 0; for (let k = SBX.entries.length - 1; k >= 0; k--) { if (!KEEP.has(SBX.entries[k].kind)) { SBX.entries.splice(k, 1); gone++; } }
     try { Object.assign(CAT, { 'The Grounds': '🎡', 'Circus Lobby': '🎪', 'Dorm Hall': '🚪', 'The Cellar': '👁️' }); } catch (err) { /* ok */ }
     if (m.alias) for (const [a, b] of Object.entries(m.alias)) CR_ALIAS.set('pk_' + a, 'pk_' + b); /* merged duplicate copies point at the kept one */
     for (const it of m.items) addEntry({ id: 'pk_' + it.p + '_' + it.n, name: it.name, category: it.cat, kind: 'pack', pack: it, tags: it.tags, desc: it.desc, tris: it.tris, size: it.size });

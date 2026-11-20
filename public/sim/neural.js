@@ -61,6 +61,7 @@
   }
 
   function gen(text, voice, speed, shape) {
+    text = String(text == null ? '' : text).replace(/[*_~`#|<>\[\]{}^]+/g, ' ').replace(/\s{2,}/g, ' ').trim(); // never read symbols like * aloud
     if (state !== 'ready' || !worker) return Promise.reject(new Error('neural voice not ready'));
     var id = nextId++;
     return new Promise(function (res, rej) {

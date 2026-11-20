@@ -1858,7 +1858,7 @@ function olloVoice(text) { let spec = null, key = 'ollo', hint = 'friendly felt 
 let OLLO_M = null;
 function olloVoiceLegacy(text) { try { const m = (typeof ALT !== 'undefined' && ALT.on) ? caineM() : (OLLO_M || (OLLO_M = { c: ollo, log: [], notes: [], mood: '' })); mindVoiceLegacy(m, text); return; } catch (e) { /* fall through */ }
   olloVoiceBrowser(text); }
-function olloVoiceBrowser(text) { window.__spoke = true; const gen = ++VOICE.gen; const parts = String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)];
+function olloVoiceBrowser(text) { text = speakable(text); window.__spoke = true; const gen = ++VOICE.gen; const parts = String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)];
   VOICE.speaking = true; // (no cancel: the browser has one speech queue, shared with the other characters' voices)
   const done = () => { if (gen === VOICE.gen) { VOICE.speaking = false; VOICE.until = performance.now() + 600; } };
   if (SYN) { let i = 0; const next = () => { if (gen !== VOICE.gen || i >= parts.length) return done(); const v = earVol(); const u = new SpeechSynthesisUtterance(parts[i++]); if (SYNV) u.voice = SYNV; { const pr = olloProsody(parts[i - 1], i - 1, parts.length); u.pitch = pr.pitch; u.rate = pr.rate; } u.volume = v; u.onend = u.onerror = next; if (v < 0.03) { lipStart(ollo, RPC.lipsync.fromText(parts[i - 1], parts[i - 1].length / 13.5), wallClock()); setTimeout(next, parts[i - 1].length * 74); return; } speakSynced(ollo, u, parts[i - 1]); try { SYN.speak(u); } catch (e) { next(); } }; next(); return; }
@@ -2092,7 +2092,9 @@ function neuPlay(c, a, k, text, st) { return new Promise((res) => { const ac = m
   src.onended = () => { clearInterval(iv); NSRC.delete(src); lipEnd(c, lid); VOICE.speaking = false; VOICE.until = performance.now() + 600; try { g.disconnect(); } catch (e) { /* ok */ } res(); };
   src.start(at); lipStart(c, lip, () => (ac.currentTime - at - lat) * k, { id: lid }); }); }
 /* returns true when the neural voice took the line (it calls onFail itself if synthesis then fails) */
-function neuralSpeak(c, text, spec, mood, key, hint, onFail) { if (!NV || !c || !c.group) return false; neuStart(); if (!NV.ready()) return false; const ac = mac(); if (!ac) return false;
+/* what a voice reads aloud: markdown / formatting symbols are never spoken (no "asterisk"), emphasis words are kept */
+function speakable(s) { return String(s == null ? '' : s).replace(/[*_~`#|<>\[\]{}^]+/g, ' ').replace(/\s{2,}/g, ' ').trim(); }
+function neuralSpeak(c, text, spec, mood, key, hint, onFail) { text = speakable(text); if (!NV || !c || !c.group) return false; neuStart(); if (!NV.ready()) return false; const ac = mac(); if (!ac) return false;
   const pick = NV.match(spec || {}, key || c.id || 'x', hint || ''); const gen = VOICE.gen; window.__spoke = true;
   const parts = (String(text).slice(0, 1900).match(/[^.!?…]+[.!?…]*\s*/g) || [String(text)]).map((s) => s.trim()).filter(Boolean); if (!parts.length) return true;
   const md = String(mood || ''), show = !!(spec && (spec.showman || spec.timbre === 'showman'));
@@ -2226,7 +2228,7 @@ function mindVoiceNatural(m, text, v) { const vol = () => { const d = camera.pos
     speakSynced(m.c, u, cleanPart); try { SYN.speak(u); } catch (e) { return false; } }
   return true; }
 async function mindVoice(m, text) { if (ttsOn) { const v = voiceFor(m); if (v.engine !== 'toy') { const key = (typeof CAINE_M !== 'undefined' && m === CAINE_M) ? 'caine' : m.c.id; const hint = ((m.c.ch && ((m.c.ch.name || '') + ' ' + (m.c.ch.description || ''))) || '') + ' ' + (m.personality || ''); window.__spoke = true; if (neuralSpeak(m.c, text, v, m.mood, key, hint, () => mindVoiceLegacy(m, text))) return; } } return mindVoiceLegacy(m, text); }
-async function mindVoiceLegacy(m, text) { window.__spoke = true; if (!ttsOn) { lipStart(m.c, RPC.lipsync.fromText(String(text)), wallClock()); return; } /* no OS / browser stock voices: until the custom natural voices are ready (or if they cannot run), the game's own voice synthesizer speaks, shaped per character */ const api = CAST.studio && CAST.studio.api; const ac = mac();
+async function mindVoiceLegacy(m, text) { text = speakable(text); window.__spoke = true; if (!ttsOn) { lipStart(m.c, RPC.lipsync.fromText(String(text)), wallClock()); return; } /* no OS / browser stock voices: until the custom natural voices are ready (or if they cannot run), the game's own voice synthesizer speaks, shaped per character */ const api = CAST.studio && CAST.studio.api; const ac = mac();
   if (api && api.samPcm && ac) { try { const v = voiceFor(m); const pcm = await api.samPcm(String(text).slice(0, 500), v, m.mood || ''); if (pcm && pcm.length) {
         const buf = ac.createBuffer(1, pcm.length, 22050); buf.copyToChannel(pcm, 0); const src = ac.createBufferSource(); src.buffer = buf;
         const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = v.hp; const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = v.lp;

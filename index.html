@@ -164,8 +164,179 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   var b64 = function (blob) { return new Promise(function (res, rej) { var fr = new FileReader(); fr.onload = function () { res(String(fr.result).split(',')[1]); }; fr.onerror = rej; fr.readAsDataURL(blob); }); };
   function err(code, message, text) { var e = new Error(message); e.code = code; if (text) e.text = text; return e; }
 
-  // the first request after an idle unload waits while the model loads; 529 = the GPU was busy / out of memory
+  // ===================== WHICH AI ANSWERS: Claude (default) or the custom local AI (switched off for now) =====================
+  // Claude: the visitor's own API key (direct from the browser, kept only in this browser) or, without one, the site's shared
+  // key through /api/claude (CLAUDE_API_KEY on Vercel). Quick tasks (talking, moving, looking, reactions) use Claude Haiku 5.5;
+  // everything else (building, 3D modelling, coding, the builder's checks) uses Claude Opus 5.5 at low effort.
+  // The local AI is still here: open the site with ?provider=local to use it again (?provider=claude to switch back).
+  var PROVIDER = (function () {
+    try {
+      var q = new URLSearchParams(location.search).get('provider');
+      if (q === 'local' || q === 'claude') localStorage.setItem('sbx_ai_provider', q);
+      return localStorage.getItem('sbx_ai_provider') || 'claude';
+    } catch (e) { return 'claude'; }
+  })();
+  var HAIKU = 'claude-haiku-5-5', OPUS = 'claude-opus-5-5', GEMINI = 'gemini-3.5-flash-lite';
+  var GEMINI_OFF = false; // set when this deployment has no GEMINI_API_KEY: quick tasks then use Claude Haiku 5.5
+  var QUICK = function () { return GEMINI_OFF ? HAIKU : GEMINI; };
+  var CLAUDE_KEY = (function () { try { return localStorage.getItem('sbx_claude_api_key') || ''; } catch (e) { return ''; } })();
+  function claudeHeaders(k) { return { 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', 'content-type': 'application/json' }; }
+  // the game marks quick work with a "quick" model hint (idle thoughts, reactions) and big work with its builder levels;
+  // Ollo / Caine's live mind (talking, moving, looking, gestures) is quick work too: building is handed to the builder
+  function pickModel(hint, tools) {
+    hint = String(hint || '');
+    if (/quick|haiku|gemini/.test(hint)) return QUICK();
+    if (/^(local|local-max|opus|sonnet)$|opus|sonnet|builder|heavy/.test(hint)) return OPUS;
+    var names = (tools || []).map(function (t) { return t.name; });
+    if (names.indexOf('run_code') >= 0 || names.some(function (n) { return /^create_|^spawn_|^edit_/.test(n); })) return OPUS;
+    return QUICK();
+  }
+  // prompt caching: the tool list, the long first message (instructions) and the newest message are cached, so the next
+  // step of a tool loop re-reads them at a fraction of the cost and faster
+  var CC = { type: 'ephemeral' };
+  function cacheTools(tools) { return tools.map(function (t, i) { return i === tools.length - 1 ? Object.assign({}, t, { cache_control: CC }) : t; }); }
+  function markLast(m) {
+    if (!m || !Array.isArray(m.content) || !m.content.length) return m;
+    var c = m.content.slice(), k = c.length - 1;
+    while (k >= 0 && (c[k].type === 'thinking' || c[k].type === 'redacted_thinking' || (c[k].type === 'text' && !String(c[k].text || '').trim()))) k--;
+    if (k < 0) return m; c[k] = Object.assign({}, c[k], { cache_control: CC }); return { role: m.role, content: c };
+  }
+  function cacheMarks(msgs) {
+    var out = msgs.map(function (m) { if (!Array.isArray(m.content)) return m; return { role: m.role, content: m.content.map(function (b) { if (b && b.cache_control) { var x = Object.assign({}, b); delete x.cache_control; return x; } return b; }) }; });
+    if (out.length > 1) out[0] = markLast(out[0]);
+    out[out.length - 1] = markLast(out[out.length - 1]);
+    return out;
+  }
+  var keyPromptShown = false;
+  async function callClaude(body, signal) {
+    var last = null;
+    for (var attempt = 0; attempt < 5; attempt++) {
+      var r, own = !!CLAUDE_KEY;
+      try {
+        r = own ? await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: claudeHeaders(CLAUDE_KEY), body: JSON.stringify(body), signal: signal })
+                : await fetch('/api/claude', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal });
+      } catch (e) { if (e && e.name === 'AbortError') throw e; last = err('api_error', 'Could not reach Claude: ' + (e.message || e)); await new Promise(function (res) { setTimeout(res, 1500 * Math.pow(2, attempt)); }); continue; }
+      if (r.ok) return r.json();
+      var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
+      var msg = 'Claude ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
+      var noKey = r.status === 401 || r.status === 403 || (!own && (r.status === 503 || r.status === 404 || r.status === 405));
+      if (noKey) {
+        if (!keyPromptShown) { keyPromptShown = true; promptKey(own ? 'Your Claude API key was not accepted (' + r.status + '). Check it or enter another.' : 'This site\'s shared Claude key is not available right now. Enter your own Claude API key to keep going.'); }
+        throw err('not_granted', own ? 'Your Claude API key was not accepted. Enter a valid key (the key button, bottom left).' : 'Claude is not connected yet: enter your Claude API key (the key button, bottom left).');
+      }
+      if (r.status === 429 || r.status === 529 || r.status >= 500) {
+        last = err('rate_limited', msg);
+        var ra = Number(r.headers.get('retry-after')) || 0;
+        await new Promise(function (res) { setTimeout(res, Math.min(20000, ra ? ra * 1000 : 2000 * Math.pow(2, attempt))); });
+        continue;
+      }
+      throw err('api_error', msg);
+    }
+    if (last && last.code === 'rate_limited' && !CLAUDE_KEY && !keyPromptShown) { keyPromptShown = true; promptKey('The shared Claude key is busy (usage limit). Enter your own Claude API key for unlimited use.'); }
+    throw last;
+  }
+
+  // ---- the key prompt and "Connect to Claude"
+  async function checkKey(k) { try { var r = await fetch('https://api.anthropic.com/v1/models?limit=1', { headers: claudeHeaders(k) }); return r.ok ? '' : 'not accepted (' + r.status + ')'; } catch (e) { return 'could not reach Claude (' + (e.message || e) + ')'; } }
+  function useKey(k) { CLAUDE_KEY = k; try { if (k) localStorage.setItem('sbx_claude_api_key', k); else localStorage.removeItem('sbx_claude_api_key'); } catch (e) { /* ok */ } keyPromptShown = false; }
+  function promptKey(reason) {
+    if (document.getElementById('ckBox')) return;
+    var box = document.createElement('div'); box.id = 'ckBox';
+    box.style.cssText = 'position:fixed;inset:0;z-index:10001;display:grid;place-items:center;background:rgba(10,16,22,.55);padding:16px;font:14px/1.45 "IBM Plex Sans",system-ui,sans-serif';
+    box.innerHTML = '<div role="dialog" aria-modal="true" aria-labelledby="ckT" style="width:min(460px,100%);background:#fff;color:#0f1a24;border-radius:14px;padding:22px 20px;box-shadow:0 16px 40px rgba(0,0,0,.35)">' +
+      '<h2 id="ckT" style="margin:0 0 6px;font:700 18px Bungee,\'Arial Black\',sans-serif">Connect Claude</h2>' +
+      '<p id="ckWhy" style="margin:0 0 12px;color:#33424f;font-size:13.5px"></p>' +
+      '<button id="ckConnect" type="button" style="width:100%;background:#d97757;color:#fff;border:0;border-radius:99px;padding:11px 16px;font:600 14px system-ui;cursor:pointer;margin-bottom:6px">Connect to Claude</button>' +
+      '<p style="margin:0 0 12px;color:#55636f;font-size:12.5px">Opens your Claude API keys page. Create a key, copy it, then come back and press <b>Paste key</b>. Your key stays in this browser only.</p>' +
+      '<div style="display:flex;gap:8px"><input id="ckIn" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." aria-label="Claude API key" style="flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid rgba(22,33,43,.25);background:#fff;color:#0f1a24;color-scheme:light;font:13px ui-monospace,Menlo,monospace">' +
+      '<button id="ckPaste" type="button" style="background:#eef2f5;color:#0f1a24;border:1px solid rgba(22,33,43,.2);border-radius:10px;padding:0 12px;font:600 13px system-ui;cursor:pointer">Paste key</button></div>' +
+      '<button id="ckSave" type="button" style="width:100%;margin-top:10px;background:#16212b;color:#fff;border:0;border-radius:99px;padding:10px 16px;font:600 14px system-ui;cursor:pointer">Use this key</button>' +
+      '<p id="ckMsg" style="margin:10px 0 0;font-size:13px;min-height:1.3em"></p>' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px"><button id="ckForget" type="button" style="background:none;border:0;color:#9a3412;text-decoration:underline;cursor:pointer;font-size:12.5px">Forget my key</button>' +
+      '<button id="ckClose" type="button" style="background:none;border:0;color:#2a5b86;text-decoration:underline;cursor:pointer;font-size:12.5px">Continue without custom key (limits apply)</button></div></div>';
+    document.documentElement.appendChild(box);
+    var q = function (id) { return box.querySelector('#' + id); }, msg = q('ckMsg'), inp = q('ckIn');
+    q('ckWhy').textContent = reason || 'Optionally enter your own Claude API key to have unlimited usage (your Claude plan and rate limits still apply). Without one, the site\'s shared key is used, with limits.';
+    if (CLAUDE_KEY) inp.value = CLAUDE_KEY;
+    q('ckConnect').onclick = function () { window.open('https://platform.claude.com/settings/keys', '_blank', 'noopener'); msg.style.color = '#2a3946'; msg.textContent = 'Create a key on that page, copy it, then press Paste key here.'; };
+    q('ckPaste').onclick = async function () { try { var t = await navigator.clipboard.readText(); var m = String(t || '').match(/sk-ant-[A-Za-z0-9_\-]{20,}/); if (m) { inp.value = m[0]; q('ckSave').click(); } else { msg.style.color = '#9a3412'; msg.textContent = 'No Claude key found on the clipboard: copy it from the keys page first, or paste it into the box.'; } } catch (e) { msg.style.color = '#9a3412'; msg.textContent = 'The browser did not allow reading the clipboard: paste the key into the box instead.'; inp.focus(); } };
+    q('ckSave').onclick = async function () {
+      var raw = String(inp.value || '').trim(), m = raw.match(/sk-ant-[A-Za-z0-9_\-]{20,}/), k = m ? m[0] : raw;
+      if (!k) { msg.style.color = '#9a3412'; msg.textContent = 'Paste a Claude API key first.'; return; }
+      msg.style.color = '#2a3946'; msg.textContent = 'Checking the key…';
+      var bad = await checkKey(k);
+      if (bad) { msg.style.color = '#9a3412'; msg.textContent = 'Key ' + bad + '.'; return; }
+      useKey(k); msg.style.color = '#166534'; msg.textContent = 'Connected to Claude.'; setTimeout(function () { box.remove(); }, 400);
+    };
+    q('ckForget').onclick = function () { useKey(''); inp.value = ''; msg.style.color = '#2a3946'; msg.textContent = 'Key removed: the shared key will be used.'; };
+    q('ckClose').onclick = function () { box.remove(); };
+    setTimeout(function () { try { inp.focus(); } catch (e) { /* ok */ } }, 30);
+  }
+  window.__openClaudeKeyModal = function () { promptKey(); };
+  // a small key button, always reachable (bottom left)
+  function keyButton() {
+    if (PROVIDER !== 'claude' || document.getElementById('ckBtn')) return;
+    var b = document.createElement('button'); b.id = 'ckBtn'; b.type = 'button'; b.title = 'Claude API key'; b.setAttribute('aria-label', 'Claude API key'); b.textContent = '🔑';
+    b.style.cssText = 'position:fixed;left:max(10px,env(safe-area-inset-left));bottom:max(10px,env(safe-area-inset-bottom));z-index:60;width:36px;height:36px;border-radius:50%;border:1px solid rgba(241,231,207,.25);background:rgba(15,26,34,.88);color:#f1e7cf;font-size:16px;cursor:pointer';
+    b.onclick = function () { promptKey(); };
+    document.body.appendChild(b);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', keyButton); else keyButton();
+  async function callGemini(body, signal) {
+    var last = null;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      var r;
+      try { r = await fetch('/api/gemini', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal }); }
+      catch (e) { if (e && e.name === 'AbortError') throw e; last = err('api_error', 'Could not reach Gemini: ' + (e.message || e)); await new Promise(function (res) { setTimeout(res, 1500 * Math.pow(2, attempt)); }); continue; }
+      if (r.ok) return r.json();
+      var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
+      var msg = 'Gemini ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
+      if (r.status === 503 || r.status === 404 || r.status === 405) { GEMINI_OFF = true; throw err('gemini_off', msg); }
+      if (r.status === 429 || r.status === 529 || r.status >= 500) { last = err('rate_limited', msg); await new Promise(function (res) { setTimeout(res, 2000 * Math.pow(2, attempt)); }); continue; }
+      throw err('api_error', msg);
+    }
+    throw last;
+  }
   async function call(body, signal) {
+    if (PROVIDER === 'local') return callLocal(body, signal);
+    if (body.model === GEMINI) {
+      try { return await callGemini(body, signal); }
+      catch (e) { if (e.code !== 'gemini_off') throw e; body = Object.assign({}, body, { model: HAIKU, output_config: { effort: 'low' }, messages: cacheMarks(body.messages) }); }
+    }
+    return callClaude(body, signal);
+  }
+  // ---- audio listening (voice chat + live game sound): Gemini 3.5 Flash-Lite hears the clip itself
+  var HEAR_PROMPT = 'Listen to this audio clip carefully, the way a person with good ears would. Reply with ONLY one JSON object, no prose: '
+    + '{"transcript": "the exact words spoken, empty if nobody speaks", "language": "language of the speech", "emotion": "one or two words for the feeling in the voice", '
+    + '"tone": "how it is said, e.g. excited, sarcastic, whispering, shouting, questioning, joking, pleading", "energy": "low | medium | high", '
+    + '"voice": "short description of the speaker\'s voice (age, pitch, texture)", "sounds": "other sounds besides speech (music with genre, mood, instruments, tempo; laughter, effects, noise...) or empty", '
+    + '"summary": "one sentence on what is happening in this audio"}';
+  // Gemini does not take the browser's WebM recordings: decode and re-encode as 16 kHz mono WAV
+  async function toWav(blob) {
+    var ac = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 16000, 16000);
+    var buf = await ac.decodeAudioData(await blob.arrayBuffer());
+    var len = Math.ceil(buf.duration * 16000), oc = new OfflineAudioContext(1, Math.max(1, len), 16000), src = oc.createBufferSource();
+    src.buffer = buf; src.connect(oc.destination); src.start(); var pcm = (await oc.startRendering()).getChannelData(0);
+    var out = new DataView(new ArrayBuffer(44 + pcm.length * 2)), w = function (o, s) { for (var i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); out.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+    out.setUint32(24, 16000, true); out.setUint32(28, 32000, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, pcm.length * 2, true);
+    for (var k = 0; k < pcm.length; k++) { var v = Math.max(-1, Math.min(1, pcm[k])); out.setInt16(44 + k * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+    return new Blob([out.buffer], { type: 'audio/wav' });
+  }
+  async function hearAudio(blob, context) {
+    if (PROVIDER === 'local') {
+      await resolveUrl(); var r0 = await fetch(AI_URL + '/hear', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: await b64(blob), context: context || undefined }) });
+      setStatus(r0.ok); return r0.ok ? r0.json() : null;
+    }
+    if (GEMINI_OFF) return null;
+    var wav = await toWav(blob);
+    var res = await callGemini({ model: GEMINI, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: await b64(wav) } }, { type: 'text', text: HEAR_PROMPT + (context ? '\nContext: ' + context : '') }] }] });
+    var txt = (res.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
+    var i = txt.indexOf('{'), j = txt.lastIndexOf('}'); try { return JSON.parse(i >= 0 && j > i ? txt.slice(i, j + 1) : txt); } catch (e) { return { transcript: txt.trim() }; }
+  }
+
+  // the first request after an idle unload waits while the model loads; 529 = the GPU was busy / out of memory
+  async function callLocal(body, signal) {
     var last = null;
     for (var attempt = 0; attempt < 4; attempt++) {
       var r;
@@ -199,13 +370,21 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var byName = {}; (opt.tools || []).forEach(function (t) { byName[t.name] = t; });
     var lastUser = ''; for (var i = msgs.length - 1; i >= 0 && !lastUser; i--) if (msgs[i].role === 'user') lastUser = (msgs[i].content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join(' ');
     var web = opt.use_web_search != null ? !!opt.use_web_search : WEB_RX.test(String(lastUser).slice(-2000));
-    var text = '', model = opt.model || 'local';
+    var text = '', model = PROVIDER === 'claude' ? pickModel(opt.model, tools) : (opt.model || 'local');
     for (var turn = 0; turn < 40; turn++) {
       if (opt.signal && opt.signal.aborted) throw err('cancelled', 'cancelled', text);
-      var body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools;
-      var res; try { res = await call(body, opt.signal); } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
+      var body;
+      if (PROVIDER === 'claude' && model === GEMINI) {
+        body = { model: model, max_tokens: 4096, messages: msgs }; if (tools.length) body.tools = tools;
+      } else if (PROVIDER === 'claude') {
+        body = { model: model, max_tokens: model === OPUS ? 16000 : 4096, messages: cacheMarks(msgs), output_config: { effort: 'low' } };
+        var tl = tools.slice(); if (web && model === OPUS) tl.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 3 });
+        if (tl.length) body.tools = cacheTools(tl);
+      } else { body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools; }
+      var res; try { res = await call(body, opt.signal); if (model === GEMINI && GEMINI_OFF) model = HAIKU; } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
       var tu = []; for (var c of res.content || []) { if (c.type === 'text') { if (!c.text) continue; text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
       msgs.push({ role: 'assistant', content: res.content });
+      if (res.stop_reason === 'pause_turn') continue; // a long server-side web search: let Claude carry on
       if (res.stop_reason !== 'tool_use' || !tu.length) break;
       var results = []; for (var u of tu) { var out; try { var t = byName[u.name]; out = t && t.execute ? await t.execute(u.input || {}) : 'unknown tool'; } catch (e) { out = 'error: ' + (e.message || e); } results.push({ type: 'tool_result', tool_use_id: u.id, content: typeof out === 'string' ? out.slice(0, 20000) : JSON.stringify(out === undefined ? 'ok' : out).slice(0, 20000) }); }
       msgs.push({ role: 'user', content: results });
@@ -215,11 +394,11 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   sample.json = async function (prompt, opt) {
     var msgs = typeof prompt === 'string' ? [{ role: 'user', content: prompt }] : prompt;
     msgs = msgs.concat([{ role: 'user', content: 'Reply with ONLY one JSON value (no prose, no code fence).' }]);
-    var r = await sample(msgs, Object.assign({}, opt || {}, { tools: [] })); var t = r.text || '';
+    var r = await sample(msgs, Object.assign({ model: 'opus' }, opt || {}, { tools: [] })); var t = r.text || '';
     var s = t.indexOf('{'), a = t.indexOf('['); var i = s < 0 ? a : a < 0 ? s : Math.min(s, a); var j = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
     try { return JSON.parse(i >= 0 && j > i ? t.slice(i, j + 1) : t); } catch (e) { return null; }
   };
-  sample.limits = async function () { return { images: true, maxCount: 4, local: true, remaining: null }; };
+  sample.limits = async function () { return { images: true, maxCount: 4, local: PROVIDER === 'local', provider: PROVIDER, remaining: null }; };
   window.localAI = { get url() { return AI_URL; }, resolve: resolveUrl, sample: sample, health: async function () { await resolveUrl(); return fetch(AI_URL + '/health', { headers: hdr() }).then(function (r) { return r.json(); }); } };
   // the game asks for capabilities by name; only 'sample' (the AI) is provided here
   // local listening: the microphone is recorded phrase by phrase (voice activity detection) and each phrase is sent to the
@@ -233,10 +412,9 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       if (!blob || blob.size < 2000) return;
       emit('p', { text: '' });
       try {
-        await resolveUrl(); var r = await fetch(AI_URL + '/hear', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: await b64(blob) }) });
-        setStatus(true); if (!r.ok) return;
-        var j = await r.json(); emit('f', { text: String(j.transcript || '').trim(), analysis: j });
-      } catch (e) { setStatus(false); }
+        var j = await hearAudio(blob); if (!j) return;
+        emit('f', { text: String(j.transcript || '').trim(), analysis: j });
+      } catch (e) { console.warn('[voice] listening failed:', e && e.message); }
     }
     function beginPhrase() {
       chunks = []; var mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].filter(function (m) { return window.MediaRecorder && MediaRecorder.isTypeSupported(m); })[0];
@@ -296,8 +474,8 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       mr.onstop = async function () {
         try {
           var blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-          await resolveUrl(); var r = await fetch(AI_URL + '/hear', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: await b64(blob), context: 'This is live sound playing inside a 3D game world right now (music, sound effects, character voices, ambience). Describe the music (genre, mood, instruments, tempo) and every sound you can identify.' }) });
-          if (r.ok) { var j = await r.json(); if (window.__onSimHeard) window.__onSimHeard(j); }
+          var j = await hearAudio(blob, 'This is live sound playing inside a 3D game world right now (music, sound effects, character voices, ambience). Describe the music (genre, mood, instruments, tempo) and every sound you can identify.');
+          if (j && window.__onSimHeard) window.__onSimHeard(j);
         } catch (e) { /* local AI offline: try again later */ }
         EARS.busy = false;
       };
@@ -320,7 +498,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var bs = note.querySelectorAll('button'); bs[0].onclick = function () { check(); }; bs[1].onclick = function () { if (note) { note.remove(); note = null; } };
     document.body.appendChild(note);
   }
-  function check() { resolveUrl(true).then(function () { return fetch(AI_URL + '/health', { cache: 'no-store', headers: hdr() }); }).then(function (r) { setStatus(r.ok); }, function () { setStatus(false); }); }
+  function check() { if (PROVIDER !== 'local') return; resolveUrl(true).then(function () { return fetch(AI_URL + '/health', { cache: 'no-store', headers: hdr() }); }).then(function (r) { setStatus(r.ok); }, function () { setStatus(false); }); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', check); else check();
 })();
 </script>

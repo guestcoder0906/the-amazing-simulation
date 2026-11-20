@@ -17,7 +17,7 @@ var CANT_RX = /\b(can'?t|cannot|can not|unable to|not able to|won'?t be able|no 
 var ASK_MAKE_RX = /\b(make|create|build|spawn|summon|conjure|generate|design|add|bring|give|get|put|place|drop|draw|paint|craft|invent|set up|turn|change|transform|replace|grow|show|want|need|have)\b[\s\S]{0,60}\b(a|an|the|me|us|some|my|our|another|more|\d+|it|this|that|them)\b/i;
 const OPUS = 'local-max', SONNET = 'local';
 // smartness 1-5: faster -> slower but better
-const LEVELS = { 1: { model: SONNET, effort: 'medium', label: 'Local AI · quick' }, 2: { model: SONNET, effort: 'high', label: 'Local AI · balanced' }, 3: { model: OPUS, effort: 'low', label: 'Local AI · careful' }, 4: { model: OPUS, effort: 'medium', label: 'Local AI · thorough' }, 5: { model: OPUS, effort: 'high', label: 'Local AI · max' } };
+const LEVELS = { 1: { model: SONNET, effort: 'medium', label: 'Claude Opus 5.5 · low' }, 2: { model: SONNET, effort: 'high', label: 'Claude Opus 5.5 · low' }, 3: { model: OPUS, effort: 'low', label: 'Claude Opus 5.5 · low' }, 4: { model: OPUS, effort: 'medium', label: 'Claude Opus 5.5 · low' }, 5: { model: OPUS, effort: 'high', label: 'Claude Opus 5.5 · low' } };
 const LEVEL0 = 3; // smartness bar hidden for now; always 3
 
 // ---------------------------------------------------------------- styles + DOM
@@ -998,7 +998,7 @@ function addFiles(files) { for (const f of files) { if (!/^image\//.test(f.type)
 function renderThumbs() { thumbsEl.textContent = ''; ATTACH.forEach((a, i) => { const x = h('button', { type: 'button', 'aria-label': 'Remove image' }, '×'); x.onclick = () => { URL.revokeObjectURL(a.url); ATTACH.splice(i, 1); renderThumbs(); }; thumbsEl.append(h('figure', {}, h('img', { src: a.url, alt: 'attached reference' }), x)); }); }
 attachBtn.onclick = () => fileIn.click(); fileIn.onchange = () => { addFiles(fileIn.files); fileIn.value = ''; };
 const miniBtn = h('button', { class: 'sbx-x', 'aria-label': 'Minimise the prompt', title: 'Minimise' }, '▾'); const pill = h('button', { class: 'pr-pill pri', 'aria-label': 'Open the prompt' }, '✨ Create');
-const promptEl = h('section', { id: 'sbxPrompt', class: 'sbx-panel docked' }, pill, h('div', { class: 'pr-head' }, h('span', {}, 'Tell the world what to make'), miniBtn), h('div', { class: 'intro' }, 'An empty platform under the sky, and Ollo. Type what the world should have; your local AI builds it piece by piece while you watch.'), h('form', {}, attachBtn, inEl, goBtn, stopBtn), optsEl, progEl);
+const promptEl = h('section', { id: 'sbxPrompt', class: 'sbx-panel docked' }, pill, h('div', { class: 'pr-head' }, h('span', {}, 'Tell the world what to make'), miniBtn), h('div', { class: 'intro' }, 'An empty platform under the sky, and Ollo. Type what the world should have; Claude builds it piece by piece while you watch.'), h('form', {}, attachBtn, inEl, goBtn, stopBtn), optsEl, progEl);
 root.append(promptEl);
 inEl.addEventListener('keydown', (ev) => { ev.stopPropagation(); if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); promptEl.querySelector('form').requestSubmit(); } });
 inEl.addEventListener('keyup', (ev) => ev.stopPropagation());
@@ -1456,7 +1456,7 @@ function selectStep(dt) { if (!SEL.root) return; if (!SEL.root.parent || (SEL.ca
 // ---------------------------------------------------------------- 9. the in-world AI: Claude Opus 5.5 (low effort), sees through Ollo's eyes, builds live with tools
 const AGENT = { busy: false, ctl: null, history: [], views: [], level: LEVEL0, fallbackAt: 0 };
 // the model that answers now: an Opus level drops to Sonnet (same ambition) while Opus is unavailable
-function agentCfg() { const L = LEVELS[AGENT.level]; if (L.model === OPUS && AGENT.fallbackAt && Date.now() - AGENT.fallbackAt < 5 * 60 * 1000) { const ef = AGENT.level === 3 ? 'medium' : 'high'; return { model: SONNET, effort: ef, label: 'Local AI · ' + ef, fell: true }; } return { ...L }; }
+function agentCfg() { const L = LEVELS[AGENT.level]; if (L.model === OPUS && AGENT.fallbackAt && Date.now() - AGENT.fallbackAt < 5 * 60 * 1000) { const ef = AGENT.level === 3 ? 'medium' : 'high'; return { model: SONNET, effort: ef, label: 'Claude Opus 5.5 · low', fell: true }; } return { ...L }; }
 let SAMPLE = null; (async () => { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } })();
 const SYSTEM = (toy = false) => `You are the world-builder inside a live, real-time 3D sandbox (three.js r170, WebGL). You work exactly the way a senior 3D artist, technical animator and engineer would working directly in this scene: you can do essentially anything the page can do, through the tools below, and everything you do appears on the user's screen the moment you do it.
 
@@ -1707,7 +1707,7 @@ async function runAgentInner(userText, opt = {}) { AGENT.lastText = String(userT
   AGENT.busy = true; AGENT.userStopped = false; AGENT.viewReq = null; AGENT.charPending = false; AGENT.allowCam = wantsCam(userText); AGENT.allowOllo = wantsOllo(userText); AGENT.voiceSet = false; AGENT.ragdoll = false; AGENT.audio = false; AGENT.reviews = 0; AGENT.checkpoint = null; AGENT.lastProbs = null; AGENT.soundNudged = false; AGENT.ok = new Map(); AGENT.mutCalls = 0; AGENT.mindCode = false; AGENT.mindGiven = false; AGENT.nudges = 0; AGENT.errs = 0; AGENT.waits = 0; let stepErr = null; promptEl.classList.add('docked'); progEl.hidden = false; progBar.classList.remove('done'); stopBtn.hidden = false; goBtn.disabled = true; progTxt.textContent = 'Starting…'; progStep.textContent = '';
   if (feedEl.hidden) btnFeed.click(); feed('ok', '› ' + userText);
   if (!SAMPLE) { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } }
-  if (!SAMPLE) { feed('err', 'The local AI is not available yet — start it with start.bat (Windows) or ./start.sh (Mac/Linux).'); return finish('Local AI unavailable'); }
+  if (!SAMPLE) { feed('err', 'Claude is not connected yet — press the key button (bottom left) to connect Claude.'); try { window.__openClaudeKeyModal && window.__openClaudeKeyModal(); } catch (e) { /* ok */ } return finish('Claude unavailable'); }
   let limits = null; try { limits = await SAMPLE.limits(); } catch (e) { limits = null; }
   const canImg = !!(limits && limits.images); const AC = AGENT.ctl = new AbortController(); const notes = [];
   const ETA = { planned: 3, times: [], stepStart: performance.now(), s: 1 }; const fmt = (sec) => sec >= 60 ? Math.floor(sec / 60) + 'm ' + String(Math.round(sec % 60)).padStart(2, '0') + 's' : Math.max(1, Math.round(sec)) + 's';
@@ -1723,8 +1723,8 @@ async function runAgentInner(userText, opt = {}) { AGENT.lastText = String(userT
       const CFG = agentCfg(); modelEl.textContent = CFG.label;
       const res = await SAMPLE([{ role: 'user', content: SYSTEM(toyMode) }, ...AGENT.history.slice(-4), { role: 'user', content: msg }], { tools: cap16(makeTools(step), 'builder'), ...(imgs.length ? { images: imgs } : {}), model: CFG.model, effort: CFG.effort, modelTier: CFG.model === OPUS ? 'complex' : 'default', signal: AC.signal, onText: ({ text: t }) => { sayEl.textContent = t.slice(-900); progStep.textContent = 'writing'; } });
       text = res.text || '';
-      if (res.modelApplied === false && CFG.model === OPUS) { AGENT.fallbackAt = Date.now(); feed('ev', 'The local AI could not run that at the highest level — retrying at a lighter level for a few minutes.'); }
-      else if (res.modelApplied === false && CFG.model === SONNET && s === 1) feed('ev', '(the local AI answered with its default model)');
+      if (res.modelApplied === false && CFG.model === OPUS) { AGENT.fallbackAt = Date.now(); feed('ev', 'Claude could not run that right now — retrying in a few minutes.'); }
+      else if (res.modelApplied === false && CFG.model === SONNET && s === 1) feed('ev', '(Claude answered with its default model)');
       modelEl.textContent = agentCfg().label;
     } catch (e) { if (e.code === 'cancelled') { break; } sayEl.className = 'ev err'; sayEl.textContent = errCopy(e) + (e && (e.code || e.message) ? `\n(code: ${e.code || '-'} · ${String(e.message || '').slice(0, 400)})` : ''); if (e && e.code !== 'cancelled') console.error('Create step ' + s + ' error:', e); if (e.code === 'rate_limited' && (AGENT.waits = (AGENT.waits || 0) + 1) <= 2) { feed('ev', 'Busy — waiting 20 s and trying again…'); await sleep(20000); s--; continue; } if (['not_granted', 'sampling_disabled', 'tools_unavailable', 'rate_limited'].includes(e.code)) break; text = e.text || ''; stepErr = e; }
     if (AC.signal.aborted) { sayEl.textContent = text.replace(/\n?(CONTINUE|DONE):[\s\S]*$/, '').trim().slice(-900) || '(stopped)'; return stoppedByUser(); }
@@ -1762,7 +1762,7 @@ async function runAgentInner(userText, opt = {}) { AGENT.lastText = String(userT
 }
 function stoppedByUser() { if (!AGENT.busy) return; feed('err', 'Stopped manually by user — the request was not finished.'); AGENT.history.push({ role: 'user', content: 'Earlier request (STOPPED by the user before it was finished): ' + (AGENT.lastText || '') }); return finish('Stopped manually by user'); }
 function finish(label) { AGENT.busy = false; progEta.textContent = ''; progTxt.textContent = label; progStep.textContent = ''; progBar.classList.add('done'); stopBtn.hidden = true; goBtn.disabled = false; setTimeout(() => { if (!AGENT.busy) progEl.hidden = true; }, 4000); }
-function errCopy(e) { return ({ ai_offline: e.message, not_granted: e.message || 'The local AI needs its access key.', sampling_disabled: 'The local AI is turned off.', rate_limited: 'The local AI is busy or out of GPU memory — try again in a moment.', tools_unavailable: 'This view cannot run the AI’s tools.', images_unavailable: 'This view cannot send images.', prompt_too_large: 'The request got too large — try a smaller ask.' })[e.code] || ('The AI hit an error: ' + (e.message || e.code)); }
+function errCopy(e) { return ({ ai_offline: e.message, not_granted: e.message || 'Claude is not connected: press the key button (bottom left).', sampling_disabled: 'The AI is turned off.', rate_limited: 'The AI is busy (usage limit) — try again in a moment, or enter your own Claude API key.', tools_unavailable: 'This view cannot run the AI’s tools.', images_unavailable: 'This view cannot send images.', prompt_too_large: 'The request got too large — try a smaller ask.' })[e.code] || ('The AI hit an error: ' + (e.message || e.code)); }
 SBX.runAgent = runAgent;
 // lookups the AI's code commonly reaches for: sbx.get('id' | 'cast:id' | name) -> the object / character group
 SBX.get = (id) => { if (id && id.isObject3D) return id; const s = String(id || ''); if (SBX.placed.has(s)) return SBX.placed.get(s); const cid = s.replace(/^cast:/, ''); const c = CAST.CASTS.find((k) => k.id === cid); if (c) return c.group; for (const [, ob] of SBX.placed) if ((ob.userData.sbx && ob.userData.sbx.name === s) || ob.name === s) return ob; return scene.getObjectByName(s) || null; };
@@ -1910,7 +1910,7 @@ chatForm.addEventListener('submit', (ev) => { ev.preventDefault(); const t = cha
 chatIn.addEventListener('keydown', (ev) => ev.stopPropagation(), true);
 const HEAR = { clear: 12, range: 30 }; // how far Ollo hears a spoken voice (typed chat always reaches him)
 function playerSays(text, via, meta) { text = String(text || '').trim(); if (!text) return; const dist = playerPos().distanceTo(ollo.group.position); const self = PLAYER.c === ollo;
-  /* how it sounded, judged by the local AI listening to the recording itself (not just the words) */
+  /* how it sounded, judged by Gemini listening to the recording itself (not just the words) */
   const sounded = via === 'voice' && meta ? ' [how it sounded, from listening to the audio: ' + ['emotion ' + (meta.emotion || '?'), meta.tone && 'tone ' + meta.tone, meta.energy && meta.energy + ' energy', meta.voice && 'voice: ' + meta.voice, meta.sounds && 'other sounds: ' + meta.sounds].filter(Boolean).join('; ') + ']' : '';
   try { hearAll('player', 'the player', text + sounded, playerPos(), via !== 'voice'); } catch (e) { /* ok */ }
   if (via === 'voice' && !self && dist > HEAR.range) { chatMsg('you', text); chatSys(`Ollo is ${dist.toFixed(0)} m away — too far to hear your voice. Get closer, or type.`); brainLog('event', `you heard someone's voice far away (${dist.toFixed(0)} m), too faint to make out`); if (BR.on && !BR.busy) think('idle'); return; }
@@ -1920,7 +1920,7 @@ function playerSays(text, via, meta) { text = String(text || '').trim(); if (!te
   if (!BR.on) { chatSys('Turn on Smart Ollo for him to answer.'); return; }
   if (BR.busy) { if (BR.kind === 'idle' && BR.ctl) BR.ctl.abort(); BR.pending = true; } else think('heard'); }
 SBX.playerSays = playerSays;
-/* world hearing: the page records live clips of everything playing in the simulation while an AI is listening, and the local AI
+/* world hearing: the page records live clips of everything playing in the simulation while an AI is listening, and Gemini
    listens to them; Ollo / Caine and every character mind then know what music and sounds are around them */
 let SIM_HEARD = '';
 window.__simEarsWanted = () => !!(BR.on || (typeof MINDS !== 'undefined' && MINDS.size)) && !VOICE.speaking;
@@ -1932,7 +1932,7 @@ window.__onSimHeard = (j) => { try { if (!j) return; const parts = []; if (j.sou
 let DICT = null, dictOn = false, dictBuf = '', dictTimer = 0, dictMeta = null;
 async function loadDict() { if (DICT) return DICT; try { DICT = await window.claude?.use?.('dictation'); } catch (e) { DICT = null; } if (!DICT) { micBtn.hidden = true; return null; }
   DICT.onPartial(({ text }) => { chatIn.placeholder = text ? '🎙 ' + text : 'Listening…'; });
-  DICT.onFinal(({ text, analysis }) => { if (VOICE.speaking || performance.now() < (VOICE.until || 0)) return; if (analysis) dictMeta = analysis; if (!text) { if (analysis && analysis.sounds) { try { brainLog('event', 'you heard sounds near the player (the local AI listened): ' + analysis.sounds); } catch (e) { /* ok */ } } return; } dictBuf += (dictBuf ? ' ' : '') + text; chatIn.placeholder = 'Listening…'; clearTimeout(dictTimer); dictTimer = setTimeout(flushDict, 700); });
+  DICT.onFinal(({ text, analysis }) => { if (VOICE.speaking || performance.now() < (VOICE.until || 0)) return; if (analysis) dictMeta = analysis; if (!text) { if (analysis && analysis.sounds) { try { brainLog('event', 'you heard sounds near the player (heard through Gemini): ' + analysis.sounds); } catch (e) { /* ok */ } } return; } dictBuf += (dictBuf ? ' ' : '') + text; chatIn.placeholder = 'Listening…'; clearTimeout(dictTimer); dictTimer = setTimeout(flushDict, 700); });
   DICT.onState(({ state }) => { dictOn = state === 'listening'; micBtn.setAttribute('aria-pressed', String(dictOn)); if (!dictOn) { chatIn.placeholder = 'Say something to Ollo…'; flushDict(); } });
   return DICT; }
 function flushDict() { clearTimeout(dictTimer); const t = dictBuf, meta = dictMeta; dictBuf = ''; dictMeta = null; if (t.trim()) playerSays(t, 'voice', meta); }
@@ -1993,7 +1993,7 @@ async function think(...a) { const a0 = a; a = [...a]; /* thinkCore's argument i
 async function thinkCore(reason) {
   if (!BR.on) return; if (BR.busy) { BR.pending = true; return; }
   if (!SAMPLE) { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } }
-  if (!SAMPLE) { chatSys('The local AI is not running, so Ollo cannot think on his own. Start it with start.bat (Windows) or ./start.sh (Mac/Linux).'); setSmart(false); return; }
+  if (!SAMPLE) { chatSys('Claude is not connected, so Ollo cannot think on his own. Press the key button (bottom left) to connect Claude.'); setSmart(false); return; }
   BR.busy = true; BR.kind = reason === 'idle' ? 'idle' : 'talk'; const ctl = BR.ctl = new AbortController(); const acts = []; setStatus('thinking…');
   try {
     if (BR.canImg === undefined) { try { const l = await SAMPLE.limits(); BR.canImg = !!(l && l.images); } catch (e) { BR.canImg = false; } }
@@ -3562,8 +3562,8 @@ async function vcStart() { if (VC.on) return; VC.on = true; vcBtn.setAttribute('
       const tick = () => { if (!VC.on || !VC.an) return; VC.an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; const rms = Math.sqrt(s / buf.length); VC.peak = Math.max((VC.peak || 0) * 0.995, rms); VC.floor = VC.floor === undefined ? rms : VC.floor * 0.995 + Math.min(rms, VC.floor * 2 + 0.002) * 0.005; const talking = rms > Math.max(0.012, VC.floor * 3.2); if (talking) VC.talkUntil = performance.now() + 250; try { vcBtn.classList.toggle('vc-talk', performance.now() < (VC.talkUntil || 0)); } catch (e) { /* ok */ } requestAnimationFrame(tick); }; tick(); } } catch (e) { /* level unknown: normal */ }
   const D = await loadDict().catch(() => null);
   if (D) { try { if (!dictOn) await D.start(); } catch (e) { /* fall back below */ } if (dictOn) return; }
-  /* listening is done by the local AI only (no cloud speech recognition) */
-  { toast('Voice chat needs your local AI running (start.bat / ./start.sh) and a microphone'); vcStop(); return; }
+  /* listening is done by Gemini (or the local AI when that is in use), never by the browser's speech recognition */
+  { toast('Voice chat could not start listening: check the microphone permission, and that the site has GEMINI_API_KEY set'); vcStop(); return; }
   const SR = null; if (!SR) return;
   const r = VC.rec = new SR(); r.continuous = true; r.interimResults = false; r.lang = navigator.language || 'en-US';
   r.onresult = (e) => { for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) { const t = e.results[i][0].transcript; if (VOICE.speaking) continue; VC.level = clamp((VC.peak || 0.05) / 0.06, 0.4, 2.2); VC.peak = 0; playerSays(t, 'voice'); } };

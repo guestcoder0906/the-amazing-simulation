@@ -2,7 +2,24 @@
 
 Interactive 3D world and character sandbox powered by your own local, custom-trainable AI.
 
-## Local AI (runs on your computer)
+## AI
+
+The game uses **Claude** and **Gemini** through two Vercel serverless functions (no server to run):
+
+| Work | Model | Key (Vercel → Settings → Environment Variables) |
+|---|---|---|
+| Building, 3D modeling, coding, the builder's checks | Claude Opus 5.5 (low effort) | `CLAUDE_API_KEY` |
+| Quick tasks: talking, moving, looking, reactions | Gemini 3.5 Flash-Lite (minimal thinking) | `GEMINI_API_KEY` |
+| Listening: voice chat and live in-game sound | Gemini 3.5 Flash-Lite (minimal thinking) | `GEMINI_API_KEY` |
+
+Without `GEMINI_API_KEY`, quick tasks fall back to Claude Haiku 5.5 and listening is off.
+Visitors can also use their own Claude API key: the key button (bottom left) → **Connect to Claude** opens their API keys
+page, then **Paste key**. The key stays in their browser and calls Claude directly. If the site's Claude key is missing or
+busy, the game asks for a key automatically.
+
+The custom local AI below is switched off. Open the site with `?provider=local` to use it again (`?provider=claude` to switch back).
+
+## Local AI (switched off for now; runs on your computer)
 
 All AI features (the builder, Smart Ollo / Caine, character minds, singing) call a headless local API at
 `http://127.0.0.1:8000`, found in [`local-ai/`](local-ai). Nothing is sent to an outside AI service.

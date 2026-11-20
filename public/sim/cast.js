@@ -2641,7 +2641,12 @@ RPC.Gait = class {
     let W = RPC.fk(ch, { L });
     let drop = 0;
     for (const l of this.legs) { if (many && l.swing) continue; /* a swinging leg reaching forward must not drag a many-legged body down */ const t = toC(l.cur), hip = W[l.I.iu].p, reach = (l.I.L1 + l.I.L2) * 0.985; const hz = Math.hypot(t[0] - hip[0], t[2] - hip[2]), v = hip[1] - t[1]; if (Math.hypot(hz, v) > reach) drop = Math.max(drop, v - Math.sqrt(Math.max(0, reach * reach - hz * hz))); }
-    if (drop > 0) L[H].p = [L[H].p[0], L[H].p[1] - Math.min(drop, (many ? 0.1 : 0.3) * LL + crouch * 0.3 * LL), L[H].p[2]];
+    /* how much of this body is leg: long-legged characters (stilts, flamingos, tall walkers) keep their legs much straighter, so the hips
+       may only dip a little and a planted knee never folds deep; short / stocky legs keep the old bouncy range */
+    if (this._legShare === undefined) { let top = 0; for (const b of ch.bones) top = Math.max(top, b.pos[1], b.tail ? b.tail[1] : 0); this._legShare = clamp(LL / Math.max(1e-3, top), 0.1, 0.95); }
+    const longF = clamp((this._legShare - 0.45) / 0.3, 0, 1); /* 0 = ordinary legs, 1 = legs are most of the height */
+    if (drop > 0) L[H].p = [L[H].p[0], L[H].p[1] - Math.min(drop, (many ? 0.1 : 0.3 - 0.2 * longF) * LL + crouch * 0.3 * LL), L[H].p[2]];
+    if (longF > 0 && crouch < 0.1) { W = RPC.fk(ch, { L }); let lift = 0; for (const l of this.legs) { if (l.swing) continue; const t = toC(l.cur), hip = W[l.I.iu].p, reach = l.I.L1 + l.I.L2; const minD = reach * (0.8 + 0.14 * longF); const hz = Math.hypot(t[0] - hip[0], t[2] - hip[2]); if (hz >= minD) continue; const wantY = t[1] + Math.sqrt(minD * minD - hz * hz); lift = Math.max(lift, wantY - hip[1]); } if (lift > 0) L[H].p = [L[H].p[0], L[H].p[1] + Math.min(lift, 0.25 * LL), L[H].p[2]]; } /* a planted long leg stays mostly straight: raise the hips instead of folding the knee */
     // ...and never so low that they sink to the feet: however deep a landing squash, the hips stay a little above the ground the character stands on and every planted foot (folding past that flipped the legs right over)
     { W = RPC.fk(ch, { L }); let need = 0; for (const l of this.legs) need = Math.max(need, (l.swing ? this.ankleH : Math.max(toC(l.cur)[1], this.ankleH)) + 0.12 * LL - W[l.I.iu].p[1]); if (need > 0) L[H].p = [L[H].p[0], L[H].p[1] + need, L[H].p[2]]; }
     W = RPC.fk(ch, { L });

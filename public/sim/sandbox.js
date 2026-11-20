@@ -3159,6 +3159,29 @@ addEventListener('pagehide', () => stopSound('all'));
 const AUDIO_DESC = 'Music and sound. compose: write a song or sound effect as notes and save it (song: {bpm, loop, echo 0-0.6, length_beats, tracks: [{instrument: lead|square|saw|triangle|sine|pluck|bass|pad|bell|organ|drums, volume, pan, notes: [[beat, note, beats, velocity]]}]}; note = "C4", "F#3", "Bb5" or MIDI number; drums notes use kick / snare / hat / clap / tom). Write real music: a melody with phrasing, chords / pads, a bassline, drums, a structure (intro, verse, chorus) — not a scale. play: play a song / sound by name, either as world music (attach omitted) or ATTACHED to an object or character id so it is positional (louder near it, panned, follows it); volume, loop, ref_distance (m, full volume), max_distance. stop: stop by name, play id, attached id, or "all". list: songs and what is playing.';
 // ---------------------------------------------------------------- 10. per-frame: Ollo, appear animations, sun follows the action, speech bubble, PiP, thumbnails
 let last = performance.now(); const sun = scene.getObjectByName('Sun'); const tmpV = new THREE.Vector3();
+/* LIFE BETWEEN THOUGHTS (local, no AI calls): Ollo / Caine and every character with a mind are never frozen in one idle pose. Every few
+   seconds an idle one picks something small and natural - a glance at the player or at something near it, looking around, a thinking
+   pose, shifting its weight with a step or two (a small drift when it hovers), now and then a nod - with random timing, so it reads as
+   alive. It holds still whenever it is already doing something (a clip playing, walking, talking, being controlled, building). */
+const LIFE = new Map();
+function lifeStep(dt) { const minded = [...MINDS.values()].map((m) => m.c); const who = [ollo, ...minded.filter((c) => c && c !== ollo)];
+  for (const c of who) { if (!c || !c.group || !c.group.visible || !c.ch) continue; let L = LIFE.get(c); if (!L) { L = { next: 3 + Math.random() * 6, undo: 0, undoFn: null }; LIFE.set(c, L); }
+    if (L.undo > 0) { L.undo -= dt; if (L.undo <= 0 && L.undoFn) { try { L.undoFn(); } catch (e) { /* ok */ } L.undoFn = null; } continue; }
+    const busy = PLAY.has(c) || !!c.walk || PLAYER.c === c || (c === ollo && (AGENT.busy || (OH && OH.target) || BR.busy || VOICE.speaking)) || (c !== ollo && (() => { const m = MINDS.get(c.id); return !!(m && (m.busy || m.follow)); })()) || (c._ragdoll);
+    if (busy) { L.next = Math.max(L.next, 2 + Math.random() * 3); continue; } if ((L.next -= dt) > 0) continue; L.next = 5 + Math.random() * 9;
+    const pick = (opts) => { let tot = 0; for (const o of opts) tot += o[0]; let r = Math.random() * tot; for (const o of opts) { if ((r -= o[0]) <= 0) return o[1]; } return opts[0][1]; };
+    const hover = locoKind(c) === 'hover'; const m = c === ollo ? null : MINDS.get(c.id); const setLook = (t) => { if (c === ollo) { const b = BR.look; BR.look = t; return () => { BR.look = b; }; } if (m) { const b = m.look; m.look = t; return () => { m.look = b; }; } return null; };
+    const near = () => { const o = c.group.position; let best = null, bd = 6; for (const [id, ob] of SBX.placed) { if (ob === c.group) continue; const p = ob.position; const d = Math.hypot(p.x - o.x, p.z - o.z); if (d > 0.4 && d < bd && Math.random() < 0.6) { bd = d; best = id; } } return best; };
+    const act = pick([[3, 'glance'], [2.5, 'look'], [1.2, 'think'], [hover ? 1.5 : 2, 'shift'], [0.6, 'nod']]);
+    try {
+      if (act === 'glance') { const t = Math.random() < 0.55 ? 'player' : (near() || 'player'); const u = setLook(t); L.undo = 1.6 + Math.random() * 2.4; L.undoFn = u; }
+      else if (act === 'look') playClip(c, 'Look around');
+      else if (act === 'think') { playClip(c, 'Thinking'); L.undo = 2 + Math.random() * 2; L.undoFn = () => stopClip(c); }
+      else if (act === 'nod') playClip(c, 'Nod yes');
+      else if (act === 'shift') { const o = c.group.position; const a = Math.random() * Math.PI * 2, d = 0.35 + Math.random() * 0.8; const tx = o.x + Math.sin(a) * d, tz = o.z + Math.cos(a) * d;
+        if (c === ollo) { if (SBX.olloFlyTo) SBX.olloFlyTo([tx, o.y, tz], { speed: 0.8 }); }
+        else if (!hover && c.mo) { c.mo.grounded = true; c.mo.gait = true; c.mo.speed = 0.7; c.walk = { pts: [[tx, tz]], v: 0, goals: [[tx, tz]] }; } }
+    } catch (e) { /* a clip it does not have: try again later */ } } }
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   /* rig bones are an editing aid: hidden unless the Animator is on (or its "show rig" box is ticked) */
@@ -3166,6 +3189,7 @@ function frame(now) {
   try { olloTick(dt); } catch (e) { console.error('ollo', e); }
   try { smartTick(dt); } catch (e) { console.error('smart ollo', e); }
   try { mindsTick(dt); } catch (e) { console.error('minds', e); }
+  try { lifeStep(dt); } catch (e) { console.error('life', e); }
   try { ragTick(dt); } catch (e) { console.error('ragdoll', e); }
   try { lipStep(); } catch (e) { console.error('lip sync', e); }
   try { mouth3dStep(dt); } catch (e) { console.error('mouth', e); }

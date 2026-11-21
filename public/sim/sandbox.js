@@ -269,6 +269,9 @@ function aces(x) { x *= 1 / 0.6; const a = x * (x + 0.0245786) - 0.000090537, b 
 const toSRGB = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
 let CAP_SOLO = null; /* while set, captures draw only this object (plus lights and sky) */
 function soloHide(keep) { const hid = []; try { for (const o of [typeof park !== 'undefined' && park && park.root, ...[...SBX.placed.values()], ...CAST.CASTS.map((k) => k.group), typeof wand !== 'undefined' ? wand : null]) if (o && o !== keep && o.visible) { let a = keep, inside = false; while (a) { if (a === o) { inside = true; break; } a = a.parent; } if (!inside) { o.visible = false; hid.push(o); } } } catch (e) { /* ok */ } return () => { for (const o of hid) o.visible = true; }; }
+/* half-float -> display byte, worked out once per exposure (65536 entries) instead of tone-mapping every channel of every pixel */
+let CAP_LUT = null, CAP_LUT_EX = NaN;
+function capLut(ex) { if (CAP_LUT && CAP_LUT_EX === ex) return CAP_LUT; const f = THREE.DataUtils.fromHalfFloat; const L = new Uint8ClampedArray(65536); for (let hh = 0; hh < 65536; hh++) { const v = f(hh); L[hh] = Number.isFinite(v) && v > 0 ? clamp(toSRGB(clamp(aces(v * ex), 0, 1)) * 255, 0, 255) : 0; } CAP_LUT = L; CAP_LUT_EX = ex; return L; }
 function renderCapture(cam, w = 960, hgt = 540, hideFn) {
   const RT = capTarget(w, hgt);
   cam.aspect = w / hgt; cam.updateProjectionMatrix();
@@ -279,7 +282,7 @@ function renderCapture(cam, w = 960, hgt = 540, hideFn) {
   for (const o of ov) o.visible = true; for (const c of CAST.CASTS) if (c.helper) c.helper.visible = c._hv; if (undo) undo();
   const buf = new Uint16Array(w * hgt * 4); renderer.readRenderTargetPixels(RT, 0, 0, w, hgt, buf);
   const cv = document.createElement('canvas'); cv.width = w; cv.height = hgt; const c2 = cv.getContext('2d'); const img = c2.createImageData(w, hgt); const ex = renderer.toneMappingExposure; const f = THREE.DataUtils.fromHalfFloat;
-  for (let y = 0; y < hgt; y++) for (let x = 0; x < w; x++) { const si = ((hgt - 1 - y) * w + x) * 4, di = (y * w + x) * 4; for (let k = 0; k < 3; k++) img.data[di + k] = clamp(toSRGB(clamp(aces(f(buf[si + k]) * ex), 0, 1)) * 255, 0, 255); img.data[di + 3] = 255; }
+  const LUT = capLut(ex); void f; const D8 = img.data; for (let y = 0; y < hgt; y++) { let si = (hgt - 1 - y) * w * 4, di = y * w * 4; for (let x = 0; x < w; x++, si += 4, di += 4) { D8[di] = LUT[buf[si]]; D8[di + 1] = LUT[buf[si + 1]]; D8[di + 2] = LUT[buf[si + 2]]; D8[di + 3] = 255; } }
   c2.putImageData(img, 0, 0); return cv;
 }
 const toBlob = (cv, q = 0.86) => new Promise((r) => cv.toBlob((b) => r(b), 'image/jpeg', q));
@@ -1149,7 +1152,7 @@ root.append(feedEl); btnFeed.onclick = () => { const on = feedEl.hidden; feedEl.
 /* when the quick model (gemini) fails or does not answer, say so in Activity and once on screen per minute - checks that depend on it are skipped */
 const AI_ERR = { last: 0 }; function aiErr(what, e) { const msg = 'Gemini (quick model) ' + (e ? 'failed' : 'did not answer') + ' during ' + what + (e ? ': ' + String((e && e.message) || e).slice(0, 160) : ' in time') + ' — that check was skipped'; console.warn('[gemini]', msg); try { feed('err', msg); } catch (x) { /* ok */ } const now = Date.now(); if (now - AI_ERR.last > 60000) { AI_ERR.last = now; try { toast(msg); } catch (x) { /* ok */ } } }
 SBX.aiErr = aiErr;
-function feed(kind, text) { const el = h('div', { class: 'ev ' + kind }); if (kind === 'tool') { const [a, ...b] = String(text).split('\n'); el.append(h('b', {}, a), b.length ? '\n' + b.join('\n') : ''); } else el.textContent = text; feedList.append(el); feedList.scrollTop = feedList.scrollHeight; SBX.log.push({ kind, text: String(text).slice(0, 600), t: Date.now() }); return el; }
+function feed(kind, text) { const el = h('div', { class: 'ev ' + kind }); if (kind === 'tool') { const [a, ...b] = String(text).split('\n'); el.append(h('b', {}, a), b.length ? '\n' + b.join('\n') : ''); } else el.textContent = text; feedList.append(el); feedList.scrollTop = feedList.scrollHeight; SBX.log.push({ kind, text: String(text).slice(0, 600), t: Date.now() }); if (SBX.log.length > 3000) SBX.log.splice(0, SBX.log.length - 3000); while (feedList.children.length > 300) feedList.firstChild.remove(); return el; }
 SBX.feed = feed;
 // voice
 btnVoice.onclick = async () => { ttsOn = !ttsOn; btnVoice.setAttribute('aria-pressed', String(ttsOn)); if (ttsOn) { try { if (SYN) SYN.speak(new SpeechSynthesisUtterance('')); } catch (e) { /* unlock audio on this click */ } if (!(await ensureVoice())) { ttsOn = false; btnVoice.setAttribute('aria-pressed', 'false'); toast('Voice is not available in this view'); } } else hushAll(); };
@@ -3402,7 +3405,7 @@ function eyes2dStep(dt) { for (const c of CAST.CASTS) { const E = c._eyes2d; if 
   const m = MINDS.get(c.id); let tgt = null; try { tgt = m && m.look ? mindLookPt(m, m.look) : null; } catch (x) { tgt = null; } if (!tgt) tgt = camera.getWorldPosition(new THREE.Vector3());
   for (const e of E.eyes) { const bn = c.bones[e.bone]; const bq = bn.getWorldQuaternion(new THREE.Quaternion()); const dW = e.dir.clone().applyQuaternion(bq), uW = e.U.clone().applyQuaternion(bq), vW = e.V.clone().applyQuaternion(bq); const pW = bn.localToWorld(e.cL.clone()); const to = tgt.clone().sub(pW).normalize();
     let gx = 0, gy = 0; if (to.dot(dW) > -0.1) { gx = clamp(to.dot(uW) * 1.6, -1, 1); gy = clamp(to.dot(vW) * 1.6, -1, 1); } gx = clamp(gx + E.sac[0], -1, 1); gy = clamp(gy + E.sac[1], -1, 1); const k = dt ? 1 - Math.exp(-dt * 10) : 1; e.gaze[0] += (gx - e.gaze[0]) * k; e.gaze[1] += (gy - e.gaze[1]) * k;
-    const key = e.gaze[0].toFixed(2) + '|' + e.gaze[1].toFixed(2) + '|' + E.blink.toFixed(2); if (key !== e.key) { e.key = key; drawEye2D(E, e); } } } catch (err) { console.warn('[drawn eyes]', c.id, err); removeEyes2D(c); } } }
+    const key = e.gaze[0].toFixed(2) + '|' + e.gaze[1].toFixed(2) + '|' + E.blink.toFixed(2); const tN = performance.now(); if (key !== e.key && (tN - (e.drawn || 0) > 33 || E.blinkT)) { e.key = key; e.drawn = tN; drawEye2D(E, e); } } } catch (err) { console.warn('[drawn eyes]', c.id, err); removeEyes2D(c); } } }
 /* WHICH EYES SUIT THIS FACE - decided by looking, not by a rule: Gemini looks at the built character's face and says whether round 3D eyeballs
    sit naturally (a flatter face around the eyes, like a human's, or eyes that really bulge out, like a spider's or a frog's) or whether the
    eyes should be drawn on the skin (a strongly curved / round head where the eyes do not bulge: eyeballs would poke out or float). */
@@ -4121,7 +4124,8 @@ function chkFingerCollide(info) { info._fc = ((info._fc || 0) + 1) % 3; if (info
 function chkClampReach(info, pa, T) { const near = []; scene.traverse((o) => { if (o.isMesh && o.visible && !o.isSkinnedMesh && o.geometry && !o.isInstancedMesh) { let p = o; while (p && p !== info.root) p = p.parent; if (!p) near.push(o); } }); const d = T.clone().sub(pa), L = d.length(); if (L < 1e-4 || near.length > 4000) return T; _rc.set(pa, d.divideScalar(L)); _rc.far = L; const hit = _rc.intersectObjects(near, false)[0]; return hit ? pa.clone().addScaledVector(d, Math.max(0, hit.distance - 0.04)) : T; }
 function chkApply(t, dt) { for (const info of CHK.list.values()) try { chkApply1(info, t, dt); } catch (e) { if (!info._warned) { info._warned = true; console.warn('[character check] animate', info.root.name, e); } } }
 /* every change below is flagged as it is made and undone after the frame, even if something fails half-way: nothing can pile up and spin */
-function chkApply1(info, t, dt) { { if (!info.root.visible && info.root !== ALT.root) return; const ph = info.ph + t;
+const _CKV = new THREE.Vector3();
+function chkApply1(info, t, dt) { { if (!info.root.visible && info.root !== ALT.root) return; try { if (info.root !== ALT.root && info.root.getWorldPosition(_CKV).distanceTo(camera.position) > 45) return; } catch (e) { /* ok */ } /* too far to see: skipped */ const ph = info.ph + t;
     // fingers: relaxed curl that breathes, a little ripple across the hand, and a grip when the hand holds something
     for (const f of info.fingers) { if (!f.rest) { f.rest = f.b.quaternion.clone(); f.own = info.root === ALT.root || /^Body_/.test(f.b.name); } if (f.own || (f.lastR && f.b.quaternion.angleTo(f.lastR) < 1e-5)) f.b.quaternion.copy(f.rest); /* nothing else animates this finger: always start from its rest pose, so nothing can pile up */ f.q0.copy(f.b.quaternion); const hold = f.b.parent && f.b.parent.children.some((c) => !c.isBone && c.type !== 'Bone' && (c.isMesh || c.isGroup)) ? 0.7 : 0; const base = f.thumb ? 0.18 : 0.22 + 0.06 * f.depth, rip = (info.root === ALT.root || info.root.userData.calmHands) ? 0 : 0.07 * Math.sin(ph * 1.3 - f.idx * 0.6) + 0.04 * Math.sin(ph * 0.47 + f.depth); /* Caine's hands rest still when idle */
       let cv = base + rip + hold * (f.thumb ? 0.35 : 0.9); const C = (info.ctl && info.ctl[f.side]) || chkAutoPose(info, f.side); /* the AI's own hand pose, else the hand pose that fits the animation playing */ if (C && (!C.until || performance.now() < C.until)) { const tv = C[f.kind] !== undefined ? C[f.kind] : C.all; if (tv !== undefined) cv = tv * (f.thumb ? 1.1 : 1.45) + rip * 0.3; } else if (C) delete info.ctl[f.side];

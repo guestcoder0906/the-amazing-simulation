@@ -1,6 +1,7 @@
 // ===================== SANDBOX · grey platform world, asset library (word-embedding search), Ollo, the in-world AI (Claude Opus 5.5) =====================
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 import * as BGU from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 window.__SBX_EXPECT = true;
@@ -3270,7 +3271,7 @@ const EYEKIND = (() => { try { return JSON.parse(localStorage.getItem('sbx_eyeki
 const EYEKIND_SAVE = () => { try { localStorage.setItem('sbx_eyekind', JSON.stringify(EYEKIND)); } catch (e) { /* ok */ } };
 function removeEyes2D(c) { const E = c && c._eyes2d; if (!E) return 'no drawn eyes'; for (const e of E.eyes) { try { e.mesh.parent && e.mesh.parent.remove(e.mesh); e.mesh.geometry.dispose(); e.mesh.material.dispose(); e.tex.dispose(); } catch (x) { /* ok */ } } c._eyes2d = null; return 'removed'; }
 function addEyes2D(c, o = {}) { if (!c || !c.ch) throw new Error('No such character'); removeEyes3D(c); removeEyes2D(c); const list = eyeParts(c); if (!list.length) return 'no eye parts found (name them "left eye" / "right eye", or "eye")';
-  let spec = null; try { spec = c.ch.sculpt ? c.ch.sculpt(c.ch) : null; } catch (e) { spec = null; } const allPrims = []; for (const pt of (spec && Array.isArray(spec.parts) ? spec.parts : [])) for (const q0 of pt.prims || []) { const q = q0 && (q0.f ? q0 : q0.p); if (q && typeof q.f === 'function') allPrims.push(q); } if (!allPrims.length) return 'no sculpted surface to draw the eyes on';
+  const skins = (c.meshes || []).filter((m) => m && m.isMesh && m.geometry && m.geometry.attributes.position && m.geometry.attributes.normal && !/eye|mouth|teeth|tongue|liner|face_2d/i.test(m.name || '')); if (!skins.length) return 'no skin to put the eye texture on';
   const hi = headIdx(c); const headC = hi !== undefined ? new THREE.Vector3(...c.ch.bones[hi].pos) : null;
   const txt = [c.id, c.ch.name, c.ch.description || ''].join(' ').toLowerCase(); const st = { whiteC: o.white_color || '#f6f4ef', irisC: o.iris_color || '#' + new THREE.Color(c.ch.color || '#5a7a9a').multiplyScalar(0.75).getHexString(), pupilC: o.pupil_color || '#0b0b10', ir: clamp(o.iris_size ?? 0.5, 0.15, 0.85), pr: clamp(o.pupil_size ?? 0.5, 0.15, 0.9), slit: (o.pupil_shape || (/\b(cat|snake|reptile|lizard|dragon|goat|croc|serpent|demon)\b/.test(txt) ? 'slit' : 'round')) === 'slit' };
   const eyes = [];
@@ -3278,12 +3279,11 @@ function addEyes2D(c, o = {}) { if (!c || !c.ch) throw new Error('No such charac
     let bi = part.bones && part.bones.length ? c.ch.bi[part.bones[0]] : undefined; if (bi === undefined) bi = hi; if (bi === undefined || !c.bones[bi]) continue;
     let dir = new THREE.Vector3(0, 0, 1); if (headC) { const d = ctr.clone().sub(headC); d.y *= 0.35; if (d.lengthSq() > 1e-8) dir = d.normalize().add(new THREE.Vector3(0, 0, 0.8)).normalize(); } /* the eye looks out of the head where it sits (front eyes forward, side eyes sideways) */
     const up0 = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0); const U = new THREE.Vector3().crossVectors(up0, dir).normalize(), V = new THREE.Vector3().crossVectors(dir, U).normalize();
-    const w = Math.max(half.x, half.y, half.z * 0.6) * 2.3, seg = 10, far = w * 1.5 + half.length() * 2; const off = Math.max(0.0008, w * 0.03); const bp = c.ch.bones[bi].pos; /* bind space -> the bone's own space (rest rotations are identity: a translation) */
-    const near = allPrims.filter((q) => { const b = q.box; if (!okBox(b)) return true; let d2 = 0; for (let k = 0; k < 3; k++) { const v = ctr.getComponent(k); const e = v < b[0][k] ? b[0][k] - v : v > b[1][k] ? v - b[1][k] : 0; d2 += e * e; } return d2 <= (far * 1.6) ** 2; }); if (!near.length) continue;
-    const sdf = (x, y, z) => { let d = Infinity; for (const q of near) { const v = q.f(x, y, z); if (v < d) d = v; } return d; }; const eps = Math.max(1e-5, w * 0.002);
-    const geo = new THREE.PlaneGeometry(w, w, seg, seg); const P = geo.attributes.position; let hits = 0;
-    for (let k = 0; k < P.count; k++) { const lp = ctr.clone().addScaledVector(U, P.getX(k)).addScaledVector(V, P.getY(k)); const o0 = lp.clone().addScaledVector(dir, far); let t = 0, hit = null; for (let it = 0; it < 96 && t < far * 2; it++) { const q = o0.clone().addScaledVector(dir, -t); const v = sdf(q.x, q.y, q.z); if (v < eps) { hit = q; break; } t += Math.max(v * 0.8, eps); } let pb; if (hit) { hits++; pb = hit.addScaledVector(dir, off); } else pb = lp.addScaledVector(dir, off); P.setXYZ(k, pb.x - bp[0], pb.y - bp[1], pb.z - bp[2]); }
-    if (hits / P.count < 0.3) { geo.dispose(); continue; } P.needsUpdate = true; geo.computeVertexNormals(); geo.computeBoundingSphere();
+    const w = Math.max(half.x, half.y, half.z * 0.6) * 2.3; const bp = c.ch.bones[bi].pos; /* bind space -> the bone's own space (rest rotations are identity: a translation) */
+    const rot = new THREE.Euler().setFromRotationMatrix(new THREE.Matrix4().makeBasis(U, V, dir)); const size = new THREE.Vector3(w, w, Math.max(half.z * 2.5, w * 0.9));
+    const parts = []; for (const sk of skins) { try { const proxy = new THREE.Mesh(sk.geometry); proxy.updateMatrixWorld(true); const dg = new DecalGeometry(proxy, ctr, rot, size); if (dg.attributes.position && dg.attributes.position.count) parts.push(dg); else dg.dispose(); } catch (e) { /* this mesh is not near the eye */ } }
+    if (!parts.length) continue; let geo = parts.length > 1 ? BGU.mergeGeometries(parts, false) : parts[0]; if (parts.length > 1) for (const g0 of parts) g0.dispose(); if (!geo) continue;
+    { const P = geo.attributes.position, N = geo.attributes.normal; const off = Math.max(0.0003, w * 0.004); for (let k = 0; k < P.count; k++) P.setXYZ(k, P.getX(k) + (N ? N.getX(k) * off : 0) - bp[0], P.getY(k) + (N ? N.getY(k) * off : 0) - bp[1], P.getZ(k) + (N ? N.getZ(k) * off : 0) - bp[2]); P.needsUpdate = true; geo.computeBoundingSphere(); }
     const cv = document.createElement('canvas'); cv.width = cv.height = 128; const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
     const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, toneMapped: false, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(geo, mat); mesh.name = 'Eye2D_' + String(part.id).replace(/\s+/g, '_'); mesh.renderOrder = 3; c.bones[bi].add(mesh);

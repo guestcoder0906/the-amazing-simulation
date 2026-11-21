@@ -2521,7 +2521,7 @@ window.__onSimHeard = (j) => { try { if (!j) return; const parts = []; if (j.sou
 let DICT = null, dictOn = false, dictBuf = '', dictTimer = 0, dictMeta = null;
 async function loadDict() { if (DICT) return DICT; try { DICT = await window.claude?.use?.('dictation'); } catch (e) { DICT = null; } if (!DICT) { micBtn.hidden = true; return null; }
   DICT.onPartial(({ text }) => { chatIn.placeholder = text ? '🎙 ' + text : 'Listening…'; });
-  DICT.onFinal(({ text, analysis }) => { if (VOICE.speaking || performance.now() < (VOICE.until || 0)) return; if (analysis) dictMeta = analysis; if (!text) { if (analysis && analysis.sounds) { try { brainLog('event', 'you heard sounds near the player (heard through Gemini): ' + analysis.sounds); } catch (e) { /* ok */ } } return; } dictBuf += (dictBuf ? ' ' : '') + text; chatIn.placeholder = 'Listening…'; clearTimeout(dictTimer); dictTimer = setTimeout(flushDict, 700); });
+  DICT.onFinal(({ text, analysis }) => { if (text && isEcho(text)) return; /* only the AI's own voice coming back through the speakers is ignored: the player is heard even while an AI talks */ if (analysis) dictMeta = analysis; if (!text) { if (analysis && analysis.sounds) { try { brainLog('event', 'you heard sounds near the player (heard through Gemini): ' + analysis.sounds); } catch (e) { /* ok */ } } return; } dictBuf += (dictBuf ? ' ' : '') + text; chatIn.placeholder = 'Listening…'; clearTimeout(dictTimer); dictTimer = setTimeout(flushDict, 700); });
   DICT.onState(({ state }) => { dictOn = state === 'listening'; micBtn.setAttribute('aria-pressed', String(dictOn)); if (!dictOn) { chatIn.placeholder = 'Say something to Ollo…'; flushDict(); } });
   return DICT; }
 function flushDict() { clearTimeout(dictTimer); const t = dictBuf, meta = dictMeta; dictBuf = ''; dictMeta = null; if (t.trim()) playerSays(t, 'voice', meta); }
@@ -4553,6 +4553,14 @@ async function vcStart() { if (VC.on) return; VC.on = true; vcBtn.setAttribute('
   const r = VC.rec = new SR(); r.continuous = true; r.interimResults = false; r.lang = navigator.language || 'en-US';
   r.onresult = (e) => { for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) { const t = e.results[i][0].transcript; if (VOICE.speaking) continue; VC.level = clamp((VC.peak || 0.05) / 0.06, 0.4, 2.2); VC.peak = 0; playerSays(t, 'voice'); } };
   r.onend = () => { if (VC.on && VC.rec === r) { try { r.start(); } catch (e) { /* ok */ } } }; try { r.start(); } catch (e) { toast('Could not start the microphone'); vcStop(); } }
+/* ECHO, NOT THE PLAYER: what the AIs say out loud is remembered for a little while; a heard phrase that is mostly those same words is the
+   speakers coming back into the microphone and is ignored. Everything else is the player, even when they talk while an AI is speaking. */
+const SPOKEN = [];
+const echoWords = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/).filter((w) => w.length > 1);
+function noteSpoken(t) { try { SPOKEN.push({ t: performance.now(), w: new Set(echoWords(t)) }); while (SPOKEN.length > 12) SPOKEN.shift(); } catch (e) { /* ok */ } }
+function isEcho(text) { const ws = echoWords(text); if (!ws.length) return false; const now = performance.now(); const recent = SPOKEN.filter((x) => now - x.t < 25000); if (!recent.length) return false; let best = 0; for (const x of recent) { let hit = 0; for (const w of ws) if (x.w.has(w)) hit++; best = Math.max(best, hit / ws.length); } return best >= 0.6; }
+try { const _ov = olloVoice; olloVoice = function (text, ...a) { noteSpoken(text); return _ov.call(this, text, ...a); }; } catch (e) { /* ok */ }
+try { const _mv = mindVoice; mindVoice = function (m, text, ...a) { noteSpoken(text); return _mv.call(this, m, text, ...a); }; } catch (e) { /* ok */ }
 function vcStop() { VC.on = false; vcBtn.setAttribute('aria-pressed', 'false'); vcBtn.classList.remove('vc-talk'); try { if (VC.rec) { const r = VC.rec; VC.rec = null; r.stop(); } } catch (e) { /* ok */ } try { if (DICT && dictOn) DICT.stop().catch(() => {}); } catch (e) { /* ok */ } try { VC.stream && VC.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ok */ } VC.stream = null; VC.an = null; }
 { const _fl = flushDict; flushDict = function () { VC.level = clamp((VC.peak || 0.05) / 0.06, 0.4, 2.2); VC.peak = 0; return _fl(); }; }
 const vcBtn = h('button', { type: 'button', 'aria-pressed': 'false', title: 'Voice chat: talk out loud — every AI near you hears you (and each other) by distance, and remembers it' }, '🎙 Voice chat');

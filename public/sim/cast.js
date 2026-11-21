@@ -3760,11 +3760,16 @@ RPC.buildCapsules = (ch) => {
   if (ch._caps) return ch._caps;
   if (ch.capsFixed) { ch._caps = ch.capsFixed.map((c) => ({ ...c, a: c.a.slice(), b: c.b.slice() })); return ch._caps; } // (a character whose solid shape is pinned)
   const pts = ch.bones.map(() => []);
+  /* AI-made characters (ch._aiMade): the sculpted body is always solid, whatever the character is called (a name like "Winged ..." or
+     "... Spots" used to make the WHOLE body non-solid), and skin shared between bones counts for both, so smooth joints have no
+     collision gaps; every vertex is used and the radius covers more of the part. The shipped cast keeps its exact shape. */
+  const ai = !!ch._aiMade;
   for (const m of ch.meshes) {
-    if (NONSOLID.test(m.name)) continue;
+    if (NONSOLID.test(m.name) && !(ai && m.mat && m.mat.sculpted)) continue;
     const gh = ch.capGhost && ch.capGhost[m.name]; if (gh) { const gb = ch.bi[gh.bone]; for (let v = 0; v < gh.P.length; v += 2) pts[gb].push(gh.P[v]); continue; } // (a part too light to be solid, e.g. a hanging tag: the points that stand in for it)
     for (let v = 0; v < m.P.length / 3; v++) {
       let best = -1, bw = 0; for (let k = 0; k < 4; k++) { const w = m.SW[v * 4 + k]; if (w > bw) { bw = w; best = m.SI[v * 4 + k]; } }
+      if (ai) { const p3 = [m.P[v * 3], m.P[v * 3 + 1], m.P[v * 3 + 2]]; for (let k = 0; k < 4; k++) { const w = m.SW[v * 4 + k]; if (w >= 0.4) pts[m.SI[v * 4 + k]].push(p3); } continue; }
       if (bw >= 0.55 && v % 2 === 0) pts[best].push([m.P[v * 3], m.P[v * 3 + 1], m.P[v * 3 + 2]]);
     }
   }
@@ -3775,7 +3780,7 @@ RPC.buildCapsules = (ch) => {
     let c = [0, 0, 0]; for (const p of P) c = add(c, p); c = mul(c, 1 / P.length);
     const ts = [], rs = [];
     for (const p of P) { const d = sub(p, c), t = dot(d, dir); ts.push(t); rs.push(len(sub(d, mul(dir, t)))); }
-    rs.sort((x, y) => x - y); const r = Math.max(0.003, rs[Math.floor(0.85 * (rs.length - 1))]);
+    rs.sort((x, y) => x - y); const r = Math.max(0.003, rs[Math.floor((ai ? 0.93 : 0.85) * (rs.length - 1))]);
     const tmin = Math.min(...ts), tmax = Math.max(...ts);
     let ta = tmin + r * 0.75, tb = tmax - r * 0.75; if (ta > tb) ta = tb = (tmin + tmax) / 2;
     caps.push({ bone: i, name: b.name, region: b.region, a: sub(add(c, mul(dir, ta)), b.pos), b: sub(add(c, mul(dir, tb)), b.pos), r });

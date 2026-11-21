@@ -52,10 +52,12 @@
       worker.onerror = function (e) { state = 'failed'; lastErr = String(e && e.message || 'worker error'); emit(); pending.forEach(function (p) { p.rej(new Error(lastErr)); }); pending.clear(); };
       worker.postMessage({ type: 'load', device: dev });
     };
-    // The voice model runs on the CPU (compact WASM q8 model, multi-threaded when the page is cross-origin isolated), never on the GPU:
-    // its WebGPU fp32 model took a few hundred MB of GPU memory next to the 3D game's WebGL and could crash the tab once it loaded.
+    // WebGPU only on roomy desktops (its fp32 model is larger); everyone else gets the compact WASM model
     var forced = (/[?&]nvdevice=(wasm|webgpu)/.exec(location.search) || [])[1]; if (forced) { go(forced); return; } // debug override
-    go('wasm');
+    var roomy = !(navigator.deviceMemory < 8) && !/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
+    if (roomy && navigator.gpu && navigator.gpu.requestAdapter) {
+      navigator.gpu.requestAdapter().then(function (a) { go(a ? 'webgpu' : 'wasm'); }, function () { go('wasm'); });
+    } else go('wasm');
   }
 
   function gen(text, voice, speed, shape) {
@@ -67,8 +69,7 @@
       var cv = CUSTOM_VOICES[voice];
       worker.postMessage({ type: 'gen', id: id, text: text, voice: voice, speed: Math.max(0.5, Math.min(2, speed || 1)), shape: shape || null, device: device,
         mix: cv ? cv.mix : null, seed: cv ? cv.seed : 0, vary: cv ? cv.vary : 0 });
-      /* the time a line gets grows with how many lines are queued ahead of it (it is made one after another), up to 3 minutes */
-      var ahead = pending.size - 1; setTimeout(function () { if (pending.has(id)) { pending.delete(id); rej(new Error('neural voice timeout')); } }, Math.min(180000, 45000 + Math.max(0, ahead) * 15000));
+      setTimeout(function () { if (pending.has(id)) { pending.delete(id); rej(new Error('neural voice timeout')); } }, 45000);
     });
   }
 
@@ -115,7 +116,7 @@
     if (show && prefs[0] === 'am_santa') lead = ['am_santa', 'am_michael', 'am_onyx']; /* Caine: mainly santa, with a clear, lively American voice (michael) and a little deep American (onyx) */ var deepOnly = /santa/.test(String(spec.blend || '')) || (spec.showman && spec.only_lead);
     if (!show && lead.length > 1) { var r = h % lead.length; lead = lead.slice(r).concat(lead.slice(0, r)); }
     var W = show && lead[0] === 'am_santa' && lead.length === 3 ? [0.5, 0.32, 0.18] : show && lead[0] === 'am_santa' && lead.length === 2 ? [0.65, 0.35] : show && lead.length === 1 ? [1] : show ? [0.55, 0.25, 0.20] : [0.55 + ((h >>> 3) % 10) / 100, 0.28, 0.17 - ((h >>> 3) % 10) / 100];
-    if (deepOnly) { lead = ['am_santa', 'am_michael', 'am_fenrir']; W = [0.6, 0.26, 0.14]; } /* Caine: the deep lead in front, with two American voices under it so the accent stays clearly American (the lead alone drifted British) */
+    if (deepOnly) { lead = lead.slice(0, 1); W = [1]; } /* Caine: the deep lead voice alone */
     var mix = lead.map(function (v, i) { return { voice: v, w: Math.max(0.05, W[i] || 0.1) }; });
     var voice = 'cv_' + String(key).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) + '_' + hash(JSON.stringify(mix)).toString(36);
     CUSTOM_VOICES[voice] = { mix: mix, seed: h, vary: 0.035 };

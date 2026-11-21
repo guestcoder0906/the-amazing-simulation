@@ -661,10 +661,16 @@ const aimQ = (c, i, dir) => { const a = restDir(c, i), b = dir.clone().normalize
   const ang = Math.acos(clamp(dt, -1, 1)); let q1 = new THREE.Quaternion().setFromAxisAngle(ax, ang); const q2 = new THREE.Quaternion().setFromAxisAngle(ax, -ang); if (a.clone().applyQuaternion(q2).dot(b) > a.clone().applyQuaternion(q1).dot(b)) q1 = q2; const a1 = a.clone().applyQuaternion(q1); return new THREE.Quaternion().setFromUnitVectors(a1, b).multiply(q1); };
 const restArm = (c, ch) => { const H = hangDir(c, c.ch.bones[ch[0]].name); return aimQ(c, ch[0], H.want); };
 const GEN_MOTIONS = {
+  /* A REAL WAVE, ON ANY RIG: the upper arm goes out to the side and a little up, turned at the shoulder so the elbow's own folding direction
+     (the way it bends in the bind pose: toward the front) points up; the elbow then folds the forearm up, and the hand waves side to side
+     from the elbow - so the arm bends the way an arm bends, never backwards, whatever axes the bones use */
   'Wave hello': { dur: 2.4, f(c, R, u) { const k = smooth(u * 5) * smooth((1 - u) * 5); const D = {}; const w = Math.sin(u * Math.PI * 6);
     const limb = R.arms[0] ? R.arms[0].L : R.front; if (limb) { const side = Math.sign(c.ch.bones[limb[0]].pos[0]) || 1; const rest = R.arms[0] ? restArm(c, limb) : new THREE.Quaternion();
-      const up = aimQ(c, limb[0], new THREE.Vector3(side * 0.5, 0.85, 0.2)); const q0 = rest.clone().slerp(up, k); D[limb[0]] = q0;
-      const osc = qAx(_AX.Z, side * 28 * w * k); if (limb[1] !== undefined) D[limb[1]] = osc.clone().multiply(q0); if (limb[2] !== undefined) D[limb[2]] = qAx(_AX.Z, side * 14 * Math.sin(u * Math.PI * 6 + 1) * k).multiply(osc).multiply(q0); }
+      const dirU = new THREE.Vector3(side * 0.82, 0.5, 0.18).normalize(); let qU = aimQ(c, limb[0], dirU);
+      /* turn the upper arm about its own length so the elbow folds upward (its bind-pose folding direction is the body's front) */ const flex0 = new THREE.Vector3(0, 0, 1).applyQuaternion(qU); const up = new THREE.Vector3(0, 1, 0); const want = up.clone().addScaledVector(dirU, -up.dot(dirU)).normalize(); const f0 = flex0.clone().addScaledVector(dirU, -flex0.dot(dirU)); if (f0.lengthSq() > 1e-6) { f0.normalize(); const ang = Math.atan2(new THREE.Vector3().crossVectors(f0, want).dot(dirU), f0.dot(want)); qU = new THREE.Quaternion().setFromAxisAngle(dirU, ang).multiply(qU); }
+      const q0 = rest.clone().slerp(qU, k); D[limb[0]] = q0;
+      if (limb[1] !== undefined) { const ax = new THREE.Vector3().crossVectors(dirU, want).normalize(); const qF = new THREE.Quaternion().setFromAxisAngle(ax, 78 * Math.PI / 180).multiply(qU); /* the elbow folds the forearm up */ const osc = qAx(_AX.Z, side * 24 * w); const qF2 = osc.clone().multiply(qF); D[limb[1]] = q0.clone().slerp(qF2, k);
+        if (limb[2] !== undefined) D[limb[2]] = D[limb[1]].clone().premultiply(qAx(_AX.Z, side * 12 * Math.sin(u * Math.PI * 6 + 1) * k)); } }
     else for (const i of R.neck.concat([R.head])) D[i] = qAx(_AX.Z, 14 * w * k / (R.neck.length + 1));
     if (R.head !== undefined && !D[R.head]) D[R.head] = qAx(_AX.Z, -8 * k).multiply(qAx(_AX.Y, 6 * k));
     return { D }; } },

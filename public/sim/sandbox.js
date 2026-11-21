@@ -2916,7 +2916,7 @@ function addMouth3D0(c, o = {}) { if (!c || !c.ch) throw new Error('No such char
         const ax = Math.abs(x); if (z < -mw * 0.45 || z > mw * 0.6 || ax > mw * 0.72 || y > mw * 0.36 || y < -mw * 0.95) continue;
         const dep = smooth(1 - Math.max(0, -z) / (mw * 0.45)); const below = forced !== null ? forced : (ax < mw * 0.5 ? (y < 0 ? 1 : 0) : smooth(0.5 - y / (mw * 0.12))); /* the two lips never share a vertex on the lip line: the mouth opens cleanly */
         const lat = smooth(1 - (ax - mw * 0.5) / (mw * 0.16)); /* lip weight fades out just past the corners */
-        const bandU = mw * 0.22, bandL = mw * 0.26; const lipW = dep * lat * (below < 0.5 ? smooth(1 - Math.max(0, y) / bandU) : smooth(1 - Math.max(0, -y) / bandL));
+        const carvedM = o.cavity && o.cavity.depth > 0; const bandU = mw * (carvedM ? 0.3 : 0.22), bandL = mw * (carvedM ? 0.55 : 0.26); /* a carved mouth has thick, rounded lips: the WHOLE lower lip moves with its edge (a thin band let the edge drop below the rest of the lip and fold the dark inside out under it) */ const lipW = dep * lat * (below < 0.5 ? smooth(1 - Math.max(0, y) / bandU) : smooth(1 - Math.max(0, -y) / bandL));
         /* lip weight is shared between neighbouring lip bones along the opening (overlapping tent curves): corner R, side R, middle, side L, corner L */
         const u = clamp(x / (mw * 0.5), -1, 1); const nodes = below < 0.5 ? [[-1, 4], [-0.54, 6], [0, 1], [0.54, 5], [1, 3]] : [[-1, 4], [-0.54, 8], [0, 2], [0.54, 7], [1, 3]];
         for (let k = 0; k < nodes.length - 1; k++) { const [u0, b0] = nodes[k], [u1, b1] = nodes[k + 1]; if (u >= u0 && u <= u1) { const tt = (u - u0) / (u1 - u0); Wadd.push([nb[b0], lipW * (1 - tt)], [nb[b1], lipW * tt]); break; } }

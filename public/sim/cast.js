@@ -3635,6 +3635,23 @@ function softenHinge(ch, mesh, ids) { try { const jbs = new Set(); for (const b 
     mesh.SI[v * 4] = jb; mesh.SW[v * 4] = t; mesh.SI[v * 4 + 1] = par; mesh.SW[v * 4 + 1] = 1 - t; mesh.SI[v * 4 + 2] = 0; mesh.SW[v * 4 + 2] = 0; mesh.SI[v * 4 + 3] = 0; mesh.SW[v * 4 + 3] = 0; }
   return mesh; } catch (e) { return mesh; } }
 RPC.hingeSplit = hingeSplit;
+/* SEPARATE ARMS WHERE THEY WOULD FUSE: the sculpt melts touching shapes together, so an arm resting against the torso fused into it (a web
+   of skin between arm and body). After the first sculpt, the engine looks at where parts touched: an arm (its IK chain: upper arm, forearm,
+   hand, fingers and everything on them) that touches the body anywhere other than at its own shoulder joint is sculpted as its OWN piece
+   and the body without it. Unlike the jaw it is not rigid: the piece is weighted across its own bones, so the elbow, wrist and fingers bend.
+   Arms that do not touch stay part of the one smooth skin. */
+function pieceSpec(spec, ids) { const S = new Set(ids); return { ...spec, parts: spec.parts.filter((q) => S.has(q.id)).map((q) => (S.has(q.parent) ? q : { ...q, parent: undefined, join: undefined })), carve: (spec.carve || []).filter((c) => c.parts && c.parts.every((x) => S.has(x))), tpose: (spec.tpose || []).filter((g) => Array.isArray(g.parts) && g.parts.every((x) => S.has(x))), rigid: (spec.rigid || []).filter((r) => r && S.has(r.part)), allow: [], conform: undefined }; }
+function restSpec(spec, ids) { const S = new Set(ids); const keep = spec.parts.filter((q) => !S.has(q.id)); const K = new Set(keep.map((q) => q.id)); return { ...spec, parts: keep, carve: (spec.carve || []).filter((c) => !c.parts || c.parts.every((x) => K.has(x))), tpose: (spec.tpose || []).filter((g) => !Array.isArray(g.parts) || g.parts.every((x) => K.has(x))), rigid: (spec.rigid || []).filter((r) => r && K.has(r.part)) }; }
+function armGroups(ch, spec, skip) { const out = []; try { const B = ch.bones; const desc = (i) => { const set = new Set([i]); let grew = true; while (grew) { grew = false; B.forEach((b, j) => { if (b && set.has(b.parent) && !set.has(j)) { set.add(j); grew = true; } }); } return set; };
+  for (const k of ch.ik || []) { if (!k || k.kind !== 'arm') continue; const u = ch.bi[k.upper]; if (u === undefined) continue; const bs = new Set([...desc(u)].map((i) => B[i].name));
+    const ids = new Set(spec.parts.filter((q) => q && Array.isArray(q.bones) && q.bones.length && q.bones.every((n) => bs.has(n)) && !skip.has(q.id)).map((q) => q.id)); let grew = true; while (grew) { grew = false; for (const q of spec.parts) if (q && !ids.has(q.id) && ids.has(q.parent) && !skip.has(q.id)) { ids.add(q.id); grew = true; } }
+    if (ids.size && ids.size < spec.parts.length) out.push([...ids]); } } catch (e) { /* none */ } return out; }
+function aiSculpt(ch, spec, so) { const build = (sp, o) => RPC.sculpt.build(ch, sp, o || so); const hs = hingeSplit(ch, spec); const hingeIds = hs ? hs.ids : [];
+  let main = build(hingeIds.length ? restSpec(spec, hingeIds) : spec); let stats = { ...main.stats }; let mesh = main.mesh;
+  const AG = armGroups(ch, spec, new Set(hingeIds)); const fused = AG.filter((g) => (main.stats.contacts || []).some((e) => { const [a, b] = String(e.pair || '').split('|'); return g.includes(a) !== g.includes(b); }));
+  if (fused.length) { try { const body = build(restSpec(spec, [...hingeIds, ...fused.flat()])); let m = body.mesh; for (const g of fused) { const r = build(pieceSpec(spec, g), { ...so, targetTris: so.targetTris ? Math.max(3000, Math.round(so.targetTris * 0.25)) : undefined }); m = mergeMeshes(m, r.mesh); } mesh = m; stats = { ...body.stats, armsSeparate: fused }; ch.separateArms = fused; } catch (e) { console.warn('[arms] separate arm sculpt failed, keeping one skin', ch.id, e); } }
+  if (hs) { const r2 = build(pieceSpec(spec, hingeIds), { ...so, targetTris: so.targetTris ? Math.max(2000, Math.round(so.targetTris * 0.2)) : undefined }); mesh = mergeMeshes(mesh, softenHinge(ch, r2.mesh, hingeIds)); stats = { ...stats, hinge: { parts: hingeIds, tris: r2.stats.tris } }; ch.hingeParts = hingeIds; }
+  return { mesh, stats }; }
 RPC.build = (id) => {
   const ch = RPC.builders[id]();
   if (ch.sculpt && RPC.sculpt) {
@@ -3642,8 +3659,8 @@ RPC.build = (id) => {
     try {
       const spec = ch.sculpt(ch); let mesh = null; const D = RPC.SCULPT_DATA && RPC.SCULPT_DATA[id];
       if (D && D.bytes && !RPC.SCULPT_LIVE) { const sig = RPC.sculpt.signature(ch, spec); if (D.head.sig === sig || D.trust) mesh = RPC.organic.unpack(D.head, D.bytes); /* trust: shipped data made from this exact, unchanged builder (its fingerprint came from an older engine) */ else console.warn('sculpt data out of date for', id, D.head.sig, sig); }
-      if (!mesh) { const so = RPC.SCULPT_LIVE ? {} : { voxel: Math.max(spec.voxel, 0.0042), targetTris: Math.min(spec.targetTris, 26000) }; const hs = ch._aiMade ? hingeSplit(ch, spec) : null; /* the shipped cast (Meno, Klora...) keeps its own jaws exactly */ let done = false;
-        if (hs) { try { const r1 = RPC.sculpt.build(ch, hs.main, so); const r2 = RPC.sculpt.build(ch, hs.hinge, { ...so, targetTris: so.targetTris ? Math.max(2000, Math.round(so.targetTris * 0.2)) : undefined }); mesh = mergeMeshes(r1.mesh, softenHinge(ch, r2.mesh, hs.ids)); ch.sculptStats = { ...r1.stats, tris: r1.stats.tris + r2.stats.tris, verts: r1.stats.verts + r2.stats.verts, hinge: { parts: hs.ids, tris: r2.stats.tris } }; ch.hingeParts = hs.ids; done = true; } catch (e) { console.warn('[hinge] separate jaw sculpt failed, using one skin', id, e); } }
+      if (!mesh) { const so = RPC.SCULPT_LIVE ? {} : { voxel: Math.max(spec.voxel, 0.0042), targetTris: Math.min(spec.targetTris, 26000) }; let done = false; /* AI-made characters: separate hinged jaws and, where they would fuse, separate arms (the shipped cast keeps its own skin exactly) */
+        if (ch._aiMade) { try { const out = aiSculpt(ch, spec, so); mesh = out.mesh; ch.sculptStats = out.stats; done = true; } catch (e) { console.warn('[sculpt] separate pieces failed, using one skin', id, e); } }
         if (!done) { const r = RPC.sculpt.build(ch, spec, so); mesh = r.mesh; ch.sculptStats = r.stats; } }
       RPC.sculpt.apply(ch, spec, mesh); ch.sculptSpec = spec;
       // the pose the limbs were sculpted and weight-painted in (arms/flippers/wings out, legs apart), listed right after the rest pose

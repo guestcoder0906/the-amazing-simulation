@@ -3646,10 +3646,22 @@ function armGroups(ch, spec, skip) { const out = []; try { const B = ch.bones; c
   for (const k of ch.ik || []) { if (!k || k.kind !== 'arm') continue; const u = ch.bi[k.upper]; if (u === undefined) continue; const bs = new Set([...desc(u)].map((i) => B[i].name));
     const ids = new Set(spec.parts.filter((q) => q && Array.isArray(q.bones) && q.bones.length && q.bones.every((n) => bs.has(n)) && !skip.has(q.id)).map((q) => q.id)); let grew = true; while (grew) { grew = false; for (const q of spec.parts) if (q && !ids.has(q.id) && ids.has(q.parent) && !skip.has(q.id)) { ids.add(q.id); grew = true; } }
     if (ids.size && ids.size < spec.parts.length) out.push([...ids]); } } catch (e) { /* none */ } return out; }
+/* ANY BODY PART, NOT ONLY ARMS: every place the first sculpt shows two parts touching that should not (not a part and its parent at their
+   own joint) is traced through the character's own part tree: the branch on each side below the parts' common ancestor is found, and the
+   smaller one - the limb, tail, ear, wing, leg... never the main body - is sculpted as its own piece, weighted across its own bones so it
+   still bends. Overlapping branches are merged; at most 6 pieces. */
+function fusedGroups(spec, contacts, skip) { const out = []; try { const byId = new Map(spec.parts.map((q) => [q && q.id, q])); const total = spec.parts.length;
+  const anc = (id) => { const a = []; let q = byId.get(id), n = 0; while (q && n++ < 200) { a.push(q.id); q = q.parent ? byId.get(q.parent) : null; } return a; };
+  const sub = (id) => { const S = new Set([id]); let grew = true; while (grew) { grew = false; for (const q of spec.parts) if (q && !S.has(q.id) && S.has(q.parent)) { S.add(q.id); grew = true; } } return S; };
+  const branch = (path, common) => { const k = path.indexOf(common); return k > 0 ? path[k - 1] : null; };
+  for (const e of contacts || []) { const [a, b] = String(e.pair || '').split('|'); if (!byId.has(a) || !byId.has(b) || skip.has(a) || skip.has(b)) continue; const A = anc(a), Bp = anc(b); const common = A.find((x) => Bp.includes(x)) || null;
+    const ca = common ? branch(A, common) : A[A.length - 1], cb = common ? branch(Bp, common) : Bp[Bp.length - 1]; const opts = [ca, cb].filter(Boolean).map((r) => sub(r)).filter((S) => S.size < total * 0.6 && ![...S].some((x) => skip.has(x))); if (!opts.length) continue;
+    const pick = opts.sort((x, y) => x.size - y.size)[0]; const hit = out.find((g) => [...pick].some((x) => g.has(x))); if (hit) for (const x of pick) hit.add(x); else out.push(pick); }
+  } catch (e) { /* none */ } return out.slice(0, 6).map((S) => [...S]); }
 function aiSculpt(ch, spec, so) { const build = (sp, o) => RPC.sculpt.build(ch, sp, o || so); const hs = hingeSplit(ch, spec); const hingeIds = hs ? hs.ids : [];
   let main = build(hingeIds.length ? restSpec(spec, hingeIds) : spec); let stats = { ...main.stats }; let mesh = main.mesh;
-  const AG = armGroups(ch, spec, new Set(hingeIds)); const fused = AG.filter((g) => (main.stats.contacts || []).some((e) => { const [a, b] = String(e.pair || '').split('|'); return g.includes(a) !== g.includes(b); }));
-  if (fused.length) { try { const body = build(restSpec(spec, [...hingeIds, ...fused.flat()])); let m = body.mesh; for (const g of fused) { const r = build(pieceSpec(spec, g), { ...so, targetTris: so.targetTris ? Math.max(3000, Math.round(so.targetTris * 0.25)) : undefined }); m = mergeMeshes(m, r.mesh); } mesh = m; stats = { ...body.stats, armsSeparate: fused }; ch.separateArms = fused; } catch (e) { console.warn('[arms] separate arm sculpt failed, keeping one skin', ch.id, e); } }
+  const fused = fusedGroups(spec, main.stats.contacts, new Set(hingeIds)); /* any parts that touched where they should not, decided from this character's own part tree */
+  if (fused.length) { try { const body = build(restSpec(spec, [...hingeIds, ...fused.flat()])); let m = body.mesh; for (const g of fused) { const r = build(pieceSpec(spec, g), { ...so, targetTris: so.targetTris ? Math.max(3000, Math.round(so.targetTris * 0.25)) : undefined }); m = mergeMeshes(m, r.mesh); } mesh = m; stats = { ...body.stats, separatePieces: fused }; ch.separatePieces = fused; } catch (e) { console.warn('[parts] separate piece sculpt failed, keeping one skin', ch.id, e); } }
   if (hs) { const r2 = build(pieceSpec(spec, hingeIds), { ...so, targetTris: so.targetTris ? Math.max(2000, Math.round(so.targetTris * 0.2)) : undefined }); mesh = mergeMeshes(mesh, softenHinge(ch, r2.mesh, hingeIds)); stats = { ...stats, hinge: { parts: hingeIds, tris: r2.stats.tris } }; ch.hingeParts = hingeIds; }
   return { mesh, stats }; }
 RPC.build = (id) => {

@@ -3974,6 +3974,13 @@ function safeWarn() { return new Promise((res) => { const bg = h('div', { role: 
 btnSafe.onclick = async () => { if (ALT.on) { setSafe(true); toast('Copyright safe on — Ollo is back'); return; } if (!(await safeWarn())) return; btnSafe.disabled = true; btnSafe.textContent = '© Loading…';
   try { await altLoad(); setSafe(false); toast('Copyright safe off — private use only'); } catch (e) { console.error('[copyright safe] the model did not load', e); setSafe(true); toast('The model could not be loaded'); } finally { btnSafe.disabled = false; } };
 setSafe(true);
+/* SPEECH BUBBLES ON / OFF: a toolbar switch (remembered in this browser). Off hides every speech bubble; voices and the chat are unchanged. */
+{ const st = document.createElement('style'); st.textContent = 'body.sbx-nobubbles .bubble { display: none !important; }'; document.head.appendChild(st); }
+const btnBubbles = h('button', { type: 'button', 'aria-pressed': 'true', title: 'Show or hide the speech bubbles over characters (voices and the chat stay on)' }, '💬 Bubbles: on'); barEl.querySelector('.bar-btns').append(btnBubbles);
+function setBubbles(on) { document.body.classList.toggle('sbx-nobubbles', !on); btnBubbles.setAttribute('aria-pressed', String(on)); btnBubbles.textContent = on ? '💬 Bubbles: on' : '💬 Bubbles: off'; try { localStorage.setItem('sbx_bubbles', on ? '1' : '0'); } catch (e) { /* ok */ } }
+btnBubbles.onclick = () => setBubbles(document.body.classList.contains('sbx-nobubbles'));
+try { setBubbles(localStorage.getItem('sbx_bubbles') !== '0'); } catch (e) { setBubbles(true); }
+SBX.setBubbles = setBubbles;
 // ---------------------------------------------------------------- 12. the library: the user's four sets (The Grounds, Circus Lobby, Dorm Hall, The Cellar), split
 // object by object (782 items), each its own searchable entry. The old assets are removed from the library (characters, animations,
 // AI creations, systems, scripts and saved worlds stay). Each set is one compressed pack loaded on first use; items are copied out of it.

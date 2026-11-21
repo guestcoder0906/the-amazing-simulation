@@ -69,7 +69,8 @@
       var cv = CUSTOM_VOICES[voice];
       worker.postMessage({ type: 'gen', id: id, text: text, voice: voice, speed: Math.max(0.5, Math.min(2, speed || 1)), shape: shape || null, device: device,
         mix: cv ? cv.mix : null, seed: cv ? cv.seed : 0, vary: cv ? cv.vary : 0 });
-      setTimeout(function () { if (pending.has(id)) { pending.delete(id); rej(new Error('neural voice timeout')); } }, 45000);
+      /* the time a line gets grows with how many lines are queued ahead of it (it is made one after another), up to 3 minutes */
+      var ahead = pending.size - 1; setTimeout(function () { if (pending.has(id)) { pending.delete(id); rej(new Error('neural voice timeout')); } }, Math.min(180000, 45000 + Math.max(0, ahead) * 15000));
     });
   }
 

@@ -314,7 +314,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       var msg = 'Gemini ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
       if (r.status === 503 || r.status === 405) { GEMINI_OFF = true; throw err('gemini_off', msg); }
       if (r.status === 410 || r.status === 404) throw err('model_unavailable', msg);
-      if (r.status === 429 || r.status === 529) { GEMINI_COOL = Date.now() + 20000; window.__geminiCoolUntil = GEMINI_COOL; throw err('rate_limited', msg); } /* no waiting: the next model in the chain answers now */
+      if (r.status === 429 || r.status === 529) { var cool = 20000; try { var mt = /retry in\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?/i.exec(msg); if (mt && (mt[1] || mt[2] || mt[3])) cool = ((+mt[1] || 0) * 3600 + (+mt[2] || 0) * 60 + (+mt[3] || 0)) * 1000; else if (/quota|per day|billing|free.?tier/i.test(msg)) cool = 600000; } catch (e) { /* ok */ } cool = Math.min(Math.max(cool, 20000), 6 * 3600000); if (Date.now() + cool > GEMINI_COOL) { GEMINI_COOL = Date.now() + cool; if (cool > 60000) console.warn('[gemini] quota used up - checks use Claude Haiku for ' + Math.round(cool / 60000) + ' min:', msg.slice(0, 200)); } window.__geminiCoolUntil = GEMINI_COOL; throw err('rate_limited', msg); } /* no waiting: the next model in the chain answers now */
       if (r.status >= 500) { last = err('rate_limited', msg); if (attempt >= 1) throw last; await new Promise(function (res) { setTimeout(res, 600); }); continue; }
       throw err('api_error', msg);
     }
@@ -519,10 +519,18 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     }
     throw last;
   }
+  /* every picture of one request together stays under ~2.4 MB (the server takes 4.5 MB per request, and text and base64 add to it):
+     pictures over 2048 px are scaled down, then all are re-encoded smaller step by step only while the total is still too big */
+  async function fitImages(blobs) { var MAX = 2400000, tot = function (a) { return a.reduce(function (s, b) { return s + (b.size || 0); }, 0); };
+    var big = blobs.some(function (b) { return /image\/(jpeg|png|webp)/.test(b.type || '') && b.size > 400000; }); if (tot(blobs) <= MAX && !big) return blobs;
+    var enc = async function (b, sc, q) { if (!/^image\//.test(b.type || '') || typeof createImageBitmap !== 'function') return b; var bm = await createImageBitmap(b); var k = Math.min(1, 2048 / Math.max(bm.width, bm.height)) * sc; var w = Math.max(64, Math.round(bm.width * k)), h = Math.max(64, Math.round(bm.height * k)); var cv = document.createElement('canvas'); cv.width = w; cv.height = h; var g = cv.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, w, h); g.drawImage(bm, 0, 0, w, h); try { bm.close(); } catch (e) { /* ok */ } var out = await new Promise(function (r) { cv.toBlob(r, 'image/jpeg', q); }); return out && out.size < b.size ? out : b; };
+    var sc = 1, q = 0.86, cur = blobs; for (var step = 0; step < 6; step++) { cur = await Promise.all(blobs.map(function (b) { return enc(b, sc, q); })); if (tot(cur) <= MAX) return cur; sc *= 0.8; q = Math.max(0.6, q - 0.06); } return cur; }
   async function toMsgs(messages, images) {
     var out = (messages || []).map(function (m) { return { role: m.role === 'assistant' ? 'assistant' : 'user', content: typeof m.content === 'string' ? [{ type: 'text', text: m.content || ' ' }] : (m.content || []) }; });
     var merged = []; for (var m of out) { var last = merged[merged.length - 1]; if (last && last.role === m.role) last.content = last.content.concat(m.content); else merged.push(m); }
-    if (images && images.length && merged.length) { var lu = merged[merged.length - 1]; for (var im of images) { try { var blob = im instanceof Blob ? im : await (await fetch(im)).blob(); lu.content.push({ type: 'image', source: { type: 'base64', media_type: blob.type || 'image/jpeg', data: await b64(blob) } }); } catch (e) { /* skip */ } } }
+    if (images && images.length && merged.length) { var lu = merged[merged.length - 1]; var blobs = []; for (var im of images) { try { blobs.push(im instanceof Blob ? im : await (await fetch(im)).blob()); } catch (e) { /* skip */ } }
+      try { blobs = await fitImages(blobs); } catch (e) { /* as they are */ }
+      for (var bl of blobs) { try { lu.content.push({ type: 'image', source: { type: 'base64', media_type: bl.type || 'image/jpeg', data: await b64(bl) } }); } catch (e) { /* skip */ } } }
     if (merged[0] && merged[0].role !== 'user') merged.unshift({ role: 'user', content: [{ type: 'text', text: '(continue)' }] });
     return merged;
   }

@@ -129,7 +129,9 @@ export default async function handler(req: Req, res: Res) {
   try {
     const started = Date.now();
     let up = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body: payload });
-    for (let a = 0; a < 3 && (up.status === 429 || up.status === 503 || up.status === 500); a++) {
+    // a used-up quota (a daily limit, billing) is not retried: waiting a few seconds never helps, and the game's next model answers at once
+    const spent = async (r: any) => { if (r.status !== 429) return false; try { const t = await r.clone().text(); return /quota|per day|billing|free.?tier|retry in \d+h/i.test(t); } catch { return false; } };
+    for (let a = 0; a < 3 && (up.status === 429 || up.status === 503 || up.status === 500) && !(await spent(up)); a++) {
       const wait = 1200 * 2 ** a;
       if (Date.now() - started + wait > 40000) break;
       await sleep(wait);

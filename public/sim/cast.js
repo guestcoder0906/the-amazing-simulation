@@ -1565,23 +1565,40 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
           for (let k = 0; k < 4; k++) { SIw[v * 4 + k] = top[k] ? top[k][0] : 0; SWw[v * 4 + k] = top[k] ? top[k][1] / sm : 0; }
         }
       }
-      /* A HEAD THAT TURNS AS ONE: bone heat lets the neck / chest bones (and the jaw's or ears' bones) reach well up into an AI-made head, so
-         turning the head squashed or twisted the face and skull. Here the head's skin keeps the neck's share only right at the neck joint
-         (fading out over the lowest part of the head), and a head part's skin drops head bones that are not its own (the jaw leaking into the
-         cheeks or brow, an ear into the skull) away from where those bones start. Only for AI-made characters; the shipped cast is unchanged. */
+      /* A HEAD THAT TURNS AS ONE (every AI-made character; the shipped cast keeps its own skin): bone heat lets the neck / chest bones (and a
+         jaw's, an ear's or an eye's bones) reach well into the face and skull, and the head's bone reach down into the chest - so turning
+         the head squashed, twisted or stretched the face and slid it against the eyes and mouth, which follow the head bone exactly.
+         Here every skin point near the head keeps a bone that is not its own part's only where it really meets the skin of a part that
+         owns that bone (the seam where head meets neck, the root of an ear), fading to none a short way from that seam. Distances are
+         measured on this character's own skin and scaled by its own head size - never from where a bone happens to start. */
       if (ch._aiMade) { try {
         const par = ch.bones.map((b) => b.parent); let hb = ch.bones.findIndex((b) => /^head$/i.test(b.name));
-        if (hb < 0) hb = ch.bones.findIndex((b) => /head|skull|cranium/i.test(b.name) && !/jaw|eye|ear|hair|hat|brow|lid|mouth|lip|tongue|teeth|horn|antenna/i.test(b.name));
+        if (hb < 0) hb = ch.bones.findIndex((b) => /head|skull|cranium/i.test(b.name) && !/jaw|eye|ear|hair|hat|brow|lid|mouth|lip|tongue|teeth|horn|antenna|neck/i.test(b.name));
+        if (hb < 0 && ch.face && ch.face.head && ch.bi[ch.face.head] !== undefined) hb = ch.bi[ch.face.head];
         if (hb >= 0) {
           const inSub = (i) => { for (let k = i, n = 0; k !== undefined && k >= 0 && n < 64; k = par[k], n++) if (k === hb) return true; return false; };
-          const headPart = partBones.map((bs) => bs.length > 0 && bs.every(inSub)); const hp = bones[hb].a; let R = 0;
-          for (let v = 0; v < nP; v++) if (headPart[vl[v]]) R = Math.max(R, Math.hypot(Pp[v * 3] - hp[0], Pp[v * 3 + 1] - hp[1], Pp[v * 3 + 2] - hp[2]));
-          const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-          if (R > 1e-4) { const keepOf = partBones.map((bs) => { const K = new Set([hb]); for (const b of bs) for (let k = b, n = 0; k !== undefined && k >= 0 && n < 64; k = par[k], n++) { K.add(k); if (k === hb) break; } return K; }); let nFix = 0;
-            for (let v = 0; v < nP; v++) { const p = vl[v]; if (!headPart[p]) continue; const K = keepOf[p]; const x = Pp[v * 3], y = Pp[v * 3 + 1], z = Pp[v * 3 + 2]; const tN = ss(R * 0.1, R * 0.32, Math.hypot(x - hp[0], y - hp[1], z - hp[2])); let sm = 0, ch1 = false;
-              for (let k = 0; k < 4; k++) { const w = SWw[v * 4 + k]; if (w <= 0) continue; const b = SIw[v * 4 + k]; if (K.has(b)) { sm += w; continue; } let f;
-                if (!inSub(b)) f = 1 - tN; else { const bp = bones[b].a; f = 1 - ss(R * 0.06, R * 0.22, Math.hypot(x - bp[0], y - bp[1], z - bp[2])); }
-                if (f < 1) { SWw[v * 4 + k] = w * f; ch1 = true; } sm += SWw[v * 4 + k]; }
+          const nPt = partBones.length; const headPart = partBones.map((bs) => bs.length > 0 && bs.every(inSub)); const skull = partBones.map((bs) => bs.includes(hb));
+          // the keep-set of a part: its own bones, and for a head part also the head bone and the bones between them
+          const keepOf = partBones.map((bs, p) => { const K = new Set(bs); if (headPart[p]) for (const b of bs) for (let k = b, n = 0; k !== undefined && k >= 0 && n < 64; k = par[k], n++) { K.add(k); if (k === hb) break; } return K; });
+          const owners = new Map(); partBones.forEach((bs, p) => { for (const b of bs) { if (!owners.has(b)) owners.set(b, new Set()); owners.get(b).add(p); } });
+          // head size: the box of the skull's skin (parts on the head bone itself), else of every head part
+          const box = (want) => { const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity]; let n = 0; for (let v = 0; v < nP; v++) if (want[vl[v]]) { n++; for (let k = 0; k < 3; k++) { const x = Pp[v * 3 + k]; if (x < lo[k]) lo[k] = x; if (x > hi[k]) hi[k] = x; } } return n ? { lo, hi } : null; };
+          const hbx = box(skull) || box(headPart);
+          if (hbx) { const H = Math.max(1e-3, Math.hypot(hbx.hi[0] - hbx.lo[0], hbx.hi[1] - hbx.lo[1], hbx.hi[2] - hbx.lo[2])); const b0 = H * 0.03, b1 = H * 0.2; const cs = b1;
+            const hb2 = box(headPart) || hbx; const lo = hb2.lo.map((x) => x - b1 * 1.5), hi = hb2.hi.map((x) => x + b1 * 1.5); const near = (v) => { for (let k = 0; k < 3; k++) { const x = Pp[v * 3 + k]; if (x < lo[k] || x > hi[k]) return false; } return true; };
+            const grid = new Map(); const key = (x, y, z) => Math.floor(x / cs) + ',' + Math.floor(y / cs) + ',' + Math.floor(z / cs);
+            for (let v = 0; v < nP; v++) if (near(v)) { const k = key(Pp[v * 3], Pp[v * 3 + 1], Pp[v * 3 + 2]); let a = grid.get(k); if (!a) grid.set(k, (a = [])); a.push(v); }
+            const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+            // how far is skin point v from the skin of a part that owns bone b (or, for a bone no part owns, from any skin that is not a head part's)
+            const seamDist = (v, b) => { if (!near(v)) return Infinity; const own = owners.get(b); if (!own && inSub(b) && headPart[vl[v]]) return Infinity; /* a head bone no part here owns (a jaw sculpted as its own piece, an eye): none of it on this skin */ const x = Pp[v * 3], y = Pp[v * 3 + 1], z = Pp[v * 3 + 2]; const cx = Math.floor(x / cs), cy = Math.floor(y / cs), cz = Math.floor(z / cs); let best = Infinity;
+              for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) { const a = grid.get((cx + i) + ',' + (cy + j) + ',' + (cz + k)); if (!a) continue; for (const u of a) { const q = vl[u]; if (own ? !own.has(q) : headPart[q] === headPart[vl[v]]) continue; const d = (Pp[u * 3] - x) ** 2 + (Pp[u * 3 + 1] - y) ** 2 + (Pp[u * 3 + 2] - z) ** 2; if (d < best) best = d; } }
+              return Math.sqrt(best); };
+            let nFix = 0;
+            for (let v = 0; v < nP; v++) { const p = vl[v]; if (p >= nPt) continue; const hp = headPart[p]; const K = keepOf[p]; let sm = 0, ch1 = false;
+              for (let k = 0; k < 4; k++) { const w = SWw[v * 4 + k]; if (w <= 0) continue; const b = SIw[v * 4 + k]; if (K.has(b)) { sm += w; continue; }
+                // a body part's skin only lets go of the HEAD's bones here (all of them well away from the head) (its pull from an arm or leg is the limb relax's business)
+                if (!hp && !inSub(b)) { sm += w; continue; }
+                const f = 1 - ss(b0, b1, seamDist(v, b)); if (f < 1) { SWw[v * 4 + k] = w * f; ch1 = true; } sm += SWw[v * 4 + k]; }
               if (!ch1) continue; nFix++;
               if (sm > 1e-6) for (let k = 0; k < 4; k++) SWw[v * 4 + k] /= sm; else { SIw[v * 4] = partBones[p][0]; SWw[v * 4] = 1; for (let k = 1; k < 4; k++) { SIw[v * 4 + k] = 0; SWw[v * 4 + k] = 0; } } }
             if (nFix) log.push('head kept whole ' + nFix); } }

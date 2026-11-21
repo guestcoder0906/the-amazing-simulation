@@ -1605,6 +1605,10 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
               if (sm > 1e-6) for (let k = 0; k < 4; k++) SWw[v * 4 + k] /= sm; else { SIw[v * 4] = partBones[p][0]; SWw[v * 4] = 1; for (let k = 1; k < 4; k++) { SIw[v * 4 + k] = 0; SWw[v * 4 + k] = 0; } } }
             if (nFix) log.push('head kept whole ' + nFix); } }
       } catch (e) { console.warn('[sculpt] head weights', e); } }
+      /* HARD PIECES: a part the design marks rigid: true (a phone's body, a helmet, a visor, a casing, armour, a hat, a shell) is not soft skin:
+         every bit of it follows its own (first) bone exactly, so it turns and moves as one solid piece and never bends, squashes or tears at
+         the seam where it meets its neighbour */
+      for (let p = 0; p < C.parts.length; p++) { const sp0 = (spec.parts || []).find((q) => q && q.id === C.parts[p].id); if (!sp0 || sp0.rigid !== true || !partBones[p] || !partBones[p].length) continue; const b0 = partBones[p][0]; for (let v = 0; v < nP; v++) { if (vl[v] !== p) continue; SIw[v * 4] = b0; SWw[v * 4] = 1; for (let k = 1; k < 4; k++) { SIw[v * 4 + k] = 0; SWw[v * 4 + k] = 0; } } }
       // bone heat has long tails: skin well down the body's side still carries a few percent of an arm, so it bulges or dents whenever that arm
       // moves. Where a group asks for the relaxing below, the body's skin also lets go of the limb's bones with distance from the joint (all
       // of its own weight by one joint-radius away, none of the limb's beyond about two)
@@ -4447,6 +4451,11 @@ RPC.Loco = class {
     }
     return hit;
   }
+  /* THE WHOLE BODY STAYS OUT OF WALLS: its own measured body radius, probed all around at foot, middle and upper height, so the sides and
+     the upper body never pass through a wall, a railing or the edge of an opening (also when walking sideways or backwards) */
+  _bodyWalls(P, env, moving) { if (!env.probe || !(this.bodyR > 0)) return; this._bwN = (this._bwN || 0) + 1; if (!moving && this._bwN % 6) return; const R = Math.max(this.bodyR, 0.04);
+    for (const hgt of [this.stepMax + 0.012, Math.max(this.stepMax + 0.02, 0.5 * this.H), Math.max(this.stepMax + 0.03, 0.85 * this.H)]) for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1], [0.707, 0.707], [-0.707, 0.707], [0.707, -0.707], [-0.707, -0.707]]) {
+      const hit = env.probe([P[0], P[1] + hgt, P[2]], d, R); if (!hit || Math.abs(hit.n[1]) > 0.6) continue; const nh = norm([hit.n[0], 0, hit.n[2]]); const dd = (P[0] - hit.p[0]) * nh[0] + (P[2] - hit.p[2]) * nh[2]; if (dd < R) { const push = Math.min(R - dd, R) * 0.85; P[0] += nh[0] * push; P[2] += nh[2] * push; } } }
   // a falling body can't pass through walls: it stops against them and slides down
   _airWalls(P, prev, env) {
     if (!env.probe) return; const hv = Math.hypot(P[0] - prev[0], P[2] - prev[2]); if (hv < 1e-6) return;
@@ -4496,7 +4505,7 @@ RPC.Loco = class {
           }
         }
       }
-      P[0] += mx; P[2] += mz;
+      P[0] += mx; P[2] += mz; this._bodyWalls(P, env, md > 1e-5); /* the whole body, all around, not only the feet in front */
       this.pushed = this._others(P, env, false) > 0;
       const gy = env.ground(P[0], P[2], P[1] + this.stepMax * 1.4);
       if (gy === null) { /* no surface anywhere below (off the map or geometry not loaded): hold height rather than fall forever */ }
@@ -10263,7 +10272,7 @@ function castMain() {
     W.v += Math.sign(target - W.v) * Math.min(Math.abs(target - W.v), vmax * 3 * dt);
     const hy = keep ? mvYaw : g.rotation.y; const hd = [Math.sin(hy), Math.cos(hy)]; const mv = [hd[0] * W.v * dt, hd[1] * W.v * dt];
     if (c.mo.grounded) { if (c.loco.state === 'ground' || c.loco.state === 'land') c.want = { x: g.position.x + mv[0], z: g.position.z + mv[1] }; }
-    else { g.position.x += mv[0]; g.position.z += mv[1]; }
+    else { /* hovering / flying walkers: the same body kept out of walls */ let x = g.position.x + mv[0], z = g.position.z + mv[1]; const md = Math.hypot(mv[0], mv[1]); if (md > 1e-6 && LOCO_ENV.probe) { const L = c.loco, R = Math.max(0.06, (L && L.bodyR) || 0.2), H = Math.max(0.2, (L && L.H) || 0.6), dir = [mv[0] / md, mv[1] / md]; for (const hf of [0.2, 0.55, 0.9]) { const hit = LOCO_ENV.probe([g.position.x, g.position.y + H * hf, g.position.z], dir, md + R); if (!hit || Math.abs(hit.n[1]) > 0.6) continue; const l = Math.hypot(hit.n[0], hit.n[2]) || 1, nx = hit.n[0] / l, nz = hit.n[2] / l; const dd = (x - hit.p[0]) * nx + (z - hit.p[2]) * nz; if (dd < R) { x += nx * (R - dd); z += nz * (R - dd); } } } g.position.x = x; g.position.z = z; }
     W.stuck = (W.stuck || 0) + (c.loco.state === 'ground' && W.v > vmax * 0.5 && c.out && c.out.gait && c.out.gait.speed < vmax * 0.05 ? dt : -dt); W.stuck = Math.max(0, W.stuck);
     if (W.stuck > 1.2 && W.pts.length) { if (NAV.on && W.goals && !S_BAKING() && (W.replans = (W.replans || 0) + 1) <= 2) replan(c); else W.pts.shift(); W.stuck = 0; }
     if (!c.walk && navLine.userData.c === c) navLine.visible = false;

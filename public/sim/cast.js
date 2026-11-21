@@ -2194,6 +2194,8 @@ function buildSpondo() {
   return R.finish();
 }
 RPC.buildSpondo = buildSpondo;
+/* Spondo's real source (head, sculpt spec, builder + rig) for the AI's system prompt: read from the functions themselves, so it is always the current code */
+RPC._spondoSrc = () => [spondoHead, spondoSculpt, buildSpondo].map((f) => Function.prototype.toString.call(f)).join('\n\n');
 })();
 
 // ================================================================= ROZY

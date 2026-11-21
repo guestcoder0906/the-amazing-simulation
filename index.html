@@ -167,7 +167,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   // ===================== WHICH AI ANSWERS: Claude (default) or the custom local AI (switched off for now) =====================
   // Claude: the visitor's own API key (direct from the browser, kept only in this browser) or, without one, the site's shared
   // key through /api/claude (CLAUDE_API_KEY on Vercel). Quick tasks (talking, moving, looking, reactions) use Claude Haiku 5.5;
-  // everything else (building, 3D modelling, coding, the builder's checks) uses Claude Opus 5.5 at low effort.
+  // everything else (building, 3D modelling, coding, the builder's checks) uses Claude Opus 5.5 at the builder's effort (high by default).
   // The local AI is still here: open the site with ?provider=local to use it again (?provider=claude to switch back).
   var PROVIDER = (function () {
     try {
@@ -332,7 +332,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
         }
         if (s.c) {
           if (DOWN[s.c]) continue;
-          var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)), output_config: { effort: 'low' } }); delete cb.thinking;
+          var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)), output_config: s.c === OPUS && body.output_config ? body.output_config : { effort: 'low' } }); delete cb.thinking;
           if (s.c !== OPUS && cb.tools) cb.tools = cb.tools.filter(function (t) { return !t.type; }); // server web search is an Opus extra
           if (!cb.max_tokens || cb.max_tokens > (s.c === OPUS ? 16000 : 8192)) cb.max_tokens = s.c === OPUS ? 16000 : 8192;
           return await callClaude(cb, signal);
@@ -536,7 +536,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       if (PROVIDER === 'claude' && model === GEMINI) {
         body = { model: model, max_tokens: 4096, messages: msgs }; if (tools.length) body.tools = tools;
       } else if (PROVIDER === 'claude') {
-        body = { model: model, max_tokens: model === OPUS ? 16000 : 4096, messages: cacheMarks(msgs), output_config: { effort: 'low' } };
+        body = { model: model, max_tokens: model === OPUS ? 16000 : 4096, messages: cacheMarks(msgs), output_config: { effort: model === OPUS && /^(low|medium|high|max)$/.test(String(opt.effort || '')) ? opt.effort : 'low' } }; /* the builder passes its effort (high); other heavy calls without one stay quick */
         var tl = tools.slice(); if (web && model === OPUS) tl.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 3 });
         if (tl.length) body.tools = cacheTools(tl);
       } else { body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools; }

@@ -830,9 +830,13 @@ function resolveOllo(boxes) { // after anything is built: if it swallowed Ollo, 
 }
 SBX.resolveOllo = resolveOllo;
 // speech bubble (+ optional voice)
-const bubble = h('div', { class: 'bubble', style: 'opacity:0' }); let bubbleT = 0; let tts = null; let ttsOn = false;
+const bubble = h('div', { class: 'bubble', style: 'opacity:0' }); let bubbleT = 0;
+/* SPEECH BUBBLES NEVER GET STUCK: each bubble knows when it ends (el._until); this timer hides any bubble past its time even when the
+   per-frame update did not run for it (an error, a hidden character, a paused loop) */
+const bubbleUntil = (el, secs) => { try { el._until = performance.now() + Math.max(0.5, secs) * 1000; } catch (e) { /* ok */ } };
+setInterval(() => { try { const now = performance.now(); for (const el of document.querySelectorAll('.bubble')) if (el.style.opacity !== '0' && (!el._until || now > el._until)) el.style.opacity = '0'; } catch (e) { /* ok */ } }, 250); let tts = null; let ttsOn = false;
 SBX.isOllo = (id) => /^(cast:)?ollo$/i.test(String(id || ''));
-SBX.say = (text) => { bubble.textContent = text; bubble.style.opacity = '1'; bubbleT = 2.5 + text.length * 0.055; try { const fw = ollo.ch.face.talk; if (fw) RPC.applyExpression(ollo.ch, ollo.st, 'Talking'); } catch (e) { /* face optional */ } if (ttsOn) olloVoice(text); else lipStart(ollo, RPC.lipsync.fromText(String(text)), wallClock()); };
+SBX.say = (text) => { bubble.textContent = text; bubble.style.opacity = '1'; bubbleT = 2.5 + text.length * 0.055; bubbleUntil(bubble, bubbleT); try { const fw = ollo.ch.face.talk; if (fw) RPC.applyExpression(ollo.ch, ollo.st, 'Talking'); } catch (e) { /* face optional */ } if (ttsOn) olloVoice(text); else lipStart(ollo, RPC.lipsync.fromText(String(text)), wallClock()); };
 SBX.express = (name) => { if (!ollo.ch.face.expressions[name]) throw new Error('Expressions: ' + Object.keys(ollo.ch.face.expressions).join(', ')); OH.expr = name; RPC.applyExpression(ollo.ch, ollo.st, name); ollo.syncToBones(); };
 
 // ---------------------------------------------------------------- 5. the library: every asset of the island, the cast, props, tools, AI creations
@@ -2564,7 +2568,7 @@ function playerSays(text, via, meta) { text = String(text || '').trim(); if (!te
   if (via === 'voice' && !self && dist > HEAR.range) { chatMsg('you', text); chatSys(`Ollo is ${dist.toFixed(0)} m away — too far to hear your voice. Get closer, or type.`); brainLog('event', `you heard someone's voice far away (${dist.toFixed(0)} m), too faint to make out`); if (BR.on && !BR.busy) think('idle'); return; }
   const how = via === 'voice' ? (self || dist <= HEAR.clear ? `(said aloud, ${dist.toFixed(0)} m away) ` : `(said aloud but faint, ${dist.toFixed(0)} m away — you only partly caught it) `) : '(typed chat) ';
   brainLog('player', how + text + sounded); chatMsg('you', text);
-  if (PLAYER.c && PLAYER.c !== ollo) { pBubble.textContent = text; pBubbleT = 2.5 + text.length * 0.05; } if (PLAYER.c) { try { playerSpeakAs(PLAYER.c, text); } catch (e) { console.warn('player voice', e); } }
+  if (PLAYER.c && PLAYER.c !== ollo) { pBubble.textContent = text; pBubbleT = 2.5 + text.length * 0.05; bubbleUntil(pBubble, pBubbleT); } if (PLAYER.c) { try { playerSpeakAs(PLAYER.c, text); } catch (e) { console.warn('player voice', e); } }
   if (!BR.on) { chatSys('Turn on Smart Ollo for him to answer.'); return; }
   if (BR.busy) { if (BR.kind === 'idle' && BR.ctl) BR.ctl.abort(); BR.pending = true; } else think('heard'); }
 SBX.playerSays = playerSays;
@@ -2916,7 +2920,7 @@ function hearAll(fromId, name, text, pos, typed) { for (const m of MINDS.values(
     if (addressed || (fromId === 'player' && d < 8) || Math.random() < 0.25) mindThink(m, 'heard'); }
   if (fromId !== 'ollo' && fromId !== 'player') { const d = ollo.group.position.distanceTo(pos); if (d < 30) { brainLog(name, `(said, ${d.toFixed(0)} m from you) ${text}`); if (BR.on && /ollo/i.test(text)) { if (BR.busy) BR.pending = true; else think('heard'); } } } }
 const mindBubble = (m) => m.bubble || (m.bubble = (() => { const b = h('div', { class: 'bubble', style: 'opacity:0;background:#eaf3ff' }); root.append(b); return b; })());
-function mindSay(m, text) { text = String(text).slice(0, 300); const b = mindBubble(m); b.textContent = text; m.bubbleT = 2.5 + text.length * 0.055; try { if (m.c.ch.face && m.c.ch.face.expressions && m.c.ch.face.expressions.Talking) { RPC.applyExpression(m.c.ch, m.c.st, 'Talking'); m.c.syncToBones(); } } catch (e) { /* ok */ }
+function mindSay(m, text) { text = String(text).slice(0, 300); const b = mindBubble(m); b.textContent = text; m.bubbleT = 2.5 + text.length * 0.055; bubbleUntil(b, m.bubbleT); try { if (m.c.ch.face && m.c.ch.face.expressions && m.c.ch.face.expressions.Talking) { RPC.applyExpression(m.c.ch, m.c.st, 'Talking'); m.c.syncToBones(); } } catch (e) { /* ok */ }
   chatMsg('npc', `${m.c.ch.name || m.c.id}: ${text}`); mindLog(m, 'me', text); mindVoice(m, text); hearAll(m.c.id, m.c.ch.name || m.c.id, text, m.c.group.position, false); }
 function mindMove(m, to, run) { const c = m.c; if (PLAYER.c === c) return 'the player is controlling you right now'; c.group.visible = true; const kind = locoKind(c);
   if (kind === 'legs') { c.mo.grounded = true; c.mo.gait = true; } c.mo.speed = run ? 2 : 1; c.walk = { pts: [[to[0], to[2]]], v: 0, goals: [[to[0], to[2]]] }; m.moving = { to, kind }; return `${kind === 'legs' ? 'walking' : 'moving'} to [${to.map((v) => v.toFixed(1))}]`; }
@@ -2992,7 +2996,7 @@ function mindsTick(dt) { if (!MINDS.size) return; const now = performance.now();
     // non-walkers move without the legged locomotion: stop them at anything solid in their way
     if (c.walk && !c.mo.grounded && !mine) { const yaw = c.group.rotation.y; const dir = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)); const hit = castRay(c.group.position.clone().add(new THREE.Vector3(0, 0.25, 0)), dir, 0.35); if (hit) { c.walk = null; mindLog(m, 'event', 'you bumped into something solid'); } }
     if (m.look && !c.walk && !mine) { const tp = mindLookPt(m, m.look); if (tp) { const want = Math.atan2(tp.x - c.group.position.x, tp.z - c.group.position.z); c.group.rotation.y += RPC.angDiff(want, c.group.rotation.y) * Math.min(1, dt * 4); } }
-    if (m.bubbleT > 0 && m.bubble) { m.bubbleT -= dt; const p = headTop(c).project(camera); const r = renderer.domElement.getBoundingClientRect(); m.bubble.style.left = ((p.x * 0.5 + 0.5) * r.width) + 'px'; m.bubble.style.top = ((-p.y * 0.5 + 0.5) * r.height) + 'px'; m.bubble.style.opacity = m.bubbleT > 0.3 && p.z < 1 ? '1' : '0'; } } }
+    if (m.bubbleT > 0 && m.bubble) { m.bubbleT -= dt; let p; try { p = headTop(c).project(camera); } catch (e) { m.bubbleT = 0; m.bubble.style.opacity = '0'; continue; } const r = renderer.domElement.getBoundingClientRect(); m.bubble.style.left = ((p.x * 0.5 + 0.5) * r.width) + 'px'; m.bubble.style.top = ((-p.y * 0.5 + 0.5) * r.height) + 'px'; m.bubble.style.opacity = m.bubbleT > 0.3 && p.z < 1 ? '1' : '0'; } else if (m.bubble && m.bubble.style.opacity !== '0') m.bubble.style.opacity = '0'; } }
 // any error anywhere in the sandbox shows up in Activity (with where it came from), so nothing fails silently
 const ERRS = []; SBX.errors = ERRS;
 { let lastE = ''; const fmtE = (x) => { if (!x) return String(x); if (x instanceof Error || x.stack) return (x.name ? x.name + ': ' : '') + (x.message || x.code || '') + (x.stack ? '\n' + String(x.stack).split('\n').filter((l) => !/^\w*Error:/.test(l)).slice(0, 8).join('\n') : ''); if (typeof x === 'object') { try { return JSON.stringify(x).slice(0, 600); } catch (e) { return String(x); } } return String(x); };
@@ -3657,7 +3661,7 @@ function frame(now) { LOOPG.n = 0; LOOPG.armed = false; /* each frame starts a f
   for (const c of scene.children) if (c.name === 'RP_Wind_Grass' && c.visible !== !!park.root.visible) c.visible = !!park.root.visible;
   for (let i = appear.length - 1; i >= 0; i--) { const a = appear[i]; a.t += dt / 0.45; const k = a.t >= 1 ? 1 : 1 - Math.pow(1 - a.t, 3) * Math.cos(a.t * 3.2); a.o.scale.copy(a.s).multiplyScalar(Math.max(0.001, k)); if (a.t >= 1) { a.o.scale.copy(a.s); appear.splice(i, 1); SBX.dirty = true; } }
   if (follow) { const p = ollo.group.position; const d = new THREE.Vector3(p.x, p.y + 0.4, p.z).sub(controls.target); controls.target.add(d.multiplyScalar(1 - Math.exp(-dt * 3))); camera.position.add(d); }
-  if (bubbleT > 0) { bubbleT -= dt; const p = headTop(ollo).project(camera); const r = renderer.domElement.getBoundingClientRect(); bubble.style.left = ((p.x * 0.5 + 0.5) * r.width) + 'px'; bubble.style.top = ((-p.y * 0.5 + 0.5) * r.height) + 'px'; bubble.style.opacity = bubbleT > 0.3 && p.z < 1 ? '1' : '0'; if (bubbleT <= 0) { try { RPC.applyExpression(ollo.ch, ollo.st, OH.expr); } catch (e) { /* ok */ } } }
+  if (bubbleT > 0) { bubbleT -= dt; try { const p = headTop(ollo).project(camera); const r = renderer.domElement.getBoundingClientRect(); bubble.style.left = ((p.x * 0.5 + 0.5) * r.width) + 'px'; bubble.style.top = ((-p.y * 0.5 + 0.5) * r.height) + 'px'; bubble.style.opacity = bubbleT > 0.3 && p.z < 1 ? '1' : '0'; } catch (e) { bubbleT = 0; } if (bubbleT <= 0) { bubble.style.opacity = '0'; try { RPC.applyExpression(ollo.ch, ollo.st, OH.expr); } catch (e) { /* ok */ } } }
   if (pipOn && (pipT += dt) > 0.5) { pipT = 0; updatePov(); try { const cv = renderCapture(povCam, 384, 216, () => { const hid = []; for (const m of ollo.meshes) if (m.visible) { m.visible = false; hid.push(m); } wand.visible = false; return () => { for (const m of hid) m.visible = true; wand.visible = true; }; }); pipCv.getContext('2d').drawImage(cv, 0, 0, pipCv.width, pipCv.height); } catch (e) { /* skip */ } }
   if (!libEl.hidden && thumbQ.length) pumpThumbs();
   requestAnimationFrame(frame);

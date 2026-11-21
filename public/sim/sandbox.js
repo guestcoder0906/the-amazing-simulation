@@ -761,14 +761,16 @@ function olloTick(dt) { if (RAG.has(ollo)) return; /* the ragdoll owns his body 
   const playerHover = PLAYER.c === ollo && PLAYER.kind === 'hover';
   if (OH.target) { const T = OH.target; const tp = T.p; const dx = tp.x - p.x, dz = tp.z - p.z, dist = Math.hypot(dx, dz), dy = tp.y - p.y; const d3 = Math.hypot(dist, dy);
     // look ahead: anything solid in the way at body height? climb over it
-    if (dist > 0.05) { const dir = new THREE.Vector3(dx, 0, dz).normalize(); const look = Math.min(dist, 0.6 + OH.speed * 0.7); for (const hgt of [0.12, 0.36, 0.62]) { const hit = castRay(new THREE.Vector3(p.x, p.y + hgt, p.z), dir, look + BODY_R); if (hit) { /* only climb over things he could fly over (look for the obstacle top just above him, never a roof/ceiling far up) */ const top = groundBelow(hit.point.x + dir.x * 0.3, hit.point.z + dir.z * 0.3, p.y + 3.2, 80); if (top !== null && top - floorY < 4) T.climb = Math.max(T.climb || 0, top + OH.hover + 0.15); } } }
+    if (dist > 0.05) { const dir = new THREE.Vector3(dx, 0, dz).normalize(); const look = Math.min(dist, 0.6 + OH.speed * 0.7); for (const hgt of [0.12, 0.36, 0.62]) { const hit = castRay(new THREE.Vector3(p.x, p.y + hgt, p.z), dir, look + BODY_R); if (hit) { /* only climb over things he could fly over (look for the obstacle top just above him, never a roof/ceiling far up) */ const top = groundBelow(hit.point.x + dir.x * 0.3, hit.point.z + dir.z * 0.3, p.y + 3.2, 80); if (top !== null && top - floorY < 4) { T.climb = Math.max(T.climbUntil > OH.t ? (T.climb || 0) : 0, top + OH.hover + 0.15); T.climbUntil = OH.t + 0.9; } } } }
+    if (T.climb && !(T.climbUntil > OH.t)) T.climb = null; /* past the obstacle: back down to normal height (above it the floor itself is its top) */
     const tY = Math.max(tp.y, (T.climb || -1e9)); if (dist < 0.4) T.climb = null;
     want = new THREE.Vector3(tp.x, tY, tp.z); const sp = T.speed || 2.2; const arrive = clamp(d3 / 1.2, 0.08, 1);
     const desired = want.clone().sub(p); const L = desired.length(); if (L > 1e-4) desired.multiplyScalar(sp * arrive / L);
     OH.vel.lerp(desired, 1 - Math.exp(-dt * 3.2));
-    if (d3 < 0.1 && OH.vel.length() < 0.25) { const cb = T.onArrive; OH.target = null; OH.vel.multiplyScalar(0.5); if (cb) cb(); }
+    if (d3 < 0.1 && OH.vel.length() < 0.25) { const cb = T.onArrive; OH.target = null; OH.holdUntil = OH.t + (OH.allowHigh ? 20 : 6); /* he stays up there only a little while */ OH.vel.multiplyScalar(0.5); if (cb) cb(); }
     if (dist > 0.15) OH.yawTarget = Math.atan2(dx, dz);
   } else {
+    if (OH.holdY != null && !playerHover && PLAYER.c !== ollo) { if (OH.holdUntil == null) OH.holdUntil = OH.t + 6; else if (OH.holdUntil <= OH.t) { OH.holdY = null; OH.allowHigh = false; OH.holdUntil = null; } } /* the held height (and any permission to be high) runs out: settle back to his normal hover */
     /* idle height follows the ground under him (never stuck at an old high point), capped low unless a high spot was asked for on purpose */ const yWant = Math.max(cruise, Math.min(OH.holdY ?? -1e9, floorY + (OH.allowHigh || playerHover ? 60 : OH.hover + 4.5)));
     if (!playerHover) { OH.vel.x *= Math.exp(-dt * 4); OH.vel.z *= Math.exp(-dt * 4); }
     const yErr = yWant - p.y;
@@ -808,7 +810,7 @@ function olloTick(dt) { if (RAG.has(ollo)) return; /* the ragdoll owns his body 
 }
 // bob is applied visually after the cast pipeline wrote the group transform (so it never accumulates)
 SBX.ollo.controller = OH;
-SBX.olloFlyTo = (pt, o = {}) => new Promise((res) => { const p = new THREE.Vector3(...pt); if (o.ground !== false) { const gy = groundBelow(p.x, p.z, p.y + 30, 80); const base = (gy ?? 0) + OH.hover; if (p.y < base) p.y = base; if (!o.high && p.y > base + 4.5) p.y = base + 4.5; } OH.allowHigh = !!o.high; OH.holdY = p.y; OH.target = { p, speed: o.speed || 2.2, onArrive: () => res(true) }; setTimeout(() => { if (OH.target && OH.target.p === p) { OH.target = null; res(false); } }, o.timeout || 25000); });
+SBX.olloFlyTo = (pt, o = {}) => new Promise((res) => { const p = new THREE.Vector3(...pt); if (o.ground !== false) { const gy = groundBelow(p.x, p.z, p.y + 30, 80); const base = (gy ?? 0) + OH.hover; if (p.y < base) p.y = base; if (!o.high && p.y > base + 4.5) p.y = base + 4.5; } OH.allowHigh = !!o.high; OH.holdY = p.y; OH.holdUntil = null; OH.target = { p, speed: o.speed || 2.2, onArrive: () => res(true) }; setTimeout(() => { if (OH.target && OH.target.p === p) { OH.target = null; res(false); } }, o.timeout || 25000); });
 SBX.olloTeleport = (pt, yaw) => { const p = new THREE.Vector3(...pt); const gy = groundBelow(p.x, p.z, p.y + 30, 80); const base = (gy ?? 0) + OH.hover; if (p.y < base) p.y = base; ollo.group.position.copy(p); OH.vel.set(0, 0, 0); OH.holdY = p.y; OH.floorY = gy ?? 0; OH.target = null; if (yaw !== undefined) { ollo.group.rotation.y = yaw; OH.yawTarget = yaw; } resolveOllo(); try { if (typeof resetCaineCoat === 'function') resetCaineCoat(); } catch (e) { /* ok */ } };
 SBX.olloFace = (pt) => { const g = ollo.group.position; OH.yawTarget = Math.atan2(pt[0] - g.x, pt[2] - g.z); };
 function resolveOllo(boxes) { // after anything is built: if it swallowed Ollo, lift him out on top (or step him back)

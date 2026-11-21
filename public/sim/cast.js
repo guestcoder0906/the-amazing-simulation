@@ -10254,11 +10254,12 @@ function castMain() {
       }
       want = Math.atan2(tx - g.position.x, tz - g.position.z);
     }
+    const mvYaw = want, keep = W.keepYaw != null && W.pts.length > 0; if (keep) want = W.keepYaw; /* walking backwards / sideways: the body keeps facing its way, the steps go toward the goal */
     const dy = RPC.angDiff(want, g.rotation.y); g.rotation.y += Math.sign(dy) * Math.min(Math.abs(dy), 4.2 * dt);
-    const facing = Math.max(0, Math.cos(dy));
+    const facing = keep ? 0.6 : Math.max(0, Math.cos(dy));
     const target = W.pts.length ? Math.min(vmax * facing, W.pts.length > 1 ? vmax : Math.sqrt(2 * 2 * vmax * Math.max(0, dist - 0.02))) : 0;
     W.v += Math.sign(target - W.v) * Math.min(Math.abs(target - W.v), vmax * 3 * dt);
-    const hd = [Math.sin(g.rotation.y), Math.cos(g.rotation.y)]; const mv = [hd[0] * W.v * dt, hd[1] * W.v * dt];
+    const hy = keep ? mvYaw : g.rotation.y; const hd = [Math.sin(hy), Math.cos(hy)]; const mv = [hd[0] * W.v * dt, hd[1] * W.v * dt];
     if (c.mo.grounded) { if (c.loco.state === 'ground' || c.loco.state === 'land') c.want = { x: g.position.x + mv[0], z: g.position.z + mv[1] }; }
     else { g.position.x += mv[0]; g.position.z += mv[1]; }
     W.stuck = (W.stuck || 0) + (c.loco.state === 'ground' && W.v > vmax * 0.5 && c.out && c.out.gait && c.out.gait.speed < vmax * 0.05 ? dt : -dt); W.stuck = Math.max(0, W.stuck);

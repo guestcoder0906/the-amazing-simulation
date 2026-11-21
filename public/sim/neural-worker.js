@@ -19,7 +19,6 @@ async function load(device) {
         try { return await KokoroTTS.from_pretrained(MODEL, { dtype: 'fp32', device: 'webgpu', progress_callback: progress }); }
         catch (e) { postMessage({ type: 'log', text: 'webgpu failed, using wasm: ' + (e && e.message) }); }
       }
-      if (device === 'wasm-full') { try { return await KokoroTTS.from_pretrained(MODEL, { dtype: 'fp32', device: 'wasm', progress_callback: progress }); } catch (e) { postMessage({ type: 'log', text: 'full model on wasm failed, using the compact one: ' + (e && e.message) }); } } /* full-quality weights on the CPU */
       return KokoroTTS.from_pretrained(MODEL, { dtype: 'q8', device: 'wasm', progress_callback: progress });
     })();
   }

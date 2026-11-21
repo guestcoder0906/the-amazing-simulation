@@ -54,10 +54,10 @@
     };
     // WebGPU only on roomy desktops (its fp32 model is larger); everyone else gets the compact WASM model
     var forced = (/[?&]nvdevice=(wasm|webgpu)/.exec(location.search) || [])[1]; if (forced) { go(forced); return; } // debug override
-    /* the voice model always runs on the CPU (WASM), never on the GPU next to the 3D game (that could crash the tab). On roomy desktops it
-       uses the SAME full-quality fp32 weights as before ('wasm-full'), so the voices sound exactly the same; small devices keep the compact model */
     var roomy = !(navigator.deviceMemory < 8) && !/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
-    go(roomy ? 'wasm-full' : 'wasm');
+    if (roomy && navigator.gpu && navigator.gpu.requestAdapter) {
+      navigator.gpu.requestAdapter().then(function (a) { go(a ? 'webgpu' : 'wasm'); }, function () { go('wasm'); });
+    } else go('wasm');
   }
 
   function gen(text, voice, speed, shape) {

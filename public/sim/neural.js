@@ -34,8 +34,13 @@
     if (state === 'loading' || state === 'ready') return;
     if (!supported()) { state = 'unsupported'; emit(); return; }
     state = 'loading'; emit();
+    /* WATCHDOG: a model that finished downloading but never reports ready (a WebGPU compile that hangs) used to leave the voices
+       "loading" forever. After a while on WebGPU it is retried on the compact WASM model; if that hangs too, it is given up and the
+       fallback voices speak. */
+    var dogT = 0, tried = {};
+    var watch = function (dev) { clearInterval(dogT); var t0 = Date.now(), done0 = 0; dogT = setInterval(function () { if (state !== 'loading') { clearInterval(dogT); return; } var st = status(); if (st.pct >= 100 && !done0) done0 = Date.now(); var stuck = (done0 && Date.now() - done0 > 60000) || Date.now() - t0 > 240000; if (!stuck) return; clearInterval(dogT); try { worker && worker.terminate(); } catch (e) { /* ok */ } worker = null; progress = {}; if (dev === 'webgpu' && !tried.wasm) { console.info('[neural voice] WebGPU load stalled; retrying on WASM'); go('wasm'); } else { state = 'failed'; lastErr = 'natural voice model did not finish loading'; console.info('[neural voice] ' + lastErr + '; using fallback voices'); emit(); } }, 5000); };
     var go = function (dev) {
-      device = dev;
+      device = dev; tried[dev] = true; watch(dev);
       try { worker = new Worker(new URL('./neural-worker.js', BASE), { type: 'module' }); }
       catch (e) { state = 'failed'; lastErr = String(e && e.message || e); emit(); return; }
       worker.onmessage = function (ev) {

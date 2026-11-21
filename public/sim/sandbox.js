@@ -2581,7 +2581,7 @@ async function runAgentInner(userText, opt = {}) { AGENT.saidFirst = false; quic
   const etaTimer = setInterval(() => { if (!AGENT.busy) return clearInterval(etaTimer); const now = performance.now(), dt = (now - ETA.lastTick) / 1000; ETA.lastTick = now;
     const kind = (AGENT.madeChars && AGENT.madeChars.size) || AGENT.etaBuildSeen || AGENT.charReq ? 'char' : 'gen'; /* known from the start when the request makes a character */ const J = etaJob(kind); const buildAvg = etaLS(ETAK('sbx_eta_build'), 110);
     const light = ETA.times.filter((x, i) => !(ETA.heavy && ETA.heavy[i])); const run = light.length ? light.reduce((a, b) => a + b, 0) / light.length : ETA.stepAvg; const avg = light.length ? (run * light.length + ETA.stepAvg) / (light.length + 1) : ETA.stepAvg;
-    const inStep = (now - ETA.stepStart) / 1000; const longer = (m, t) => Math.max(m - t, t * 0.25 + 3); /* never frozen: a long-running part is expected to need a bit longer still */
+    const inStep = (now - ETA.stepStart) / 1000; const longer = (m, t) => Math.max(m - t, Math.max(3, m * 0.12)); /* a part running past its usual time is expected to end soon - the estimate does not keep growing with it */ /* never frozen: a long-running part is expected to need a bit longer still */
     let cur; if (ETA.revStart) cur = longer(ETA.revAvg, (now - ETA.revStart) / 1000); else if (AGENT.etaPhase) { const tb = (now - AGENT.etaPhase.t0) / 1000; cur = longer(buildAvg, tb) + avg * 0.25; } else cur = longer(avg, inStep);
     const planned = Math.max(ETA.s, ETA.planned, J.n >= 2 ? Math.round((ETA.planned + J.steps) / 2) : ETA.planned); const left = Math.max(0, planned - ETA.s);
     const buildsLeft = kind === 'char' && !(AGENT.madeChars && AGENT.madeChars.size) && !AGENT.etaPhase ? 1 : 0; /* the character is not built yet: one build still to come */
@@ -2591,8 +2591,8 @@ async function runAgentInner(userText, opt = {}) { AGENT.saidFirst = false; quic
     /* PROGRESS SO FAR: the share of the job done (finished steps plus how far the current one is, the review still to come) against the real time
        it has taken - once there is enough of it to go on, it pulls the estimate toward what this request is actually taking */
     { const prog = Math.min(0.95, Math.max(0, (ETA.s - 1 + Math.min(0.85, inStep / Math.max(8, AGENT.etaPhase ? buildAvg : avg))) / Math.max(1, planned + (ETA.reviewed || ETA.revStart ? 0 : 0.6)))); if (prog > 0.25 && elapsed > 25) { const fromProg = elapsed * (1 - prog) / prog; target = target * 0.6 + fromProg * 0.4; } target = Math.max(target, cur * 0.6); }
-    if (ETA.shown == null) ETA.shown = target; else { ETA.shown -= dt; ETA.shown += (target - ETA.shown) * (target > ETA.shown ? 0.15 : 0.3); }
-    progEta.textContent = `step ${ETA.s}/${Math.max(ETA.s, planned)} · ≈ ${fmt(Math.max(1, ETA.shown))} left`; }, 500);
+    if (ETA.shown == null) ETA.shown = target; else { ETA.shown -= dt; /* A COUNTDOWN THAT COUNTS DOWN: it ticks down every second, follows a lower estimate at once, and only goes back up for real news (a new estimate well above it - another build or step that was not expected), and then only gradually */ if (target < ETA.shown) ETA.shown += (target - ETA.shown) * 0.3; else if (target > ETA.shown + Math.max(20, ETA.shown * 0.4)) ETA.shown += (target - ETA.shown) * 0.06; }
+    progEta.textContent = `step ${ETA.s}/${Math.max(ETA.s, planned)} · ` + (ETA.shown > 3 ? `≈ ${fmt(ETA.shown)} left` : 'finishing…'); }, 500);
   /* REFERENCES BEFORE THE PLAN: when the request makes or reshapes a character, the right finished main-cast characters are shown in the
      very first step (their full turnarounds), so the plan is made with the quality bar in view and never starts from a generic body.
      Whether it is a character request and which cast members fit best are decided by the quick model from the request and the cast's

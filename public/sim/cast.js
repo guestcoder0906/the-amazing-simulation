@@ -4187,11 +4187,11 @@ RPC.Springs = class {
     const wp = (cp) => add(G.p, ry(G.yaw, cp));
     const colW = this.cols.map((c) => { const [a, b] = capW(W, c); return [wp(a), wp(b), c.r]; });
     const stiffK = opt.stiffness ?? 1;
-    /* a sudden kick of the whole body (a jump take-off, a landing) is felt by ears / tails / tags only up to about twice gravity: beyond
+    /* a sudden kick of the whole body (a jump take-off, a landing) is felt by ears / tails / tags only up to about twice gravity (and a small part of their length per step): beyond
        that their stiff roots carry them along. Without this a take-off (the body reaching full speed in one frame) left them so far behind
        that they flung out flat sideways, and a landing whipped them. Ordinary walking stays far below it and is unchanged. */
-    let kick = null; if (!opt.only) { const gp = G.p; if (this._lp) { const v = mul(sub(gp, this._lp), 1 / dt); if (len(v) > 40) this._lv = null; /* a teleport, not motion */ else { if (this._lv) { const dv = sub(v, this._lv), a = len(dv) / dt, aMax = 9.81 * 2; if (a > aMax) kick = mul(dv, (1 - aMax / a) * dt); } this._lv = v; } } this._lp = gp.slice(); }
-    if (kick) for (const s of this.list) if (s.prev) s.prev = sub(s.prev, kick); /* the excess change of speed goes to the particles too */
+    let kick = null; if (!opt.only) { const gp = G.p; if (this._lp) { const d = sub(gp, this._lp); if (len(d) > 1) this._ld = null; /* a teleport, not motion */ else { if (this._ld) kick = sub(d, this._ld); this._ld = d; } } this._lp = gp.slice(); } /* measured as the change of the body's step from one frame to the next (no division by time: uneven frame times must not shake them either) */
+    if (kick) { const m = len(kick); for (const s of this.list) { const cap = Math.min(9.81 * 2 * dt * dt, 0.12 * s.len); /* and within one step a part bends at most a little of its own length: its stiff root carries the rest */ if (s.prev && m > cap) s.prev = sub(s.prev, mul(kick, 1 - cap / m)); } } /* the excess change of speed goes to the particles too */
     let colC = null, skinW = null;
     if (this.cloth.length) { colC = this.colsC.map((c) => { const [a, b] = capW(W, c); return [wp(a), wp(b)]; });
       skinW = this.skin.map((k) => { const B = W[k.bi], p = wp(add(B.p, quat.rot(B.q, k.lp))), n = ry(G.yaw, quat.rot(B.q, k.ln)); return [p[0], p[1], p[2], n[0], n[1], n[2]]; }); }
@@ -4203,7 +4203,8 @@ RPC.Springs = class {
         const step = (cur, vel, f) => { let nx = add(cur, vel); nx = add(nx, mul(sub(anim, nx), 1 - Math.pow(1 - s.prm.k, f))); nx[1] -= s.prm.g * s.len * 0.08 * f; nx = add(head, mul(norm(sub(nx, head)), s.len)); return this.clothFix(s, head, axOf(nx), nx, colC, skinW, groundY, wl); };
         let next;
         if (!s.cur || len(sub(s.cur, anim)) > s.len * 6) { next = anim.slice(); for (let j = 0; j < 40; j++) next = step(next, [0, 0, 0], 1); s.cur = next.slice(); }   // (from rest, or after a jump in time: where it comes to hang)
-        else next = step(s.cur, mul(sub(s.cur, s.prev), Math.pow(1 - s.prm.d, dt * 60)), dt * 60);
+        else next = step(s.cur, mul(sub(s.cur, s.prev), Math.pow(1 - s.prm.d, dt * 60) * (s._dt ? Math.min(4, Math.max(0.25, dt / s._dt)) : 1)), dt * 60);
+        s._dt = dt;
         s.prev = s.cur; s.cur = next;
         const newC = quat.mul(qyi, quat.mul(quat.fromUnit(a0, norm(sub(next, head))), qW));
         L[s.i].q = quat.normalize(quat.mul(quat.inv(W[pi].q), newC)); W[s.i].q = newC; continue;
@@ -4216,7 +4217,10 @@ RPC.Springs = class {
       const anim = add(head, quat.rot(qW, s.tl));
       if (!s.cur || len(sub(s.cur, anim)) > s.len * 4) { s.cur = anim.slice(); s.prev = anim.slice(); continue; }
       const k = 1 - Math.pow(1 - Math.min(0.95, s.prm.k * stiffK), dt * 60), damp = Math.pow(1 - s.prm.d, dt * 60);
-      let next = add(s.cur, mul(sub(s.cur, s.prev), damp));
+      /* time-corrected Verlet: the last step's motion is scaled by how long THIS frame is compared with the last one. Without it a long frame
+         followed by a short one carried the whole long frame's motion again - uneven frame times pumped ears / tails up to flapping flat */
+      const dtR = s._dt ? Math.min(4, Math.max(0.25, dt / s._dt)) : 1; s._dt = dt;
+      let next = add(s.cur, mul(sub(s.cur, s.prev), damp * dtR));
       next = add(next, mul(sub(anim, next), k));
       next[1] -= s.prm.g * s.len * 0.08 * dt * 60;
       next = add(head, mul(norm(sub(next, head)), s.len));

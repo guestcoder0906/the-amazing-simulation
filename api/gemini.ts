@@ -96,7 +96,7 @@ function fromGemini(g: any, model: string = MODEL) {
   return {
     id: 'msg_g' + Math.random().toString(36).slice(2, 14), type: 'message', role: 'assistant', model, content,
     stop_reason: calls ? 'tool_use' : cand.finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'end_turn', stop_sequence: null,
-    usage: { input_tokens: u.promptTokenCount || 0, output_tokens: u.candidatesTokenCount || 0 },
+    usage: { input_tokens: Math.max(0, (u.promptTokenCount || 0) - (u.cachedContentTokenCount || 0)), output_tokens: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), cache_read_input_tokens: u.cachedContentTokenCount || 0 }, // thinking is billed as output; cached prompt tokens are billed at the cache rate
   };
 }
 

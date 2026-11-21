@@ -222,7 +222,10 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     return out;
   }
   var keyPromptShown = false;
-  async function callClaude(body, signal) {
+  /* API USAGE: every Claude / Gemini answer reports its tokens (and what it was for: build, mind, listen, other) to the game, which works
+     out what each finished model cost (shown in Activity with Debug on) */
+  function noteUsage(j, model, purpose) { try { var u = j && j.usage; if (!u) return; var rec = { t: Date.now(), model: String((j && j.model) || model || ''), purpose: purpose || 'other', input: +u.input_tokens || 0, output: +u.output_tokens || 0, cacheWrite: +u.cache_creation_input_tokens || 0, cacheRead: +u.cache_read_input_tokens || 0, web: (u.server_tool_use && +u.server_tool_use.web_search_requests) || 0, own: !!CLAUDE_KEY }; window.dispatchEvent(new CustomEvent('sim-ai-usage', { detail: rec })); } catch (e) { /* ok */ } }
+  async function callClaude(body, signal, purpose) {
     var last = null;
     for (var attempt = 0; attempt < 5; attempt++) {
       var r, own = !!CLAUDE_KEY;
@@ -234,7 +237,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
                 : await fetch('/api/claude', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: tc.signal });
       } catch (e) { clearTimeout(tm); if (signal) signal.removeEventListener('abort', onUser); if (e && e.name === 'AbortError' && !timedOut) throw e; if (timedOut) { console.warn('[claude] request took too long, retrying'); last = err('api_error', 'Claude took too long to answer'); continue; } last = err('api_error', 'Could not reach Claude: ' + (e.message || e)); await new Promise(function (res) { setTimeout(res, 1500 * Math.pow(2, attempt)); }); continue; }
       clearTimeout(tm); if (signal) signal.removeEventListener('abort', onUser);
-      if (r.ok) return r.json();
+      if (r.ok) { var jc = await r.json(); noteUsage(jc, body.model, purpose); return jc; }
       var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
       var msg = 'Claude ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
       var noKey = r.status === 401 || r.status === 403 || (!own && (r.status === 503 || r.status === 404 || r.status === 405));
@@ -300,13 +303,13 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     document.body.appendChild(b);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', keyButton); else keyButton();
-  async function callGemini(body, signal) {
+  async function callGemini(body, signal, purpose) {
     var last = null;
     for (var attempt = 0; attempt < 4; attempt++) {
       var r;
       try { r = await fetch('/api/gemini', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal }); }
       catch (e) { if (e && e.name === 'AbortError') throw e; last = err('api_error', 'Could not reach Gemini: ' + (e.message || e)); if (attempt >= 1) throw last; await new Promise(function (res) { setTimeout(res, 600); }); continue; }
-      if (r.ok) return r.json();
+      if (r.ok) { var jg = await r.json(); noteUsage(jg, body.model, purpose); return jg; }
       var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
       var msg = 'Gemini ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
       if (r.status === 503 || r.status === 405) { GEMINI_OFF = true; throw err('gemini_off', msg); }
@@ -318,7 +321,8 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     throw last;
   }
   function stripGsig(msgs) { return (msgs || []).map(function (m) { return !Array.isArray(m.content) ? m : Object.assign({}, m, { content: m.content.map(function (b) { if (!b || !b._gsig) return b; var c = Object.assign({}, b); delete c._gsig; return c; }) }); }); }
-  async function call(body, signal) {
+  callClaude.listen = function (b, s) { return callClaude(b, s, 'listen'); }; callGemini.listen = function (b, s) { return callGemini(b, s, 'listen'); }; /* listening is its own kind of use */
+  async function call(body, signal, purpose) {
     if (PROVIDER === 'local') return callLocal(body, signal);
     var chain = CHAINS[body.model] || [{ c: body.model }].concat(CHAINS[OPUS].slice(1)), last = null;
     for (var i = 0; i < chain.length; i++) {
@@ -329,14 +333,14 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
           if (GEMINI_OFF || DOWN[s.g] || Date.now() < GEMINI_COOL) continue;
           var gb = { model: s.g, thinking: s.t, max_tokens: body.max_tokens, messages: body.messages }; if (body.system && s.g !== GEMINI) gb.system = body.system; /* the fast Flash-Lite gets no system prompt */
           if (body.tools) gb.tools = body.tools.filter(function (t) { return !t.type; });
-          return await callGemini(gb, signal);
+          return await callGemini(gb, signal, purpose);
         }
         if (s.c) {
           if (DOWN[s.c]) continue;
           var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)), output_config: s.c === OPUS && body.output_config ? body.output_config : { effort: 'low' } }); delete cb.thinking;
           if (s.c !== OPUS && cb.tools) cb.tools = cb.tools.filter(function (t) { return !t.type; }); // server web search is an Opus extra
           if (!cb.max_tokens || cb.max_tokens > (s.c === OPUS ? 16000 : 8192)) cb.max_tokens = s.c === OPUS ? 16000 : 8192;
-          return await callClaude(cb, signal);
+          return await callClaude(cb, signal, purpose);
         }
         if (s.l) { await resolveUrl(); if (!AI_URL) continue; return await callLocal(Object.assign({}, body, { messages: stripGsig(body.messages) }), signal); }
       } catch (e) {
@@ -352,12 +356,12 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     opt = opt || {};
     if (!GEMINI_OFF && !DOWN[DECIDER]) {
       try { var r = await fetch('/api/gemini', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decision: { question: question, input: input || question, true_description: opt.yes, false_description: opt.no } }), signal: opt.signal });
-        if (r.ok) { var d = await r.json(); if (typeof d.p === 'number' && isFinite(d.p)) return { yes: !!d.yes, p: d.p, confidence: d.confidence, model: DECIDER }; }
+        if (r.ok) { var d = await r.json(); noteUsage(d, DECIDER, opt.purpose); if (typeof d.p === 'number' && isFinite(d.p)) return { yes: !!d.yes, p: d.p, confidence: d.confidence, model: DECIDER }; }
         else if (r.status === 503) GEMINI_OFF = true; else if (r.status === 410 || r.status === 404) DOWN[DECIDER] = true;
       } catch (e) { if (e && e.name === 'AbortError') throw e; }
     }
     var q = 'Answer this yes/no question about the input. Question: ' + question + (opt.yes ? '\nYes means: ' + opt.yes : '') + (opt.no ? '\nNo means: ' + opt.no : '') + '\nInput:\n' + String(input || '').slice(0, 20000) + '\nReply with ONLY JSON {"yes": true|false, "confidence": 0..1}.';
-    var j = await sample.json(q, { model: 'quick', signal: opt.signal }); var y = !!(j && (j.yes === true || j.answer === 'yes'));
+    var j = await sample.json(q, { model: 'quick', signal: opt.signal, purpose: opt.purpose }); var y = !!(j && (j.yes === true || j.answer === 'yes'));
     return { yes: y, p: y ? (j.confidence || 0.8) : 1 - (j && j.confidence || 0.8), confidence: (j && j.confidence) || 0.8, model: 'quick' };
   }
   // ---- audio listening (voice chat + live game sound): Gemini 3.5 Flash-Lite hears the clip itself
@@ -471,7 +475,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     // best judgement: when Claude is reachable, it reads the measurements + words + sounds and settles emotion / tone
     if (PROVIDER === 'claude') {
       try {
-        var r = await callClaude({ model: HAIKU, max_tokens: 300, output_config: { effort: 'low' }, messages: [{ role: 'user', content: [{ type: 'text', text:
+        var r = await callClaude.listen({ model: HAIKU, max_tokens: 300, output_config: { effort: 'low' }, messages: [{ role: 'user', content: [{ type: 'text', text:
           'You judge how an audio clip sounds from measurements (you cannot hear it). Reply with ONLY one JSON object with keys emotion, tone, energy, voice, sounds, summary (same meaning as in the draft). Keep what the evidence supports; correct what it contradicts.\n'
           + (context ? 'Context: ' + context + '\n' : '') + 'Draft analysis and measurements: ' + JSON.stringify(res) + '\nTop detected sound classes: ' + JSON.stringify((out.tags || []).slice(0, 10)) }] }] });
         var t = (r.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
@@ -490,7 +494,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     }
     if (GEMINI_OFF) return localHear(blob, context);
     var wav = await toWav(blob), res;
-    try { res = await callGemini({ model: GEMINI, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: await b64(wav) } }, { type: 'text', text: HEAR_PROMPT + (context ? '\nContext: ' + context : '') }] }] }); }
+    try { res = await callGemini.listen({ model: GEMINI, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: await b64(wav) } }, { type: 'text', text: HEAR_PROMPT + (context ? '\nContext: ' + context : '') }] }] }); }
     catch (e) { console.info('[listen] Gemini unavailable (' + (e && e.message) + '): listening in the browser'); return localHear(blob, context); }
     var txt = (res.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
     var i = txt.indexOf('{'), j = txt.lastIndexOf('}'); try { return JSON.parse(i >= 0 && j > i ? txt.slice(i, j + 1) : txt); } catch (e) { return { transcript: txt.trim() }; }
@@ -544,7 +548,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       } else { body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools; }
       /* a real system prompt (the builder's instructions + references): cached by Claude, sent as Gemini's system instruction; the local AI gets it as its first message */
       if (opt.system) { if (PROVIDER === 'claude' && model !== GEMINI) body.system = [{ type: 'text', text: String(opt.system), cache_control: { type: 'ephemeral' } }]; else if (PROVIDER === 'claude') { /* Gemini 3.5 Flash-Lite: no system prompt (faster) */ } else if (turn === 0 && !(msgs[0] && msgs[0].__sys)) { var sm = { role: 'user', content: [{ type: 'text', text: String(opt.system) }] }; Object.defineProperty(sm, '__sys', { value: true }); msgs.unshift(sm); } }
-      var res; try { res = await call(body, opt.signal); if (model === GEMINI && GEMINI_OFF) model = HAIKU; } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
+      var res; try { res = await call(body, opt.signal, opt.purpose); if (model === GEMINI && GEMINI_OFF) model = HAIKU; } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
       var tu = []; for (var c of res.content || []) { if (c.type === 'text') { if (!c.text) continue; text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
       msgs.push({ role: 'assistant', content: res.content });
       if (res.stop_reason === 'pause_turn') continue; // a long server-side web search: let Claude carry on

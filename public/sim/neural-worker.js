@@ -224,7 +224,7 @@ function singPhrase(x0, sr, sp) {
   const y = psolaOLA(x, sr, marks, L, A, (ts, pa) => { driftV += (rnd() - 0.5) * 0.8 - drift * 0.03; driftV *= 0.92; drift = Math.max(-7, Math.min(7, drift + driftV)); return targetHz(ts) / (sr / pa); }, rnd, true);
   // phrasing: each held syllable swells gently; the line releases naturally at its end
   for (let k = 0; k < K; k++) { const a0 = Math.round(segO[k]), a1 = Math.round(segO[k + 1]), len = Math.max(1, a1 - a0); for (let i = a0; i < a1; i++) { const a = (i - a0) / len; let g = 1; if (sp.syl[k].vib) g *= 0.9 + 0.1 * Math.min(1, a / 0.35); if (k === K - 1 && a > 0.8) g *= 1 - ((a - 0.8) / 0.2) * 0.55; y[i] *= g; } }
-  let nb = 0; const br = sad ? 0.05 : 0.03; for (let i = 0; i < L; i++) { nb = 0.96 * nb + 0.04 * (rnd() * 2 - 1); y[i] += nb * Math.abs(y[i]) * br * 6; }
+  let nb = 0; const br = sad ? 0.05 : 0.03; for (let i = 0; i < L; i++) { nb = 0.96 * nb + 0.04 * (rnd() * 2 - 1); y[i] += nb * Math.abs(y[i]) * br * 2.2; }
   const fd = Math.min(L >> 2, Math.round(sr * 0.012)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[L - 1 - i] *= a; }
   return { pcm: y, f0: med, starts: segO.slice(0, K).map((v) => v / sr) };
 }

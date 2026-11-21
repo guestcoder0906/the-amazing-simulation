@@ -538,6 +538,8 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
         var tl = tools.slice(); if (web && model === OPUS) tl.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 3 });
         if (tl.length) body.tools = cacheTools(tl);
       } else { body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools; }
+      /* a real system prompt (the builder's instructions + references): cached by Claude, sent as Gemini's system instruction; the local AI gets it as its first message */
+      if (opt.system) { if (PROVIDER === 'claude' && model !== GEMINI) body.system = [{ type: 'text', text: String(opt.system), cache_control: { type: 'ephemeral' } }]; else if (PROVIDER === 'claude') body.system = String(opt.system); else if (turn === 0 && !(msgs[0] && msgs[0].__sys)) { var sm = { role: 'user', content: [{ type: 'text', text: String(opt.system) }] }; Object.defineProperty(sm, '__sys', { value: true }); msgs.unshift(sm); } }
       var res; try { res = await call(body, opt.signal); if (model === GEMINI && GEMINI_OFF) model = HAIKU; } catch (e) { if (e.name === 'AbortError') throw err('cancelled', 'cancelled', text); throw e; }
       var tu = []; for (var c of res.content || []) { if (c.type === 'text') { if (!c.text) continue; text += (text ? '\n' : '') + c.text; try { opt.onText && opt.onText({ text: text }); } catch (e) { /* ok */ } } else if (c.type === 'tool_use') tu.push(c); }
       msgs.push({ role: 'assistant', content: res.content });

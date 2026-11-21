@@ -337,7 +337,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
         }
         if (s.c) {
           if (DOWN[s.c]) continue;
-          var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)), output_config: s.c === OPUS && body.output_config ? body.output_config : { effort: 'low' } }); delete cb.thinking;
+          var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)), output_config: s.c === OPUS ? body.output_config : { effort: 'low' } }); delete cb.thinking;
           if (s.c !== OPUS && cb.tools) cb.tools = cb.tools.filter(function (t) { return !t.type; }); // server web search is an Opus extra
           if (!cb.max_tokens || cb.max_tokens > (s.c === OPUS ? 16000 : 8192)) cb.max_tokens = s.c === OPUS ? 16000 : 8192;
           return await callClaude(cb, signal, purpose);
@@ -550,7 +550,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       if (PROVIDER === 'claude' && model === GEMINI) {
         body = { model: model, max_tokens: 4096, messages: msgs }; if (tools.length) body.tools = tools;
       } else if (PROVIDER === 'claude') {
-        body = { model: model, max_tokens: model === OPUS ? 16000 : 4096, messages: cacheMarks(msgs), output_config: { effort: model === OPUS && /^(low|medium|high|max)$/.test(String(opt.effort || '')) ? opt.effort : 'low' } }; /* the builder passes its effort (high); other heavy calls without one stay quick */
+        body = { model: model, max_tokens: model === OPUS ? 16000 : 4096, messages: cacheMarks(msgs), output_config: model === OPUS && opt.effort === 'default' ? undefined : { effort: model === OPUS && /^(low|medium|high|max)$/.test(String(opt.effort || '')) ? opt.effort : 'low' } }; /* the builder sends NO effort setting (Claude's own default - exactly what the earlier, better version did); other heavy calls stay quick */
         var tl = tools.slice(); if (web && model === OPUS) tl.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 3 });
         if (tl.length) body.tools = cacheTools(tl);
       } else { body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools; }

@@ -1948,8 +1948,8 @@ function selectStep(dt) { if (!SEL.root) return; if (!SEL.root.parent || (SEL.ca
 // ---------------------------------------------------------------- 9. the in-world AI: Claude Opus 5.5 (low effort), sees through Ollo's eyes, builds live with tools
 const AGENT = { busy: false, ctl: null, history: [], views: [], level: LEVEL0, fallbackAt: 0 };
 // the model that answers now: an Opus level drops to Sonnet (same ambition) while Opus is unavailable
-function effortNow(cfg) { return cfg && cfg.effort; } /* Opus at low effort for everything, characters included (the owner's choice: fast, still good) */
-function labelNow(cfg) { return cfg && cfg.label; } /* (the page adds its own ' · thinking' while the model thinks) */
+function effortNow(cfg) { return cfg && cfg.model === OPUS ? 'default' : cfg && cfg.effort; } /* the builder sends no effort setting at all - Claude's own default, exactly like the earlier version that built better characters (its 'low' label was never actually sent) */
+function labelNow(cfg) { return cfg && cfg.model === OPUS ? 'Claude Opus 5.5' : cfg && cfg.label; } /* (the page adds its own ' · thinking' while the model thinks) */
 function agentCfg() { const L = LEVELS[AGENT.level]; if (L.model === OPUS && AGENT.fallbackAt && Date.now() - AGENT.fallbackAt < 5 * 60 * 1000) { const ef = AGENT.level === 3 ? 'medium' : 'high'; return { model: SONNET, effort: ef, label: 'Claude Opus 5.5 · low', fell: true }; } return { ...L }; }
 let SAMPLE = null; (async () => { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } })();
 /* THE QUALITY RULE: one text, used everywhere the AI plans, builds, reviews or suggests fixes (the system prompt, every builder step, the

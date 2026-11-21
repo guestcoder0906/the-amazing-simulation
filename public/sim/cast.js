@@ -4187,6 +4187,11 @@ RPC.Springs = class {
     const wp = (cp) => add(G.p, ry(G.yaw, cp));
     const colW = this.cols.map((c) => { const [a, b] = capW(W, c); return [wp(a), wp(b), c.r]; });
     const stiffK = opt.stiffness ?? 1;
+    /* a sudden kick of the whole body (a jump take-off, a landing) is felt by ears / tails / tags only up to about twice gravity: beyond
+       that their stiff roots carry them along. Without this a take-off (the body reaching full speed in one frame) left them so far behind
+       that they flung out flat sideways, and a landing whipped them. Ordinary walking stays far below it and is unchanged. */
+    let kick = null; if (!opt.only) { const gp = G.p; if (this._lp) { const v = mul(sub(gp, this._lp), 1 / dt); if (len(v) > 40) this._lv = null; /* a teleport, not motion */ else { if (this._lv) { const dv = sub(v, this._lv), a = len(dv) / dt, aMax = 9.81 * 2; if (a > aMax) kick = mul(dv, (1 - aMax / a) * dt); } this._lv = v; } } this._lp = gp.slice(); }
+    if (kick) for (const s of this.list) if (s.prev) s.prev = sub(s.prev, kick); /* the excess change of speed goes to the particles too */
     let colC = null, skinW = null;
     if (this.cloth.length) { colC = this.colsC.map((c) => { const [a, b] = capW(W, c); return [wp(a), wp(b)]; });
       skinW = this.skin.map((k) => { const B = W[k.bi], p = wp(add(B.p, quat.rot(B.q, k.lp))), n = ry(G.yaw, quat.rot(B.q, k.ln)); return [p[0], p[1], p[2], n[0], n[1], n[2]]; }); }

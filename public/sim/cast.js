@@ -116,7 +116,7 @@ function ellGrid(c, r, o = {}) {
       const u = j / nu, th = t0 + u * (t1 - t0);
       let l = [r[0] * Math.cos(ph) * Math.sin(th), r[1] * Math.sin(ph), r[2] * Math.cos(ph) * Math.cos(th)];
       if (o.off) { const nn = v3.norm([l[0] / (r[0] * r[0]), l[1] / (r[1] * r[1]), l[2] / (r[2] * r[2])]); l = v3.add(l, v3.mul(nn, o.off)); }
-      if (o.deform) l = o.deform(l, th, ph);
+      if (typeof o.deform === 'function') { const l2 = o.deform(l, th, ph); if (Array.isArray(l2) && l2.length >= 3) l = l2; }
       if (o.q) l = quat.rot(o.q, l);
       P.push(v3.add(c, l)); UV.push(o.uv ? o.uv(u, v, th, ph) : [u, v]); C.push(o.center || c);
     }
@@ -127,7 +127,7 @@ function ellPoint(c, r, th, ph, o = {}) {
   let l = [r[0] * Math.cos(ph) * Math.sin(th), r[1] * Math.sin(ph), r[2] * Math.cos(ph) * Math.cos(th)];
   const nn = v3.norm([l[0] / (r[0] * r[0]), l[1] / (r[1] * r[1]), l[2] / (r[2] * r[2])]);
   if (o.lift) l = v3.add(l, v3.mul(nn, o.lift));
-  if (o.deform) l = o.deform(l, th, ph);
+  if (typeof o.deform === 'function') { const l2 = o.deform(l, th, ph); if (Array.isArray(l2) && l2.length >= 3) l = l2; }
   if (o.q) l = quat.rot(o.q, l);
   return v3.add(c, l);
 }
@@ -1103,7 +1103,7 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
       return { box: boxOf([c], R * 1.05 + (o.pad || 0)), f(x, y, z) {
         let dx = x - c[0], dy = y - c[1], dz = z - c[2];
         if (M) { const lx = M[0] * dx + M[3] * dy + M[6] * dz, ly = M[1] * dx + M[4] * dy + M[7] * dz, lz = M[2] * dx + M[5] * dy + M[8] * dz; dx = lx; dy = ly; dz = lz; }
-        if (o.warp) { const w = o.warp(dx, dy, dz); dx = w[0]; dy = w[1]; dz = w[2]; }
+        if (typeof o.warp === 'function') { const w = o.warp(dx, dy, dz); if (Array.isArray(w) && Number.isFinite(w[0]) && Number.isFinite(w[1]) && Number.isFinite(w[2])) { dx = w[0]; dy = w[1]; dz = w[2]; } }
         const k0 = Math.sqrt((dx / rx) ** 2 + (dy / ry) ** 2 + (dz / rz) ** 2); if (k0 < 1e-9) return -Math.min(rx, ry, rz);
         const k1 = Math.sqrt((dx / (rx * rx)) ** 2 + (dy / (ry * ry)) ** 2 + (dz / (rz * rz)) ** 2); return k0 * (k0 - 1) / k1;
       } };
@@ -1116,7 +1116,7 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
       return { box: boxOf([c], R * 1.08 + (o.pad || 0)), f(x, y, z) {
         let dx = x - c[0], dy = y - c[1], dz = z - c[2];
         if (M) { const lx = M[0] * dx + M[3] * dy + M[6] * dz, ly = M[1] * dx + M[4] * dy + M[7] * dz, lz = M[2] * dx + M[5] * dy + M[8] * dz; dx = lx; dy = ly; dz = lz; }
-        if (o.warp) { const w = o.warp(dx, dy, dz); dx = w[0]; dy = w[1]; dz = w[2]; }
+        if (typeof o.warp === 'function') { const w = o.warp(dx, dy, dz); if (Array.isArray(w) && Number.isFinite(w[0]) && Number.isFinite(w[1]) && Number.isFinite(w[2])) { dx = w[0]; dy = w[1]; dz = w[2]; } }
         const u = Math.abs(dx) / rx + 1e-12, v = Math.abs(dy) / ry + 1e-12, w = Math.abs(dz) / rz + 1e-12;
         const q = (u ** n + v ** n) ** (1 / n), k = (q ** m + w ** m) ** (1 / m); if (k < 1e-9) return -Math.min(rx, ry, rz);
         const A = k ** (1 - m) * q ** (m - n); const gx = A * u ** (n - 1) / rx, gy = A * v ** (n - 1) / ry, gz = k ** (1 - m) * w ** (m - 1) / rz;
@@ -1154,8 +1154,10 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
     // frame: {o, x:[axis], y:[axis]} (z = x × y); bend: [bx, by] cups the slab (z += bx*x² + by*y²); taper(y) scales thickness
     slab(fr, poly, half, o = {}) {
       const n = (v) => { const l = Math.hypot(...v); return v.map((a) => a / l); }; const X = n(fr.x); let Z = [X[1] * fr.y[2] - X[2] * fr.y[1], X[2] * fr.y[0] - X[0] * fr.y[2], X[0] * fr.y[1] - X[1] * fr.y[0]]; Z = n(Z); const Y = [Z[1] * X[2] - Z[2] * X[1], Z[2] * X[0] - Z[0] * X[2], Z[0] * X[1] - Z[1] * X[0]];
-      const rim = o.rim ?? half * 0.9, pillow = o.pillow || 0, bend = o.bend || [0, 0], taper = o.taper || null; const N = poly.length;
+      const rim = o.rim != null && Number.isFinite(+o.rim) ? +o.rim : half * 0.9, pillow = +o.pillow || 0, bend = Array.isArray(o.bend) ? [+o.bend[0] || 0, +o.bend[1] || 0] : typeof o.bend === 'number' ? [o.bend, o.bend] : [0, 0]; const N = poly.length;
       let ext = 0; for (const p of poly) ext = Math.max(ext, Math.hypot(p[0], p[1]));
+      /* taper: a function (y, x) -> thickness scale, or a number (how much thinner it gets toward +y), or [from, to] scales along y */ let taper = null; { const tp = o.taper; const ty0 = Math.min(...poly.map((p) => p[1])), ty1 = Math.max(...poly.map((p) => p[1])), tspan = Math.max(1e-6, ty1 - ty0); const tt = (ly) => Math.min(1, Math.max(0, (ly - ty0) / tspan));
+        if (typeof tp === 'function') taper = (ly, lx) => { const v = tp(ly, lx); return Number.isFinite(v) ? Math.max(0, v) : 1; }; else if (typeof tp === 'number' && isFinite(tp)) { const k = Math.min(0.95, Math.max(-2, tp)); taper = (ly) => 1 - k * tt(ly); } else if (Array.isArray(tp) && tp.length >= 2) { const a = +tp[0], b = +tp[1]; if (isFinite(a) && isFinite(b)) taper = (ly) => Math.max(0, a + (b - a) * tt(ly)); } }
       const corners = poly.map((p) => [fr.o[0] + X[0] * p[0] + Y[0] * p[1], fr.o[1] + X[1] * p[0] + Y[1] * p[1], fr.o[2] + X[2] * p[0] + Y[2] * p[1]]);
       const bz = Math.abs(bend[0]) * ext * ext + Math.abs(bend[1]) * ext * ext;
       return { box: boxOf(corners, half + rim + bz + 0.002), frame: { X, Y, Z, o: fr.o }, f(x, y, z) {

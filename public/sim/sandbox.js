@@ -838,7 +838,7 @@ const bubble = h('div', { class: 'bubble', style: 'opacity:0' }); let bubbleT = 
 /* SPEECH BUBBLES NEVER GET STUCK: each bubble knows when it ends (el._until); this timer hides any bubble past its time even when the
    per-frame update did not run for it (an error, a hidden character, a paused loop) */
 const bubbleUntil = (el, secs) => { try { el._until = performance.now() + Math.max(0.5, secs) * 1000; } catch (e) { /* ok */ } };
-setInterval(() => { try { const now = performance.now(); for (const el of document.querySelectorAll('.bubble')) if (el.style.opacity !== '0' && (!el._until || now > el._until)) el.style.opacity = '0'; } catch (e) { /* ok */ } }, 250); let tts = null; let ttsOn = false;
+setInterval(() => { try { const now = performance.now(); for (const el of document.querySelectorAll('.bubble')) if (el.style.opacity !== '0' && (!el._until || now > el._until)) el.style.opacity = '0'; } catch (e) { /* ok */ } }, 1000); let tts = null; let ttsOn = false;
 SBX.isOllo = (id) => /^(cast:)?ollo$/i.test(String(id || ''));
 SBX.say = (text) => { bubble.textContent = text; bubble.style.opacity = '1'; bubbleT = 2.5 + text.length * 0.055; bubbleUntil(bubble, bubbleT); try { const fw = ollo.ch.face.talk; if (fw) RPC.applyExpression(ollo.ch, ollo.st, 'Talking'); } catch (e) { /* face optional */ } if (ttsOn) olloVoice(text); else lipStart(ollo, RPC.lipsync.fromText(String(text)), wallClock()); };
 SBX.express = (name) => { if (!ollo.ch.face.expressions[name]) throw new Error('Expressions: ' + Object.keys(ollo.ch.face.expressions).join(', ')); OH.expr = name; RPC.applyExpression(ollo.ch, ollo.st, name); ollo.syncToBones(); };
@@ -1144,7 +1144,7 @@ const pipCv = h('canvas', { width: 480, height: 270 }); const pipEl = h('div', {
 root.append(pipEl); let pipOn = false, pipT = 0;
 function viewToggle() { try { const first = !(typeof CHK !== 'undefined' && CHK.fpv); SBX.viewMode(first ? 'first' : 'third'); } catch (e) { toast('View change failed: ' + (e.message || e)); } viewBtnSync(); }
 function viewBtnSync() { try { const on = !!(typeof CHK !== 'undefined' && CHK.fpv); btnPov.textContent = on ? '🎥 3rd person' : '👁 1st person'; btnPov.setAttribute('aria-pressed', String(on)); btnPov.title = (on ? 'Back to third-person view' : 'See through the eyes of ' + (PLAYER.c ? (PLAYER.c.ch.name || PLAYER.c.id) : 'Ollo')) + ' (V)'; } catch (e) { /* ok */ } }
-btnPov.onclick = viewToggle; setInterval(viewBtnSync, 600);
+btnPov.onclick = viewToggle; setInterval(viewBtnSync, 1500);
 addEventListener('keydown', (ev) => { if ((ev.key === 'v' || ev.key === 'V') && !/INPUT|TEXTAREA|SELECT/.test(ev.target.tagName) && !ev.ctrlKey && !ev.metaKey) viewToggle(); });
 // activity feed
 const feedList = h('div', { id: 'sbxFeedList', 'aria-live': 'polite' }); const feedEl = h('section', { id: 'sbxFeed', class: 'sbx-panel', hidden: true }, h('header', {}, 'Activity', h('span', { style: 'display:flex;gap:6px' }, h('button', { class: 'chip', onclick: () => { feedList.textContent = ''; } }, 'Clear'), h('button', { class: 'sbx-x', 'aria-label': 'Collapse activity', onclick: (ev) => { const m = feedEl.classList.toggle('min'); ev.currentTarget.textContent = m ? '▾' : '▴'; } }, '▴'), h('button', { class: 'sbx-x', 'aria-label': 'Close activity', onclick: () => btnFeed.click() }, '✕'))), feedList);
@@ -3698,7 +3698,7 @@ function frame(now) { LOOPG.n = 0; LOOPG.armed = false; /* each frame starts a f
   for (const c of CAST.CASTS) if (c !== ollo && c.group.visible && PLAY.has(c)) { try { applyClipLayer(c, dt); } catch (e) { console.warn("clip", c.id, e.message, e.stack && e.stack.slice(0, 300)); PLAY.delete(c); } }
   if (!SBX.filmLook) { const P = CAST.studio && CAST.studio.api && CAST.studio.api.project; if (P && (!P.look || P.look.bloom !== false || P.look.grade !== 'neutral')) setLook(true); } // film look stays off unless switched on (a studio project loading later cannot turn it back on)
   try { playerStep(dt); selectStep(dt); } catch (e) { console.error('player', e); }
-  try { systemsStep(dt); physicsStep(dt); triggersStep(); autosaveStep(dt); } catch (e) { console.error('systems', e); }
+  try { systemsStep(dt); physicsStep(dt); triggersStep(); } catch (e) { console.error('systems', e); } /* no automatic saving: the world is saved only when the user presses Save world / Export session */
   // the island's wind grass grows only on the island's own grass: never on the platform (it comes back only with the island)
   for (const c of scene.children) if (c.name === 'RP_Wind_Grass' && c.visible !== !!park.root.visible) c.visible = !!park.root.visible;
   for (let i = appear.length - 1; i >= 0; i--) { const a = appear[i]; a.t += dt / 0.45; const k = a.t >= 1 ? 1 : 1 - Math.pow(1 - a.t, 3) * Math.cos(a.t * 3.2); a.o.scale.copy(a.s).multiplyScalar(Math.max(0.001, k)); if (a.t >= 1) { a.o.scale.copy(a.s); appear.splice(i, 1); SBX.dirty = true; } }
@@ -4389,7 +4389,7 @@ SBX.setView = (c, type) => { const i = chkFind(c); if (!i) return false; i.root.
            animation ran put the camera where the head was a moment ago: it slipped out of the head and jittered.) The eye point is
            smoothed in the character's own space (walk bob / tiny bone noise never shake the view, but it follows the body exactly), the
            size used for offsets is measured once (not from the animated mesh each frame), and the near plane clips the inside of the head. */
-        const now = performance.now(), dt = Math.min(0.05, (now - tP) / 1000); tP = now; try { chkMirrorsStep(); } catch (e) { /* ok */ } if (now - CHK.last > 1500) { CHK.last = now; try { chkScan(); } catch (e) { console.warn('[character check]', e); } }
+        const now = performance.now(), dt = Math.min(0.05, (now - tP) / 1000); tP = now; try { chkMirrorsStep(); } catch (e) { /* ok */ } if (now - CHK.last > 3000) { CHK.last = now; try { chkScan(); } catch (e) { console.warn('[character check]', e); } }
         try { chkApply(now / 1000, dt); } catch (e) { console.warn('[character check] animate', e); }
         try { const { P, Q } = chkEyePose(i); const r = i.root; if (!i.fpH) { const bb = new THREE.Box3().setFromObject(r); i.fpH = clamp(bb.max.y - bb.min.y, 0.1, 20); }
           const H = i.fpH; const local = r.worldToLocal(P.clone()); const F = CHK.fpSmooth; if (!F || F.root !== r || !Number.isFinite(F.v.x)) CHK.fpSmooth = { root: r, v: local.clone() }; else { const k = 1 - Math.exp(-dt * 18); if (F.v.distanceTo(local) > H * 0.25) F.v.copy(local); else F.v.lerp(local, k); }
@@ -4397,7 +4397,7 @@ SBX.setView = (c, type) => { const i = chkFind(c); if (!i) return false; i.root.
           camera.position.copy(Pw).addScaledVector(fwd, H * 0.015); camera.quaternion.copy(Quse).multiply(new THREE.Quaternion().setFromAxisAngle(UP, Math.PI)); camera.fov = 75; camera.near = clamp(H * 0.06, 0.01, 0.25); camera.updateProjectionMatrix(); camera.updateMatrixWorld(true);
           CHK.fpvOn = true; return _rF(sc, camera); }
         finally { CHK.fpvOn = false; try { chkRestore(); } catch (e) { console.warn('[character check] restore', e); } camera.position.copy(p0); camera.quaternion.copy(q0); camera.fov = f0; camera.near = n0; camera.updateProjectionMatrix(); camera.updateMatrixWorld(true); } } } /* full view: the main screen sees through the character's own eyes, with direct mouse/touch drag look */
-    if (sc !== scene || (cam !== camera && !CHK.force)) return _rF(sc, cam); /* only the main view (and a character's own view) pays for hands / eyes / gaze: thumbnails, mirrors and AI captures skip it */ const now = performance.now(), dt = Math.min(0.05, (now - tP) / 1000); tP = now; try { chkMirrorsStep(); } catch (e) { /* ok */ } if (now - CHK.last > 1500) { CHK.last = now; try { chkScan(); } catch (e) { console.warn('[character check]', e); } }
+    if (sc !== scene || (cam !== camera && !CHK.force)) return _rF(sc, cam); /* only the main view (and a character's own view) pays for hands / eyes / gaze: thumbnails, mirrors and AI captures skip it */ const now = performance.now(), dt = Math.min(0.05, (now - tP) / 1000); tP = now; try { chkMirrorsStep(); } catch (e) { /* ok */ } if (now - CHK.last > 3000) { CHK.last = now; try { chkScan(); } catch (e) { console.warn('[character check]', e); } }
     let ok = false; try { chkApply(now / 1000, dt); ok = true; } catch (e) { console.warn('[character check] animate', e); } try { return _rF(sc, cam); } finally { try { chkRestore(); } catch (e) { console.warn('[character check] restore', e); } } }; }
 // ---------------------------------------------------------------- 14. the full Circus Lobby map: every object of the Circus Lobby set,
 // already in the simulation, put back exactly where the .blend file has it, at the library's scale, solid, and lit like the set (its own
@@ -4868,7 +4868,7 @@ try {
     const b0 = document.querySelector('#sbx > .sbx-bar'); if (b0) _ro.observe(b0);
   }
 } catch (e) { /* ok */ }
-setInterval(() => { if (!document.hidden) layoutUI(); }, 700); addEventListener('resize', layoutUI); layoutUI(); /* (twice less often, and never in a background tab: it measures the page each time) */
+setInterval(() => { if (!document.hidden) layoutUI(); }, 1500); addEventListener('resize', layoutUI); layoutUI(); /* (twice less often, and never in a background tab: it measures the page each time) */
 SBX.voiceChat = (on) => (on ? vcStart() : vcStop());
 // ---------------------------------------------------------------- 21. EARS: every AI hears real sound at its own position, like a person
 // Claude cannot take audio, so each mind gets what a human auditory system makes of the sound instead:

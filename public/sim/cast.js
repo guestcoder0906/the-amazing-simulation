@@ -1486,7 +1486,7 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
       for (const [p, q] of [[a, b], [b, c], [a, c]]) {
         if (p === q) continue; const A = C.parts[p], Bp = C.parts[q]; const key = A.id < Bp.id ? A.id + '|' + Bp.id : Bp.id + '|' + A.id; if (allow.has(key)) continue;
         let bad = 'touch';
-        if (A.par === Bp || Bp.par === A) { const ch = A.par === Bp ? A : Bp; const j = ch.join; if (j && Math.hypot(cx - j.c[0], cy - j.c[1], cz - j.c[2]) <= j.r * 1.1) continue; bad = 'away-from-joint'; }
+        if (A.par === Bp || Bp.par === A) { const ch = A.par === Bp ? A : Bp; const j = ch.join; let lim = j ? j.r * 1.1 : 0; try { const bx = ch.box; if (bx && bx[0] && bx[1]) { const ext = Math.max(bx[1][0] - bx[0][0], bx[1][1] - bx[0][1], bx[1][2] - bx[0][2]); lim = Math.min(lim, Math.max(0.012, ext * 0.45)); } } catch (e2) { /* keep */ } if (j && Math.hypot(cx - j.c[0], cy - j.c[1], cz - j.c[2]) <= lim) continue; bad = 'away-from-joint'; }
         const e = contacts.get(key) || { pair: key, kind: bad, n: 0, at: [cx, cy, cz].map((v) => +v.toFixed(3)) }; e.n++; contacts.set(key, e);
       }
     }
@@ -3708,10 +3708,20 @@ function fusedGroups(spec, contacts, skip) { const out = []; try { const byId = 
     const ca = common ? branch(A, common) : A[A.length - 1], cb = common ? branch(Bp, common) : Bp[Bp.length - 1]; const opts = [ca, cb].filter(Boolean).map((r) => sub(r)).filter((S) => S.size < total * 0.6 && ![...S].some((x) => skip.has(x))); if (!opts.length) continue;
     const pick = opts.sort((x, y) => x.size - y.size)[0]; const hit = out.find((g) => [...pick].some((x) => g.has(x))); if (hit) for (const x of pick) hit.add(x); else out.push(pick); }
   } catch (e) { /* none */ } return out.slice(0, 6).map((S) => [...S]); }
+/* A SEPARATED LIMB STILL JOINS THE BODY: a part sculpted as its own piece (so it does not fuse with the torso) is weighted only across its
+   own bones; near its root joint its skin now shares weight with the bone it grows from (fading out a short way along the limb), so the
+   root sunk into the body moves with the body and never swings out of it when the limb moves */
+function softenRoot(ch, spec, mesh, ids) { try { const set = new Set(ids); const root = spec.parts.find((q) => q && set.has(q.id) && !set.has(q.parent)); if (!root || !Array.isArray(root.bones) || !root.bones.length) return mesh;
+  const rb = ch.bi[root.bones[0]]; if (rb === undefined) return mesh; const pb = ch.bones[rb].parent; if (pb === undefined || pb < 0) return mesh;
+  const jc = root.join && Array.isArray(root.join.c) ? root.join.c : ch.bones[rb].pos; let L = 0; const b0 = ch.bones[rb]; if (b0.tail) L = Math.hypot(b0.tail[0] - b0.pos[0], b0.tail[1] - b0.pos[1], b0.tail[2] - b0.pos[2]); const reach = Math.max(0.01, Math.min(root.join && +root.join.r ? +root.join.r * 1.4 : L * 0.45, L > 0 ? L * 0.6 : 1));
+  const n = mesh.P.length / 3; for (let v = 0; v < n; v++) { const d = Math.hypot(mesh.P[v * 3] - jc[0], mesh.P[v * 3 + 1] - jc[1], mesh.P[v * 3 + 2] - jc[2]); if (d >= reach) continue; let t = d / reach; t = t * t * (3 - 2 * t); const keep = 0.4 + 0.6 * t; /* at the very root: 60% the body's bone */
+    const W = new Map(); for (let k = 0; k < 4; k++) { const w = mesh.SW[v * 4 + k]; if (w > 0) W.set(mesh.SI[v * 4 + k], (W.get(mesh.SI[v * 4 + k]) || 0) + w * keep); } W.set(pb, (W.get(pb) || 0) + (1 - keep));
+    const top = [...W].sort((a, b) => b[1] - a[1]).slice(0, 4); const sm = top.reduce((q, e) => q + e[1], 0) || 1; for (let k = 0; k < 4; k++) { mesh.SI[v * 4 + k] = top[k] ? top[k][0] : 0; mesh.SW[v * 4 + k] = top[k] ? top[k][1] / sm : 0; } }
+  return mesh; } catch (e) { return mesh; } }
 function aiSculpt(ch, spec, so) { const build = (sp, o) => RPC.sculpt.build(ch, sp, o || so); const hs = hingeSplit(ch, spec); const hingeIds = hs ? hs.ids : [];
   let main = build(hingeIds.length ? restSpec(spec, hingeIds) : spec); let stats = { ...main.stats }; let mesh = main.mesh;
   const fused = fusedGroups(spec, main.stats.contacts, new Set(hingeIds)); /* any parts that touched where they should not, decided from this character's own part tree */
-  if (fused.length) { try { const body = build(restSpec(spec, [...hingeIds, ...fused.flat()])); let m = body.mesh; for (const g of fused) { const r = build(pieceSpec(spec, g), { ...so, targetTris: so.targetTris ? Math.max(3000, Math.round(so.targetTris * 0.25)) : undefined }); m = mergeMeshes(m, r.mesh); } mesh = m; stats = { ...body.stats, separatePieces: fused }; ch.separatePieces = fused; } catch (e) { console.warn('[parts] separate piece sculpt failed, keeping one skin', ch.id, e); } }
+  if (fused.length) { try { const body = build(restSpec(spec, [...hingeIds, ...fused.flat()])); let m = body.mesh; for (const g of fused) { const r = build(pieceSpec(spec, g), { ...so, targetTris: so.targetTris ? Math.max(3000, Math.round(so.targetTris * 0.25)) : undefined }); m = mergeMeshes(m, softenRoot(ch, spec, r.mesh, g)); } mesh = m; stats = { ...body.stats, separatePieces: fused }; ch.separatePieces = fused; } catch (e) { console.warn('[parts] separate piece sculpt failed, keeping one skin', ch.id, e); } }
   if (hs) { const r2 = build(pieceSpec(spec, hingeIds), { ...so, targetTris: so.targetTris ? Math.max(2000, Math.round(so.targetTris * 0.2)) : undefined }); mesh = mergeMeshes(mesh, softenHinge(ch, r2.mesh, hingeIds)); stats = { ...stats, hinge: { parts: hingeIds, tris: r2.stats.tris } }; ch.hingeParts = hingeIds; }
   return { mesh, stats }; }
 RPC.build = (id) => {

@@ -2472,7 +2472,7 @@ const wantsBuildOrEdit = (t) => /\b(make|create|build|add|spawn|put|place|design
 const claimsCreated = (t) => /\b(i('ve| have)?\s+(created|made|built|added|spawned|placed|crafted|generated|designed|sculpted|set up|changed|updated|fixed)|here('s| is)\s+(the|your)\s+new|ta-?da|all\s+(done|built|ready|set))\b/i.test(String(t || ''));
 // what a request needs before it may count as done (checked against the tools that actually succeeded in this run)
 function unmetParts(text, toy) { const ok = AGENT.ok || new Map(); const did = (...n) => n.some((x) => ok.get(x)); const out = []; const t = String(text);
-  if (!AGENT.mutCalls) out.push('ZERO world-changing tools have succeeded yet — do NOT just search or describe it; actually call create_asset, create_character, spawn_asset, run_code, edit_object, create_system, make_animation, or audio to make it real in the scene');
+  if (!AGENT.mutCalls && AGENT.etaBuildSeen) out.push('nothing has been made yet: the last create_character was not accepted - fix exactly what its result reported and call create_character again in this step'); else if (!AGENT.mutCalls) out.push('ZERO world-changing tools have succeeded yet — do NOT just search or describe it; actually call create_asset, create_character, spawn_asset, run_code, edit_object, create_system, make_animation, or audio to make it real in the scene');
   const wantsChar = toy || (typeof AGENT.charReq === 'boolean' ? AGENT.charReq : (/\b(character|creature|mascot|monster|critter|npc|buddy|pet|robot|doll|plush|puppet)\b/i.test(t) && /\b(make|create|build|add|design|spawn|new)\b/i.test(t))); /* the quick model's reading of the request decides; the word match is only a fallback when it gave no answer */
   if (wantsChar && (!did('create_character') || AGENT.charPending)) out.push(AGENT.charPending ? 'the character failed its checks and must be fixed and created again' : 'the character itself has not been created (create_character)');
   if (wantsChar && AGENT.mouthBad) out.push('the mouth of ' + AGENT.mouthBad.id + ' is not rigged properly (' + AGENT.mouthBad.why.slice(0, 200) + '): fix the sculpt (lips with a slit / a separate lower jaw) or pass mouth.at, then character_control add_mouth');
@@ -2549,7 +2549,10 @@ async function runAgentInner(userText, opt = {}) { AGENT.saidFirst = false; quic
     const buildsLeft = kind === 'char' && !(AGENT.madeChars && AGENT.madeChars.size) && !AGENT.etaPhase ? 1 : 0; /* the character is not built yet: one build still to come */
     const fromSteps = cur + avg * Math.max(0, left - buildsLeft) + buildAvg * Math.min(buildsLeft, left || buildsLeft) + (ETA.reviewed || ETA.revStart ? 0 : ETA.revAvg);
     const elapsed = AGENT.job && AGENT.job.started ? (Date.now() - AGENT.job.started) / 1000 : 0; const fromJobs = Math.max(J.total - elapsed, cur);
-    const target = J.n >= 2 ? fromSteps * 0.65 + fromJobs * 0.35 : fromSteps;
+    let target = J.n >= 2 ? fromSteps * 0.65 + fromJobs * 0.35 : fromSteps;
+    /* PROGRESS SO FAR: the share of the job done (finished steps plus how far the current one is, the review still to come) against the real time
+       it has taken - once there is enough of it to go on, it pulls the estimate toward what this request is actually taking */
+    { const prog = Math.min(0.95, Math.max(0, (ETA.s - 1 + Math.min(0.85, inStep / Math.max(8, AGENT.etaPhase ? buildAvg : avg))) / Math.max(1, planned + (ETA.reviewed || ETA.revStart ? 0 : 0.6)))); if (prog > 0.25 && elapsed > 25) { const fromProg = elapsed * (1 - prog) / prog; target = target * 0.6 + fromProg * 0.4; } target = Math.max(target, cur * 0.6); }
     if (ETA.shown == null) ETA.shown = target; else { ETA.shown -= dt; ETA.shown += (target - ETA.shown) * (target > ETA.shown ? 0.15 : 0.3); }
     progEta.textContent = `step ${ETA.s}/${Math.max(ETA.s, planned)} · ≈ ${fmt(Math.max(1, ETA.shown))} left`; }, 500);
   /* REFERENCES BEFORE THE PLAN: when the request makes or reshapes a character, the right finished main-cast characters are shown in the
@@ -2591,12 +2594,12 @@ async function runAgentInner(userText, opt = {}) { AGENT.saidFirst = false; quic
       if (noAction) {
         AGENT.nudges++;
         notes.push(`Step ${s}: REJECTED — you made 0 real world changes (only prose or read-only lookups). Hallucinating or pretending you created something is strictly forbidden. You MUST invoke an actual creation/modification tool RIGHT NOW (create_asset, create_character, spawn_asset, run_code, edit_object, create_system, make_animation, or audio) to build what the user asked for!`);
-        feed('err', 'No creation tool was called yet — enforcing real build…');
+        feed('ev', 'Still working — starting the build…');
         continue;
       }
     }
     { const un = unmetParts(userText, toyMode); const said = m && m[1] === 'DONE'; const silent = !m && !step.calls;
-      if ((said || silent) && un.length && s < MAX_STEPS && AGENT.nudges < 5) { AGENT.nudges++; notes.push(`Step ${s}: you ${said ? 'said DONE' : 'stopped without doing anything'}, but these parts of the request are NOT done yet: ${un.join('; ')}. Do them now with tools (actually call them), then check the result.`); feed('err', 'Not finished yet — continuing: ' + un.join('; ')); continue; } }
+      if ((said || silent) && un.length && s < MAX_STEPS && AGENT.nudges < 5) { AGENT.nudges++; notes.push(`Step ${s}: you ${said ? 'said DONE' : 'stopped without doing anything'}, but these parts of the request are NOT done yet: ${un.join('; ')}. Do them now with tools (actually call them), then check the result.`); feed('ev', 'Still working — ' + (AGENT.mutCalls ? 'a few things are not done yet' : AGENT.etaBuildSeen ? 'the character is being fixed and made again' : 'starting the build') + '…'); continue; } }
     if (m && m[1] === 'DONE' && AGENT.charPending && s < MAX_STEPS) { notes.push(`Step ${s}: you said DONE, but the character was NOT created (the last create_character was rejected or failed). Fix it and create it now.`); feed('err', 'Character not finished yet — continuing.'); continue; }
     if (m && m[1] === 'DONE' && canImg && s < MAX_STEPS && (AGENT.reviews || 0) < 3 && !AC.signal.aborted) { AGENT.reviews = (AGENT.reviews || 0) + 1; ETA.revStart = performance.now(); feed('ev', 'Reviewing the result with fresh eyes…');
       try { const rv = await captureViews(null); const imgs2 = (await Promise.all(rv.map((v) => toBlob(v.cv)))).filter(Boolean).slice(0, 4);

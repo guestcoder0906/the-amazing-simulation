@@ -1916,7 +1916,7 @@ function unselect(quiet) { if (SEL.root) glow(SEL.root, false); SEL.root = SEL.c
 SBX.select = (idOrCast) => { const c = CAST.CASTS.find((k) => k.id === idOrCast || k === idOrCast); if (c) return selectModel({ root: c.group, cast: c, kind: 'cast' }); const o = SBX.placed.get(idOrCast); if (o) selectModel({ root: o, kind: 'object', id: idOrCast }); };
 SBX.unselect = unselect;
 function buildMenu(ev) {
-  menu.textContent = ''; const c = SEL.cast; const o = SEL.root; const name = c ? c.ch.name : (o.userData.sbx && o.userData.sbx.name) || o.name || 'Object';
+  menu.textContent = ''; const c = SEL.cast; const o = SEL.root; const name = c ? (c === ollo && ALT.on ? 'Caine' : c.ch.name) : (o.userData.sbx && o.userData.sbx.name) || o.name || 'Object'; /* Caine's body is shown on Ollo's: selecting him says Caine */
   const B = (label, fn, cls) => { const b = h('button', { class: cls || '', role: 'menuitem' }, label); b.onclick = async () => { try { await fn(); } catch (err) { toast(String(err.message || err)); } }; return b; };
   menu.append(h('h4', {}, h('span', {}, name, ' ', h('small', {}, c ? (c === ollo ? 'you / the AI' : 'character') : 'object')), h('button', { class: 'sbx-x', 'aria-label': 'Unselect', onclick: () => unselect() }, '✕')));
   const g = h('div', { class: 'grid' });

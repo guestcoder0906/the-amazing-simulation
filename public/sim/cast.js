@@ -3650,7 +3650,7 @@ RPC.idleLife = (ch, L, t, w, id, o = {}) => {
   // breathing (chest rises, the head rides it) and a slow weight shift
   add('Torso_Upper', -1.3 * br, 0, 0); add('Torso_Lower', 0.45 * br, 0, 1.4 * nz(0.33, 1)); add('Torso_Upper', 0, 0.9 * nz(0.27, 2), -0.7 * nz(0.33, 1));
   // looking about
-  const gl = glance(6.8, 2.2, 16) * calm; add('Neck', 0.8 * nz(0.29, 3) * calm, (2.2 * nz(0.21, 4) + gl * 0.45) * calm, 0); add('Head', (1.6 * nz(0.37, 5) + 0.5 * br) * calm, gl * 0.55, 1.4 * nz(0.25, 6) * calm);
+  const gl = glance(6.8, 2.2, 16) * calm; /* no head nod: the head and neck never pitch up / down when idle, only glance sideways and tilt a touch */ add('Neck', 0, (2.2 * nz(0.21, 4) + gl * 0.45) * calm, 0); add('Head', 0, gl * 0.55, 1.4 * nz(0.25, 6) * calm);
   // arms hang and drift with the breath
   for (const [sfx, sg] of [['.L', 1], ['.R', -1]]) { add('UpperArm' + sfx, 1.1 * br + 0.8 * nz(0.41, 7 + sg), 0, sg * (1.0 + 0.9 * nz(0.37, 9 + sg))); add('Arm_Upper' + sfx, 1.1 * br, 0, sg * 0.9 * nz(0.37, 9 + sg)); }
   if (id === 'spondo') {

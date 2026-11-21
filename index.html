@@ -337,7 +337,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
         }
         if (s.c) {
           if (DOWN[s.c]) continue;
-          var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)), output_config: s.c === OPUS ? body.output_config : { effort: 'low' } }); delete cb.thinking;
+          var cb = Object.assign({}, body, { model: s.c, messages: cacheMarks(stripGsig(body.messages)) }); delete cb.thinking; delete cb.output_config; /* no effort level is ever sent: Claude decides for itself */;
           if (s.c !== OPUS && cb.tools) cb.tools = cb.tools.filter(function (t) { return !t.type; }); // server web search is an Opus extra
           if (!cb.max_tokens || cb.max_tokens > (s.c === OPUS ? 16000 : 8192)) cb.max_tokens = s.c === OPUS ? 16000 : 8192;
           return await callClaude(cb, signal, purpose);
@@ -475,7 +475,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     // best judgement: when Claude is reachable, it reads the measurements + words + sounds and settles emotion / tone
     if (PROVIDER === 'claude') {
       try {
-        var r = await callClaude.listen({ model: HAIKU, max_tokens: 300, output_config: { effort: 'low' }, messages: [{ role: 'user', content: [{ type: 'text', text:
+        var r = await callClaude.listen({ model: HAIKU, max_tokens: 300, messages: [{ role: 'user', content: [{ type: 'text', text:
           'You judge how an audio clip sounds from measurements (you cannot hear it). Reply with ONLY one JSON object with keys emotion, tone, energy, voice, sounds, summary (same meaning as in the draft). Keep what the evidence supports; correct what it contradicts.\n'
           + (context ? 'Context: ' + context + '\n' : '') + 'Draft analysis and measurements: ' + JSON.stringify(res) + '\nTop detected sound classes: ' + JSON.stringify((out.tags || []).slice(0, 10)) }] }] });
         var t = (r.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
@@ -550,7 +550,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       if (PROVIDER === 'claude' && model === GEMINI) {
         body = { model: model, max_tokens: 4096, messages: msgs }; if (tools.length) body.tools = tools;
       } else if (PROVIDER === 'claude') {
-        body = { model: model, max_tokens: model === OPUS ? 16000 : 4096, messages: cacheMarks(msgs), output_config: model === OPUS && opt.effort === 'default' ? undefined : { effort: model === OPUS && /^(low|medium|high|max)$/.test(String(opt.effort || '')) ? opt.effort : 'low' } }; /* the builder sends NO effort setting (Claude's own default - exactly what the earlier, better version did); other heavy calls stay quick */
+        body = { model: model, max_tokens: model === OPUS ? 16000 : 4096, messages: cacheMarks(msgs) }; /* the builder sends NO effort setting (Claude's own default - exactly what the earlier, better version did); other heavy calls stay quick */
         var tl = tools.slice(); if (web && model === OPUS) tl.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 3 });
         if (tl.length) body.tools = cacheTools(tl);
       } else { body = { model: model, max_tokens: 4096, messages: msgs, use_web_search: web && turn === 0 }; if (tools.length) body.tools = tools; }

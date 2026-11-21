@@ -796,7 +796,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 function olloTick(dt) { if (RAG.has(ollo)) return; /* the ragdoll owns his body until he is back up */
   const st = CAST.studio; if (st && st.drives && st.drives(ollo)) return;
   const g = ollo.group; OH.t += dt; const p = g.position;
-  const ground = groundBelow(p.x, p.z, p.y + 0.3, 80); const rawFloorY = ground === null ? -50 : ground;
+  const ground = groundBelow(p.x, p.z, p.y + (ALT.on ? 0.3 + 0.25 * bodyK() : 0.3), 80); const rawFloorY = ground === null ? -50 : ground;
   if (OH.floorY === undefined || !Number.isFinite(OH.floorY) || Math.abs(rawFloorY - OH.floorY) > 2.5) OH.floorY = rawFloorY;
   else OH.floorY += (rawFloorY - OH.floorY) * (1 - Math.exp(-dt * 12));
   const floorY = Math.max(rawFloorY - 0.02, OH.floorY);
@@ -2682,7 +2682,7 @@ micBtn.onclick = () => { if (!DICT) { toast('Voice chat is not available in this
   DICT.start().catch((e) => { if (e && e.code === 'not_granted') { micBtn.hidden = true; chatSys('Microphone not allowed — you can still type.'); } }); };
 // toggle
 async function setSmart(on) { BR.on = on; btnSmart.setAttribute('aria-pressed', String(on)); chatEl.hidden = !on;
-  if (!on) { if (BR.ctl) BR.ctl.abort(); BR.follow = null; BR.look = null; try { if (!MINDS.size) hushAll(); } catch (e) { /* ok */ } if (DICT && dictOn) DICT.stop().catch(() => {}); setStatus(''); return; }
+  if (!on) { if (BR.ctl) BR.ctl.abort(); BR.follow = null; BR.look = null; BR.pending = false; BR.busy = false; /* nothing the mind asked for keeps running: a flight it started stops where he is, a high spot it asked for and the hold there end (the player's own flying is untouched) */ try { if (PLAYER.c !== ollo) { OH.target = null; OH.holdY = null; OH.allowHigh = false; OH.holdUntil = null; if (OH.vel) OH.vel.multiplyScalar(0.3); } } catch (e) { /* ok */ } try { if (!MINDS.size) hushAll(); } catch (e) { /* ok */ } if (DICT && dictOn) DICT.stop().catch(() => {}); setStatus(''); return; }
   if (!chatLog.children.length) { for (const e of BR.log.slice(-20)) if (e.who === 'player' || e.who === 'Ollo') chatMsg(e.who === 'player' ? 'you' : 'ollo', e.text.replace(/^\([^)]*\) /, '')); if (BR.log.length) chatSys('— earlier —'); }
   if (!ttsOn) { ttsOn = true; btnVoice.setAttribute('aria-pressed', 'true'); try { if (SYN) SYN.speak(new SpeechSynthesisUtterance('')); } catch (e) { /* unlock */ } if (!(await ensureVoice())) { ttsOn = false; btnVoice.setAttribute('aria-pressed', 'false'); chatSys('No voice is available in this view; Ollo\'s lines show as text.'); } }
   loadDict(); BR.next = 0; brainLog('event', BR.log.length ? 'Smart mode switched on again (a new session: everything above was said BEFORE — never repeat any of it)' : 'Smart mode switched on'); think('start'); }
@@ -2699,7 +2699,7 @@ async function lookClip(question, seconds, o = {}) { if (!SAMPLE) return 'you ca
   try { const r = await Promise.race([SAMPLE.json([{ role: 'user', content: `These are ${frames.length} frames, in order (${frames.map((f) => f.label).join(', ')}), of a short clip of what ${me} sees through his own eyes in a 3D world. ${question ? 'Question: ' + String(question).slice(0, 300) : 'What is in front of him, and is anything moving or changing?'} Answer briefly and concretely (what, where in view, colours, motion). Return JSON {"answer": string}.` }], { images: [img], model: 'gemini', modelTier: 'quick', effort: 'minimal', cache: false }), new Promise((res) => setTimeout(() => res(null), 8000))]);
     const a = r && typeof r.answer === 'string' ? r.answer : ''; if (!a) aiErr('looking', null); return a || 'you could not make it out'; } catch (e) { aiErr('looking', e); return 'you could not make it out'; } }
 function brainTools(acts) {
-  const B = (name, description, props, required, run) => ({ name, description, inputSchema: { type: 'object', properties: props, required }, execute: async (input) => { try { const r = await run(input || {}); acts.push(name + ' ' + JSON.stringify(input).slice(0, 120)); return r; } catch (e) { return 'error: ' + (e.message || e); } } });
+  const B = (name, description, props, required, run) => ({ name, description, inputSchema: { type: 'object', properties: props, required }, execute: async (input) => { try { if (!BR.on) return 'Smart mode is off: nothing was done.'; /* a step still arriving after Smart was turned off does nothing */ const r = await run(input || {}); acts.push(name + ' ' + JSON.stringify(input).slice(0, 120)); return r; } catch (e) { return 'error: ' + (e.message || e); } } });
   const mine = () => PLAYER.c === ollo;
   const pt = (a) => { if (!Array.isArray(a) || a.length !== 3 || a.some((x) => typeof x !== 'number' || !isFinite(x))) throw new Error('need [x, y, z] numbers'); return a; };
   return [
@@ -4339,14 +4339,26 @@ try { const _up = updatePov; updatePov = function (...a) { const r = _up.apply(t
 // Caine on foot: the AI (or you) can switch him between flying (Ollo's hover) and walking / running on the ground. On foot he stands on
 // the ground under him and his legs walk procedurally with his real speed (stride, knee bend, a little bounce); standing still he stands
 const CAINE_GO = { mode: 'fly', ph: 0, last: null };
-function caineWalk(B) { const R = ALT.root; if (!R || CAINE_GO.mode === 'fly') { CAINE_GO.last = null; CAINE_GO.ySmooth = null; return; } const now = performance.now(), dt = CAINE_GO.t ? Math.min(0.05, (now - CAINE_GO.t) / 1000) : 1 / 60; CAINE_GO.t = now;
+/* WHERE CAINE'S SOLES ARE: measured from his posed body itself (the lowest point of every visible part but the cane), as an offset below
+   his lowest foot bone, re-measured a couple of times a second - not a fixed number worked out once from the file (that left his legs
+   sunk into the floor or standing on air). Used every frame with the foot bones' real positions. */
+function caineSole(B) { const R = ALT.root; const ft = ['L', 'R'].map((sd) => B.bones && B.bones['ft' + sd]).filter(Boolean); if (!R || !ft.length) return null; R.updateMatrixWorld(true);
+  const footY = Math.min(...ft.map((b) => b.getWorldPosition(new THREE.Vector3()).y)); const now = performance.now();
+  if (B._soleOff == null || now - (B._soleT || 0) > 500) { B._soleT = now; try { let lo = Infinity; const bb = new THREE.Box3(); R.traverse((o) => { if (!o.isMesh || o === B.cane || !o.geometry) return; for (let a = o; a && a !== R.parent; a = a.parent) if (!a.visible && a !== R) return; if (B.cane) for (let a = o.parent; a; a = a.parent) if (a === B.cane) return;
+        if (o.isSkinnedMesh) o.computeBoundingBox(); else if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); const gb = o.isSkinnedMesh ? o.boundingBox : o.geometry.boundingBox; if (!gb || gb.isEmpty()) return; bb.copy(gb).applyMatrix4(o.matrixWorld); if (bb.min.y < lo) lo = bb.min.y; });
+      if (Number.isFinite(lo)) { const off = clamp(footY - lo, 0, (B.H || 1) * 0.3); B._soleOff = B._soleOff == null ? off : B._soleOff + (off - B._soleOff) * 0.5; } } catch (e) { /* keep the last one */ } }
+  return footY - (B._soleOff ?? Math.max(0, (B.H || 1) * 0.04)); }
+function caineGround(B, R) { /* the floor under him, looked for from just above his hips (never a roof or a ceiling far overhead) */ let hy = R.position.y + (B.H || 1) * 0.5; try { if (B.bones && B.bones.hips) hy = B.bones.hips.getWorldPosition(new THREE.Vector3()).y; } catch (e) { /* ok */ } try { return groundBelow(R.position.x, R.position.z, hy + (B.H || 1) * 0.15, 80); } catch (e) { return null; } }
+function caineWalk(B) { const R = ALT.root; if (!R) return;
+  if (CAINE_GO.mode === 'fly') { CAINE_GO.last = null; CAINE_GO.ySmooth = null; /* flying: free in the air, but never with his feet in the floor */ try { const sole = caineSole(B), gy = caineGround(B, R); if (sole != null && gy != null && sole < gy + 0.01) { R.position.y += gy + 0.01 - sole; R.updateMatrixWorld(true); } } catch (e) { /* ok */ } return; }
+  const now = performance.now(), dt = CAINE_GO.t ? Math.min(0.05, (now - CAINE_GO.t) / 1000) : 1 / 60; CAINE_GO.t = now;
   const p = R.position, sp = CAINE_GO.last ? Math.hypot(p.x - CAINE_GO.last.x, p.z - CAINE_GO.last.z) / Math.max(dt, 1e-3) : 0; CAINE_GO.last = p.clone(); CAINE_GO.v = (CAINE_GO.v || 0) + (sp - (CAINE_GO.v || 0)) * (1 - Math.exp(-dt * 9));
-  let gy = null; try { gy = groundBelow(p.x, p.z, p.y + 2, 80); } catch (e) { gy = null; } const run = CAINE_GO.mode === 'run', v = CAINE_GO.v, moving = v > 0.15, amp = moving ? Math.min(1, v / (run ? 3.2 : 1.6)) * (run ? 0.75 : 0.45) : 0;
+  const gy = caineGround(B, R); const run = CAINE_GO.mode === 'run', v = CAINE_GO.v, moving = v > 0.15, amp = moving ? Math.min(1, v / (run ? 3.2 : 1.6)) * (run ? 0.75 : 0.45) : 0;
   CAINE_GO.ph += dt * (moving ? 2.2 + v * (run ? 2.6 : 3.2) : 0); const bob = moving ? Math.abs(Math.sin(CAINE_GO.ph)) * B.H * (run ? 0.028 : 0.014) : 0;
-  if (gy !== null && gy !== undefined) { const targetY = gy - (B.footY || 0) + bob; if (CAINE_GO.ySmooth == null || Math.abs(targetY - CAINE_GO.ySmooth) > 1.5) CAINE_GO.ySmooth = targetY; else CAINE_GO.ySmooth += (targetY - CAINE_GO.ySmooth) * (1 - Math.exp(-dt * 16)); R.position.y = CAINE_GO.ySmooth; R.updateMatrixWorld(true); try { if (typeof OH !== 'undefined' && OH) OH.holdY = gy + 0.02; } catch (e) { /* ok */ } }
   const X = new THREE.Vector3(1, 0, 0); for (const sd of ['L', 'R']) { const s = sd === 'L' ? 1 : -1, a = Math.sin(CAINE_GO.ph) * s * amp, knee = Math.max(0, -Math.cos(CAINE_GO.ph) * s) * amp * 1.4 + (moving ? 0.05 : 0);
     B.bones['ul' + sd].quaternion.setFromAxisAngle(X, -a); B.bones['ll' + sd].quaternion.setFromAxisAngle(X, knee); B.bones['ft' + sd].quaternion.setFromAxisAngle(X, -knee * 0.5 + a * 0.3); }
-  B.bones.hips.updateMatrixWorld(true); }
+  B.bones.hips.updateMatrixWorld(true);
+  if (gy !== null && gy !== undefined) { const sole = caineSole(B); const targetY = R.position.y + (sole == null ? 0 : gy + bob - sole); if (CAINE_GO.ySmooth == null || Math.abs(targetY - CAINE_GO.ySmooth) > 1.5) CAINE_GO.ySmooth = targetY; else CAINE_GO.ySmooth += (targetY - CAINE_GO.ySmooth) * (1 - Math.exp(-dt * 16)); R.position.y = CAINE_GO.ySmooth; R.updateMatrixWorld(true); try { const s2 = caineSole(B); if (s2 != null && s2 < gy - 0.005) { R.position.y += gy - s2; CAINE_GO.ySmooth = R.position.y; R.updateMatrixWorld(true); } } catch (e) { /* ok */ } try { if (typeof OH !== 'undefined' && OH) OH.holdY = gy + 0.02; } catch (e) { /* ok */ } } }
 // the cane: held properly in the right hand, or dropped (it falls with gravity, tips over, bounces and comes to rest lying on the ground,
 // on whatever surface is under it) and picked up again
 function caineCane(B) { const C = B.cane; if (!C) return; const st = B.caneSt || (B.caneSt = { mode: 'held' }); if (st.mode === 'held') return; const now = performance.now(), dt = st.t ? Math.min(0.04, (now - st.t) / 1000) : 1 / 60; st.t = now; C.visible = ALT.on;

@@ -1486,7 +1486,7 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
       for (const [p, q] of [[a, b], [b, c], [a, c]]) {
         if (p === q) continue; const A = C.parts[p], Bp = C.parts[q]; const key = A.id < Bp.id ? A.id + '|' + Bp.id : Bp.id + '|' + A.id; if (allow.has(key)) continue;
         let bad = 'touch';
-        if (A.par === Bp || Bp.par === A) { const ch = A.par === Bp ? A : Bp; const j = ch.join; let lim = j ? j.r * 1.1 : 0; try { const bx = ch.box; if (bx && bx[0] && bx[1]) { const ext = Math.max(bx[1][0] - bx[0][0], bx[1][1] - bx[0][1], bx[1][2] - bx[0][2]); lim = Math.min(lim, Math.max(0.012, ext * 0.45)); } } catch (e2) { /* keep */ } if (j && Math.hypot(cx - j.c[0], cy - j.c[1], cz - j.c[2]) <= lim) continue; bad = 'away-from-joint'; }
+        if (A.par === Bp || Bp.par === A) { const ch = A.par === Bp ? A : Bp; const j = ch.join; let lim = j ? j.r * 1.1 : 0; try { const bx = ch.box; if (bx && bx[0] && bx[1]) { const ext = Math.max(bx[1][0] - bx[0][0], bx[1][1] - bx[0][1], bx[1][2] - bx[0][2]); lim = Math.min(lim, Math.max(0.012, ext * 0.9)); } } catch (e2) { /* keep */ } if (j && Math.hypot(cx - j.c[0], cy - j.c[1], cz - j.c[2]) <= lim) continue; bad = 'away-from-joint'; }
         const e = contacts.get(key) || { pair: key, kind: bad, n: 0, at: [cx, cy, cz].map((v) => +v.toFixed(3)) }; e.n++; contacts.set(key, e);
       }
     }

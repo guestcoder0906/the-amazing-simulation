@@ -4201,8 +4201,8 @@ try { let hq = null; const pend = []; new MutationObserver((ms) => { for (const 
 /* THE HOST'S NAME IN THE UI: only the texts that actually name Ollo - a button's label, its hover tooltip, a screen-reader label, an input
    hint, the AI-view header - say Caine while Caine is shown (and Ollo again when he is back). Nothing else is touched; chat and Activity
    keep what was said, and the controls about Ollo himself (the copyright-safe switch) keep his name. Buttons made later are covered too. */
-const HOST_ATTR = new WeakMap(), HOST_TXT = new WeakMap(); const HOST_SKIP = '#sbxChatLog, #sbxFeedList, [data-keep-host]';
-function hostSwapEl(el, caine) { try { if (!el || el.nodeType !== 1 || (el.closest && el.closest(HOST_SKIP))) return; let rec = HOST_ATTR.get(el);
+const HOST_ATTR = new WeakMap(), HOST_TXT = new WeakMap(); const HOSTNAME_SKIP = '#sbxChatLog, #sbxFeedList, [data-keep-host]';
+function hostSwapEl(el, caine) { try { if (!el || el.nodeType !== 1 || (el.closest && el.closest(HOSTNAME_SKIP))) return; let rec = HOST_ATTR.get(el);
     for (const a of ['title', 'aria-label', 'placeholder']) { const cur = el.getAttribute(a); if (cur == null) continue; if (!rec) { rec = {}; HOST_ATTR.set(el, rec); } if (rec[a] === undefined || cur !== rec[a + '#']) rec[a] = cur; /* changed by the game since: that is the new original */ const base = rec[a]; if (!/\bOllo\b/.test(base)) continue; const v = caine ? base.replace(/\bOllo\b/g, 'Caine') : base; if (v !== cur) el.setAttribute(a, v); rec[a + '#'] = v; }
     if (el.tagName === 'BUTTON' || el.classList.contains('pip-h') || (el.parentElement && el.parentElement.classList.contains('pip-h'))) for (const n of el.childNodes) { if (n.nodeType !== 3) continue; let t = HOST_TXT.get(n); const cur = n.nodeValue; if (!t || cur !== t.set) { t = { orig: cur, set: cur }; HOST_TXT.set(n, t); } if (!/\bOllo\b/.test(t.orig)) continue; const v = caine ? t.orig.replace(/\bOllo\b/g, 'Caine') : t.orig; if (v !== cur) n.nodeValue = v; t.set = v; }
   } catch (e) { /* ok */ } }

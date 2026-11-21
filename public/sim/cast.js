@@ -6654,7 +6654,7 @@ function studioMain(A) {
     grade: { build() { return {}; }, update() {} }, // the shot's colour grade from here on (args.preset: day, golden, dusk, night, fog, storm, flashback, noir, neutral, auto; args.fade s; args.over: any grade value). Drawn by the look
     transition: { build() { return {}; }, update() {} }, // at a cut: args.kind dissolve | dip | iris | wipe over dur s (dip: through args.color). Drawn by the look
     code: {
-      build(fx, G) { let fn = null, err = null; try { fn = new Function('api', 't', 'fx', 'state', String(fx.args?.code || '')); } catch (e) { err = e.message; } return { fn, err, state: {} }; },
+      build(fx, G) { let fn = null, err = null; try { fn = new Function('api', 't', 'fx', 'state', (window.__sbxGuardLoops || ((c) => c))(String(fx.args?.code || ''))); /* runaway loops in it are stopped instead of freezing the game */ } catch (e) { err = e.message; } return { fn, err, state: {} }; },
       update(fx, O, lt) { if (!O.fn) { S.fxErr = 'Code effect ' + fx.id + ': ' + (O.err || 'scripts are blocked here'); return; } try { O.fn(api, lt, fx, O.state); } catch (e) { S.fxErr = 'Code effect ' + fx.id + ': ' + e.message; } },
     },
   };

@@ -1246,7 +1246,33 @@ const KIT = (() => {
 SBX.kit = KIT;
 // run AI-written builder code: (sbx, THREE, RPC, kit) => Object3D | Promise<Object3D>
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-async function runBuilder(code, extra = {}) { const fn = new AsyncFunction('sbx', 'THREE', 'RPC', 'kit', 'args', code); return fn(SBX, THREE, RPC, KIT, extra); }
+/* RUNAWAY-LOOP GUARD for code the AI writes (builders, behaviours, systems): an endless or far-too-long loop used to freeze the whole game
+   with no way back. Every while / do-while / for(;;) loop in that code also calls __sbxLoop() in its condition; when one keeps the page busy
+   for 5 s without a break it is stopped with an error, which the usual error handling reports back to the AI (and drops a per-frame behaviour).
+   The code is scanned token-aware (strings, template literals, comments, regex literals are skipped); if the rewrite would not compile, the
+   original code is used unchanged. */
+const LOOPG = { n: 0, t0: 0, armed: false, limit: 5000 };
+window.__sbxLoop = () => { if (++LOOPG.n & 4095) return true; const now = performance.now(); if (!LOOPG.armed) { LOOPG.armed = true; LOOPG.t0 = now; setTimeout(() => { LOOPG.armed = false; LOOPG.n = 0; }, 0); return true; } if (now - LOOPG.t0 > LOOPG.limit) { LOOPG.armed = false; LOOPG.n = 0; throw new Error('stopped a runaway loop (it ran over ' + (LOOPG.limit / 1000) + ' s without a break and would have frozen the game) - make loops end, or spread big work over frames'); } return true; };
+function guardLoops(code) { const s = String(code || ''); if (!/\b(while|for)\b/.test(s)) return s; const out = []; let i = 0, last = 0; const n = s.length; let prevSig = ''; /* last significant char, for regex detection */
+  const isId = (ch) => /[\w$]/.test(ch); const regexOK = () => !prevSig || /[(,=:[!&|?{};+\-*%<>~^]/.test(prevSig) || /\b(return|typeof|case|do|else|in|of|void|yield|await)$/.test(s.slice(Math.max(0, i - 7), i).trimEnd());
+  const skipStr = (q) => { i++; while (i < n && s[i] !== q) { if (s[i] === '\\') i++; i++; } i++; };
+  const skipTpl = () => { i++; while (i < n && s[i] !== '`') { if (s[i] === '\\') { i += 2; continue; } if (s[i] === '$' && s[i + 1] === '{') { i += 2; skipTo('}'); i++; continue; } i++; } i++; };
+  const skipRegex = () => { i++; let cls = false; while (i < n) { const ch = s[i]; if (ch === '\\') { i += 2; continue; } if (ch === '[') cls = true; else if (ch === ']') cls = false; else if (ch === '/' && !cls) break; else if (ch === '\n') return; i++; } i++; while (i < n && /[a-z]/i.test(s[i])) i++; };
+  /* scan forward to the matching close (at depth 0), skipping nested brackets / strings / comments */
+  function skipTo(close) { let depth = 0; while (i < n) { const ch = s[i]; if (ch === '"' || ch === "'") { skipStr(ch); prevSig = 'a'; continue; } if (ch === '`') { skipTpl(); prevSig = 'a'; continue; } if (ch === '/' && s[i + 1] === '/') { while (i < n && s[i] !== '\n') i++; continue; } if (ch === '/' && s[i + 1] === '*') { const e = s.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; continue; } if (ch === '/' && regexOK()) { skipRegex(); prevSig = 'a'; continue; }
+      if (depth === 0 && ch === close) return; if (ch === '(' || ch === '[' || ch === '{') depth++; else if (ch === ')' || ch === ']' || ch === '}') depth--; if (!/\s/.test(ch)) prevSig = ch; i++; } }
+  while (i < n) { const ch = s[i];
+    if (ch === '"' || ch === "'") { skipStr(ch); prevSig = 'a'; continue; } if (ch === '`') { skipTpl(); prevSig = 'a'; continue; }
+    if (ch === '/' && s[i + 1] === '/') { while (i < n && s[i] !== '\n') i++; continue; } if (ch === '/' && s[i + 1] === '*') { const e = s.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; continue; } if (ch === '/' && regexOK()) { skipRegex(); prevSig = 'a'; continue; }
+    if ((ch === 'w' || ch === 'f') && !isId(s[i - 1] || ' ') && s[i - 1] !== '.') { const kw = s.startsWith('while', i) && !isId(s[i + 5] || ' ') ? 'while' : s.startsWith('for', i) && !isId(s[i + 3] || ' ') ? 'for' : ''; if (kw) { let j = i + kw.length; while (j < n && /\s/.test(s[j])) j++; if (kw === 'for' && s.startsWith('await', j)) { i = j; continue; } if (s[j] === '(') { const open = j; i = j + 1; prevSig = '('; skipTo(')'); const close = i; const inner = s.slice(open + 1, close);
+          if (kw === 'while') { out.push(s.slice(last, open + 1), '__sbxLoop() && (', inner, ')'); last = close; }
+          else { /* for: guard the condition between the two top-level semicolons (for-in / for-of have none and are left alone) */ const semis = []; { let k = 0, d = 0; const save = i; i = 0; const sub = inner; for (k = 0; k < sub.length; k++) { const c2 = sub[k]; if (c2 === '"' || c2 === "'" || c2 === '`') { const q = c2; k++; while (k < sub.length && sub[k] !== q) { if (sub[k] === '\\') k++; k++; } continue; } if (c2 === '(' || c2 === '[' || c2 === '{') d++; else if (c2 === ')' || c2 === ']' || c2 === '}') d--; else if (c2 === ';' && d === 0) semis.push(k); } i = save; }
+            if (semis.length === 2) { const cond = inner.slice(semis[0] + 1, semis[1]); out.push(s.slice(last, open + 1), inner.slice(0, semis[0] + 1), cond.trim() ? ' __sbxLoop() && (' + cond + ')' : ' __sbxLoop()', inner.slice(semis[1])); last = close; } }
+          i = close + 1; prevSig = ')'; continue; } } }
+    if (!/\s/.test(ch)) prevSig = isId(ch) ? 'a' : ch; i++; }
+  out.push(s.slice(last)); const g = out.join(''); try { new AsyncFunction(g); return g; } catch (e) { return s; } }
+window.__sbxGuardLoops = guardLoops;
+async function runBuilder(code, extra = {}) { const fn = new AsyncFunction('sbx', 'THREE', 'RPC', 'kit', 'args', guardLoops(code)); return fn(SBX, THREE, RPC, KIT, extra); }
 // a placement point the AI gave: 3 finite numbers inside a sane range (a NaN / string / 2-number "at" used to put things at NaN and break the frame)
 /* a free spot: if the box of what is being placed would sit inside a solid (wall, prop, building), look outward in rings for the nearest
    spot where it fits and stands on something. Characters are always moved out; objects only when no exact spot was asked for. */
@@ -1291,7 +1317,7 @@ function rigNameProblems(ch, spec) { const out = []; if (!ch || !Array.isArray(c
       for (const q0 of pt.prims || []) { const q = q0 && (q0.f ? q0 : q0.p); if (!q || typeof q.f !== 'function') { out.push('sculpt part "' + pt.id + '": a primitive is not a shape made with RPC.sculpt.P'); break; } if (q.box && ![...q.box[0], ...q.box[1]].every(Number.isFinite)) { out.push('sculpt part "' + pt.id + '": a primitive has a NaN / infinite size or position'); break; } } }); }
   return out; }
 function charBuilderFn(code) { const fn0 = charBuilderFn0(code); return (R, k, T) => { const ch = fn0(R, k, T); if (ch && typeof ch.sculpt === 'function' && !ch._carveWrapped) { const s0 = ch.sculpt; ch.sculpt = (c) => { if (ch._spCache) return ch._spCache; const sp = mouthCarve(c || ch, s0(c)); if (sp && typeof sp === 'object') ch._spCache = sp; return sp; }; ch._carveWrapped = true; /* the sculpt spec is worked out once per character, not again for every check that looks at its parts */ } return ch; }; }
-function charBuilderFn0(code) { const src = String(code || '').replace(/\b([A-Za-z_$][\w$]*)\.ik\s*\(/g, '$1.ik.push('); return new Function('RPC', 'kit', 'THREE', src); }
+function charBuilderFn0(code) { const src = String(code || '').replace(/\b([A-Za-z_$][\w$]*)\.ik\s*\(/g, '$1.ik.push('); return new Function('RPC', 'kit', 'THREE', guardLoops(src)); }
 /* when builder code throws, the AI gets the real API, read from the live objects (not a fixed text) */
 function apiRefText() { try { if (apiRefText.c) return apiRefText.c; const fnSig = (f) => { const m = String(f).match(/^(?:async\s*)?(?:function\s*[\w$]*)?\s*\(([^)]*)\)/); return m ? m[1].replace(/\s+/g, ' ').replace(/\s*=\s*\{\}/g, '={}').slice(0, 80) : ''; };
     const list = (o, pre) => Object.keys(o || {}).filter((k) => !k.startsWith('_')).map((k) => typeof o[k] === 'function' ? pre + k + '(' + fnSig(o[k]) + ')' : pre + k).join(', ');
@@ -2751,7 +2777,7 @@ async function giveMind(id, o = {}) { const c = CAST.CASTS.find((k) => k.id === 
   if (PLAYER.c === c) { if (!o.take_over) return `the player is controlling ${id}; pass take_over: true to take it from them on purpose`; stopControl(); chatSys(`Ollo took ${c.ch.name || id} over from you!`); toast(`Ollo took over ${c.ch.name || id}`); }
   const old = MINDS.get(id); if (old) removeMind(id, true);
   const m = { c, personality: String(o.personality || 'A friendly character.').slice(0, 2000), pitch: clamp(o.pitch ?? 1, 0.3, 2), voiceP: cleanVoice(o.voice) || c.ch._voice || null, mood: '', mouthOpt: o.mouth, ttsVoice: ['buttery', 'glassy', 'rounded'][[...MINDS.keys()].length % 3], code: o.code || '', locked: !!o.lock, log: o.log || [], notes: o.notes || [], next: 0, follow: null, look: null, busy: false, bubbleT: 0, sys: null };
-  if (m.code) { try { const fn = new AsyncFunction('sbx', 'THREE', 'RPC', 'c', 'mind', m.code); const gs0 = GUARD.snap(); const r = await fn(SBX, THREE, RPC, c, m); GUARD.check(gs0, false, false, 'behaviour setup of ' + c.id); m.sys = typeof r === 'function' ? { update: r } : (r || null); } catch (e) { m.code = ''; MINDS.set(id, m); MIND_SAVE(); return 'mind given, but the behaviour code failed: ' + (e.message || e); } }
+  if (m.code) { try { const fn = new AsyncFunction('sbx', 'THREE', 'RPC', 'c', 'mind', guardLoops(m.code)); const gs0 = GUARD.snap(); const r = await fn(SBX, THREE, RPC, c, m); GUARD.check(gs0, false, false, 'behaviour setup of ' + c.id); m.sys = typeof r === 'function' ? { update: r } : (r || null); } catch (e) { m.code = ''; MINDS.set(id, m); MIND_SAVE(); return 'mind given, but the behaviour code failed: ' + (e.message || e); } }
   c.group.visible = true; if (!c.st) c.st = RPC.newState(c.ch); MINDS.set(id, m); if (o.voice) { try { setVoice(c, o.voice); } catch (e) { /* bad voice: keep the derived one */ } } let mouthNote = ''; if (o.mouth !== 'keep') { try { mouthNote = applyMouthOpt(c, o.mouth ?? 'auto'); } catch (e) { mouthNote = 'mouth failed: ' + (e.message || e); } } MIND_SAVE(); mindLog(m, 'event', o.log && o.log.length ? '(the page was reloaded: everything above was said BEFORE; never repeat any of it)' : 'Ollo gave you this mind'); m.next = performance.now() + 500; return `${id} is alive (voice: ${voiceFor(m).label}; mouth: ${mouthNote || 'unchanged'})`; }
 function removeMind(id, quiet) { const m = MINDS.get(id); if (!m) return 'no mind'; m.dead = true; try { m.sys && m.sys.dispose && m.sys.dispose(); } catch (e) { /* ok */ } if (m.bubble) m.bubble.remove(); MINDS.delete(id); MIND_SAVE(); if (!quiet) chatSys(`${m.c.ch.name || id} is back to normal.`); return 'removed'; }
 SBX.minds = MINDS; SBX.giveMind = giveMind; SBX.removeMind = removeMind;
@@ -3289,7 +3315,7 @@ function lifeStep(dt) { const minded = [...MINDS.values()].map((m) => m.c); cons
         if (c === ollo) { if (SBX.olloFlyTo) SBX.olloFlyTo([tx, o.y, tz], { speed: 0.8 }); }
         else if (!hover && c.mo) { c.mo.grounded = true; c.mo.gait = true; c.mo.speed = 0.7; c.walk = { pts: [[tx, tz]], v: 0, goals: [[tx, tz]] }; } }
     } catch (e) { /* a clip it does not have: try again later */ } } }
-function frame(now) {
+function frame(now) { LOOPG.n = 0; LOOPG.armed = false; /* each frame starts a fresh runaway-loop budget */
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   /* rig bones are an editing aid: hidden unless the Animator is on (or its "show rig" box is ticked) */
   if (btnAnim.getAttribute('aria-pressed') !== 'true') { for (const c of CAST.CASTS) if (c.helper && c.helper.visible) c.helper.visible = false; }

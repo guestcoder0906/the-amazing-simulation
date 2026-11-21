@@ -2770,9 +2770,12 @@ function neuralSpeak(c, text, spec, mood, key, hint, onFail) { text = speakable(
     const shout = show && (caps || /!!|!\?|\?!/.test(p)), fry = show && (/\b(ugh+|argh+|grr+|hmph|no no|enough|stop it|seriously|why won'?t|ruin|annoy|frustrat)/i.test(p) || /Angry|Annoyed|Frustrat|Grumpy/i.test(md));
     const swing = show ? [1, 1.07, 0.94, 1.05, 0.97][pi % 5] * (ex ? 1.05 : 1) * (q ? 1.04 : 1) * (tr ? 0.95 : 1) : 1; /* sentence-to-sentence melody: no two lines on the same note */
     return { p, k: k * swing, sp: shout ? sp * 1.05 : sp, shout, fry }; });
-  const proms = reqs.map((r) => { const pr = NV.gen(r.p, pick.voice, r.sp, Object.assign({ ratio: r.k }, pick.style ? { expr: r.shout ? pick.style.expr + 0.2 : pick.style.expr } : {}, r.fry ? { fry: true } : {})); pr.catch(() => {}); return pr; });
+  /* each line is RETRIED (up to 4 tries: a timeout or a busy / restarting voice model is usually momentary) before the fallback voice is used */
+  const genOnce = (r) => NV.gen(r.p, pick.voice, r.sp, Object.assign({ ratio: r.k }, pick.style ? { expr: r.shout ? pick.style.expr + 0.2 : pick.style.expr } : {}, r.fry ? { fry: true } : {}));
+  const genRetry = (r) => { let n = 0; const go = () => genOnce(r).catch(async (e) => { if (++n >= 4 || gen !== VOICE.gen) throw e; const msg = String(e && e.message || ''); console.info('[voice] natural voice retry ' + n + ' for this line (' + msg + ')'); if (/not ready/.test(msg)) { const t0 = performance.now(); while (!NV.ready() && performance.now() - t0 < 12000) await sleep(300); } else await sleep(350 * n); return go(); }); return go(); };
+  const proms = reqs.map((r) => { const pr = genRetry(r); pr.catch(() => {}); return pr; });
   c._nq = (c._nq || Promise.resolve()).then(async () => { for (let i = 0; i < reqs.length; i++) { if (gen !== VOICE.gen) return; let a; try { a = await proms[i]; } catch (e) { if (i === 0) throw e; return; } if (gen !== VOICE.gen) return; await neuPlay(c, a, 1, reqs[i].p, pick.style ? { eq: pick.style.eq, shout: reqs[i].shout } : null); /* pitch already shaped in the worker, formants kept */ } })
-    .catch((e) => { console.warn('[voice] natural voice failed for this line, using fallback:', e && e.message); try { onFail && onFail(); } catch (e2) { /* ok */ } });
+    .catch((e) => { console.warn('[voice] natural voice failed for this line after retrying, using fallback:', e && e.message); try { onFail && onFail(); } catch (e2) { /* ok */ } });
   return true; }
 addEventListener('pointerdown', () => { if (MAC && MAC.state !== 'running') MAC.resume().catch(() => {}); }, true);
 // a distinct toy voice per character: the AI designs it (SAM synth: pitch 18–130, LOWER = higher voice; mouth / throat ~90–190

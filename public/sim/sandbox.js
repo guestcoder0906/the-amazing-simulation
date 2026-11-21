@@ -1056,7 +1056,7 @@ btnPlay.onclick = () => { if (PLAYER.c) { stopControl(); return; } const vis = C
 const btnLook = h('button', { 'aria-pressed': 'false', title: 'Cinematic grade, bloom, grain and vignette' }, 'Film look');
 btnLook.onclick = () => { const on = btnLook.getAttribute('aria-pressed') !== 'true'; btnLook.setAttribute('aria-pressed', String(on)); SBX.filmLook = on; setLook(!on); };
 const btnMenu = h('button', { 'aria-expanded': 'true', title: 'Show / hide the toolbar', 'aria-label': 'Toggle toolbar' }, '☰');
-const barEl = h('div', { class: 'sbx-bar' }, h('span', { class: 'sbx-brand' }, 'SANDBOX'), btnMenu, h('span', { class: 'bar-btns' }, btnLib, btnAnim, btnPov, btnFollow, btnPlay, btnFeed, btnLook, btnVoice));
+const barEl = h('div', { class: 'sbx-bar' }, btnMenu, h('span', { class: 'bar-btns' }, btnLib, btnAnim, btnPov, btnFollow, btnPlay, btnFeed, btnLook, btnVoice));
 root.append(barEl); const narrow = () => innerWidth <= 760;
 const setBar = (open) => { barEl.classList.toggle('collapsed', !open); btnMenu.setAttribute('aria-expanded', String(open)); btnMenu.textContent = open ? '✕' : '☰'; };
 btnMenu.onclick = () => setBar(barEl.classList.contains('collapsed')); setBar(!narrow());

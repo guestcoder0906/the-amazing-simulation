@@ -1565,6 +1565,27 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
           for (let k = 0; k < 4; k++) { SIw[v * 4 + k] = top[k] ? top[k][0] : 0; SWw[v * 4 + k] = top[k] ? top[k][1] / sm : 0; }
         }
       }
+      /* A HEAD THAT TURNS AS ONE: bone heat lets the neck / chest bones (and the jaw's or ears' bones) reach well up into an AI-made head, so
+         turning the head squashed or twisted the face and skull. Here the head's skin keeps the neck's share only right at the neck joint
+         (fading out over the lowest part of the head), and a head part's skin drops head bones that are not its own (the jaw leaking into the
+         cheeks or brow, an ear into the skull) away from where those bones start. Only for AI-made characters; the shipped cast is unchanged. */
+      if (ch._aiMade) { try {
+        const par = ch.bones.map((b) => b.parent); let hb = ch.bones.findIndex((b) => /^head$/i.test(b.name));
+        if (hb < 0) hb = ch.bones.findIndex((b) => /head|skull|cranium/i.test(b.name) && !/jaw|eye|ear|hair|hat|brow|lid|mouth|lip|tongue|teeth|horn|antenna/i.test(b.name));
+        if (hb >= 0) {
+          const inSub = (i) => { for (let k = i, n = 0; k !== undefined && k >= 0 && n < 64; k = par[k], n++) if (k === hb) return true; return false; };
+          const headPart = partBones.map((bs) => bs.length > 0 && bs.every(inSub)); const hp = bones[hb].a; let R = 0;
+          for (let v = 0; v < nP; v++) if (headPart[vl[v]]) R = Math.max(R, Math.hypot(Pp[v * 3] - hp[0], Pp[v * 3 + 1] - hp[1], Pp[v * 3 + 2] - hp[2]));
+          const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+          if (R > 1e-4) { const keepOf = partBones.map((bs) => { const K = new Set([hb]); for (const b of bs) for (let k = b, n = 0; k !== undefined && k >= 0 && n < 64; k = par[k], n++) { K.add(k); if (k === hb) break; } return K; }); let nFix = 0;
+            for (let v = 0; v < nP; v++) { const p = vl[v]; if (!headPart[p]) continue; const K = keepOf[p]; const x = Pp[v * 3], y = Pp[v * 3 + 1], z = Pp[v * 3 + 2]; const tN = ss(R * 0.1, R * 0.32, Math.hypot(x - hp[0], y - hp[1], z - hp[2])); let sm = 0, ch1 = false;
+              for (let k = 0; k < 4; k++) { const w = SWw[v * 4 + k]; if (w <= 0) continue; const b = SIw[v * 4 + k]; if (K.has(b)) { sm += w; continue; } let f;
+                if (!inSub(b)) f = 1 - tN; else { const bp = bones[b].a; f = 1 - ss(R * 0.06, R * 0.22, Math.hypot(x - bp[0], y - bp[1], z - bp[2])); }
+                if (f < 1) { SWw[v * 4 + k] = w * f; ch1 = true; } sm += SWw[v * 4 + k]; }
+              if (!ch1) continue; nFix++;
+              if (sm > 1e-6) for (let k = 0; k < 4; k++) SWw[v * 4 + k] /= sm; else { SIw[v * 4] = partBones[p][0]; SWw[v * 4] = 1; for (let k = 1; k < 4; k++) { SIw[v * 4 + k] = 0; SWw[v * 4 + k] = 0; } } }
+            if (nFix) log.push('head kept whole ' + nFix); } }
+      } catch (e) { console.warn('[sculpt] head weights', e); } }
       // bone heat has long tails: skin well down the body's side still carries a few percent of an arm, so it bulges or dents whenever that arm
       // moves. Where a group asks for the relaxing below, the body's skin also lets go of the limb's bones with distance from the joint (all
       // of its own weight by one joint-radius away, none of the limb's beyond about two)

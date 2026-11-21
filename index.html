@@ -77,15 +77,16 @@ footer { padding: 10px 14px 12px; border-top: 1px solid var(--line); font: 11px/
 <div id="labels" hidden></div>
 <div id="loading" style="display:none!important"></div>
 <style>
-#sbxLoad{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background:#8fb8d8;background:linear-gradient(#7fb0dc,#cfe3f2 70%,#e9f1f6);color:#0f1a24;font:15px/1.4 "IBM Plex Sans",system-ui,sans-serif;transition:opacity .5s ease;padding:24px}
+#sbxLoad{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background-color:#000;background-image:radial-gradient(ellipse at center,rgba(0,0,0,0) 30%,rgba(0,0,0,.85) 100%),linear-gradient(rgba(255,255,255,.075) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.075) 1px,transparent 1px);background-size:100% 100%,44px 44px,44px 44px;background-position:center,center,center;color:#f2f2f2;font:15px/1.4 "IBM Plex Sans",system-ui,sans-serif;transition:opacity .5s ease;padding:24px}
 #sbxLoad.out{opacity:0;pointer-events:none}
 #sbxLoad .box{width:min(360px,100%);text-align:center}
-#sbxLoad h1{margin:0 0 4px;font:700 26px "Bungee","Arial Black",sans-serif;letter-spacing:.03em;color:#16212b}
-#sbxLoad .sub{margin:0 0 20px;color:#3a4a58;font-size:13px}
-#sbxLoad .bar{height:8px;border-radius:99px;background:rgba(15,26,36,.15);overflow:hidden}
-#sbxLoad .bar i{display:block;height:100%;width:3%;background:#16212b;border-radius:99px;transition:width .35s ease}
-#sbxLoad .msg{margin-top:12px;font-size:13px;color:#2a3946;min-height:1.4em}
-#sbxLoad .orb{width:44px;height:44px;margin:0 auto 14px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#bcd6ea 55%,#7fa6c6);box-shadow:0 8px 18px rgba(20,40,60,.25);animation:sbxf 1.8s ease-in-out infinite}
+#sbxLoad h1{margin:0 0 4px;font:700 26px "Bungee","Arial Black",sans-serif;letter-spacing:.03em;color:#fff;text-shadow:0 0 18px rgba(255,40,40,.35)}
+#sbxLoad .sub{margin:0 0 20px;color:#b9b9b9;font-size:13px}
+#sbxLoad .bar{height:8px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden}
+#sbxLoad .bar i{display:block;height:100%;width:3%;background:#ff2a2a;box-shadow:0 0 10px #ff2a2a;border-radius:99px;transition:width .35s ease}
+#sbxLoad .msg{margin-top:12px;font-size:13px;color:#cfcfcf;min-height:1.4em}
+#sbxLoad .orb{width:56px;height:56px;margin:0 auto 18px;border-radius:50%;background:radial-gradient(circle at 50% 50%,#ffb3b3 0%,#ff3030 38%,#c00000 70%,rgba(160,0,0,0) 72%);box-shadow:0 0 18px 6px rgba(255,30,30,.75),0 0 60px 18px rgba(255,0,0,.35);animation:sbxglow 1.8s ease-in-out infinite}
+@keyframes sbxglow{0%,100%{box-shadow:0 0 14px 4px rgba(255,30,30,.6),0 0 46px 12px rgba(255,0,0,.25);transform:scale(.96)}50%{box-shadow:0 0 26px 9px rgba(255,40,40,.9),0 0 80px 26px rgba(255,0,0,.45);transform:scale(1.04)}}
 @keyframes sbxf{50%{transform:translateY(-8px)}}
 @media (prefers-reduced-motion:reduce){#sbxLoad .orb{animation:none}}
 </style>

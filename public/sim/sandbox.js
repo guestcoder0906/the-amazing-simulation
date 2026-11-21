@@ -3136,7 +3136,7 @@ function mouth3dStep(dt) { for (const c of CAST.CASTS) { const M = c._mouth3d; i
     const jq = (f) => new THREE.Quaternion().slerp(M.J.quaternion, f);
     const shapeU = new THREE.Vector3().addScaledVector(M.uL, mw * (0.035 * C.open - 0.025 * C.press)).addScaledVector(M.fL, mw * 0.07 * C.round);
     const shapeL = new THREE.Vector3().addScaledVector(M.uL, mw * (0.03 * C.press + 0.05 * C.under)).addScaledVector(M.fL, mw * (0.07 * C.round - 0.05 * C.under));
-    const shapeC = (s) => new THREE.Vector3().addScaledVector(M.sL, s * mw * (0.12 * C.wide * (M.cornerK ?? 1) - 0.16 * C.round)).addScaledVector(M.fL, mw * 0.05 * C.round).addScaledVector(M.uL, mw * 0.02 * C.wide);
+    const shapeC = (s) => new THREE.Vector3().addScaledVector(M.sL, s * mw * (0.12 * C.wide * (M.cornerK ?? 1) - 0.16 * C.round - (M.cornerK !== undefined && M.cornerK < 1 ? 0.1 * C.open : 0))) /* a carved mouth's corners ease inward as it opens: a rounded oval, not a box */.addScaledVector(M.fL, mw * 0.05 * C.round).addScaledVector(M.uL, mw * 0.02 * C.wide);
     M.LU.position.copy(M.LU.userData.p0).add(shapeU);
     if (M.lipStyle) { M.LL.position.copy(M.LL.userData.p0).add(jawOff(M.LL.userData.p0, 1)).add(shapeL); M.LL.quaternion.copy(jq(1)); } else M.LL.position.copy(M.LL.userData.p0).add(shapeL);
     for (const [b, s] of [[M.CL, 1], [M.CR, -1]]) b.position.copy(b.userData.p0).add(M.lipStyle ? jawOff(b.userData.p0, 0.5) : new THREE.Vector3()).add(shapeC(s));

@@ -1616,6 +1616,12 @@ RPC.drawEye = function (pen, E, s, sp, skin, ink = '#120d18') {
         for (let v = 0; v < nP; v++) { if (TP.gOf.get(C.parts[vl[v]].id) === g) continue; let wl = 0; for (let k = 0; k < 4; k++) if (g.boneSet.has(SIw[v * 4 + k])) wl += SWw[v * 4 + k]; if (wl <= 0) continue;
           const dj = Math.hypot(Pp[v * 3] - g.jc[0], Pp[v * 3 + 1] - g.jc[1], Pp[v * 3 + 2] - g.jc[2]), t = Math.min(1, Math.max(0, (dj - a0) / (a1 - a0))), keep = 1 - t * t * (3 - 2 * t); if (keep >= 1 || wl >= 0.999) continue;
           let sm = 0; for (let k = 0; k < 4; k++) { if (g.boneSet.has(SIw[v * 4 + k])) SWw[v * 4 + k] *= keep; sm += SWw[v * 4 + k]; } if (sm > 1e-6) for (let k = 0; k < 4; k++) SWw[v * 4 + k] /= sm; } }
+      /* SEAMS NEVER OPEN: where two parts (or two colours) meet, the surface has doubled vertices - one per side. The weight passes above
+         treat each copy by its own part, so the two could get different weights and pull apart when the body moves (holes, missing faces
+         along the seam). Every group of vertices at the same spot now shares one set of weights. */
+      { const HW = new Map(); for (let v = 0; v < nP; v++) { const k = Math.round(Pp[v * 3] * 1e5) + ',' + Math.round(Pp[v * 3 + 1] * 1e5) + ',' + Math.round(Pp[v * 3 + 2] * 1e5); const a = HW.get(k); if (a) a.push(v); else HW.set(k, [v]); } let nWd = 0;
+        for (const grp of HW.values()) { if (grp.length < 2) continue; const acc = new Map(); for (const v of grp) for (let k = 0; k < 4; k++) { const w = SWw[v * 4 + k]; if (w > 0) acc.set(SIw[v * 4 + k], (acc.get(SIw[v * 4 + k]) || 0) + w); } const top = [...acc].sort((a, b) => b[1] - a[1]).slice(0, 4); const sm = top.reduce((q, e) => q + e[1], 0) || 1; for (const v of grp) for (let k = 0; k < 4; k++) { SIw[v * 4 + k] = top[k] ? top[k][0] : 0; SWw[v * 4 + k] = top[k] ? top[k][1] / sm : 0; } nWd++; }
+        if (nWd) log.push('seams welded ' + nWd); }
       // pose the T-pose model back into the reference stance (rotation shared out by each vertex's weight on the limb: smooth, volume-keeping)
       if (TP.groups.length) {
         PpT = Pp.slice(); NwT = Nw;

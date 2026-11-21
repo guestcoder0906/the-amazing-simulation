@@ -3625,6 +3625,15 @@ function hingeSplit(ch, spec) { try { if (!spec || !Array.isArray(spec.parts)) r
   return { main, hinge, ids: [...H] }; } catch (e) { return null; } }
 function mergeMeshes(a, b) { const nA = a.P.length / 3; const cat = (x, y, T) => { if (!x || !y) return x || y; const o = new T(x.length + y.length); o.set(x); o.set(y, x.length); return o; }; const I = new Uint32Array(a.I.length + b.I.length); I.set(a.I); for (let i = 0; i < b.I.length; i++) I[a.I.length + i] = b.I[i] + nA;
   return { ...a, P: cat(a.P, b.P, Float32Array), N: cat(a.N, b.N, Float32Array), UV: cat(a.UV, b.UV, Float32Array), C: cat(a.C, b.C, Float32Array), SI: cat(a.SI, b.SI, Uint16Array), SW: cat(a.SW, b.SW, Float32Array), I }; }
+/* the hinge corner: only right at the hinge does the jaw piece's skin share its weight with the head (like the cheek at the back of a real
+   jaw), easing to the jaw bone alone a short way forward - so the back corner bends softly instead of a rigid block poking out of the cheek,
+   while the rest of the jaw / beak swings rigidly. It stays a separate mesh: it never fuses with the snout or upper beak. */
+function softenHinge(ch, mesh, ids) { try { const jbs = new Set(); for (const b of ch.bones) if (b && ((ch.face && ch.face.jaw && b.name === ch.face.jaw.bone) || /(^|[_.])(jaw|mandible|lower_?jaw|beak_?lower|lowerbeak|lower_?beak)([_.]|$)/i.test(b.name))) jbs.add(ch.bi[b.name]); if (!jbs.size) return mesh;
+  const n = mesh.P.length / 3; let jb = -1; { const cnt = new Map(); for (let v = 0; v < n; v++) { const i = mesh.SI[v * 4]; if (jbs.has(i)) cnt.set(i, (cnt.get(i) || 0) + 1); } let best = 0; for (const [i, k] of cnt) if (k > best) { best = k; jb = i; } } if (jb < 0) return mesh; const par = ch.bones[jb].parent; if (par === undefined || par < 0) return mesh;
+  const pv = ch.bones[jb].pos; let L = 0; for (let v = 0; v < n; v++) L = Math.max(L, Math.hypot(mesh.P[v * 3] - pv[0], mesh.P[v * 3 + 1] - pv[1], mesh.P[v * 3 + 2] - pv[2])); if (!(L > 1e-4)) return mesh; const r0 = L * 0.08, r1 = L * 0.3;
+  for (let v = 0; v < n; v++) { if (mesh.SI[v * 4] !== jb || mesh.SW[v * 4] < 0.99) continue; const d = Math.hypot(mesh.P[v * 3] - pv[0], mesh.P[v * 3 + 1] - pv[1], mesh.P[v * 3 + 2] - pv[2]); let t = Math.min(1, Math.max(0, (d - r0) / (r1 - r0))); t = t * t * (3 - 2 * t); if (t >= 0.999) continue;
+    mesh.SI[v * 4] = jb; mesh.SW[v * 4] = t; mesh.SI[v * 4 + 1] = par; mesh.SW[v * 4 + 1] = 1 - t; mesh.SI[v * 4 + 2] = 0; mesh.SW[v * 4 + 2] = 0; mesh.SI[v * 4 + 3] = 0; mesh.SW[v * 4 + 3] = 0; }
+  return mesh; } catch (e) { return mesh; } }
 RPC.hingeSplit = hingeSplit;
 RPC.build = (id) => {
   const ch = RPC.builders[id]();
@@ -3634,7 +3643,7 @@ RPC.build = (id) => {
       const spec = ch.sculpt(ch); let mesh = null; const D = RPC.SCULPT_DATA && RPC.SCULPT_DATA[id];
       if (D && D.bytes && !RPC.SCULPT_LIVE) { const sig = RPC.sculpt.signature(ch, spec); if (D.head.sig === sig || D.trust) mesh = RPC.organic.unpack(D.head, D.bytes); /* trust: shipped data made from this exact, unchanged builder (its fingerprint came from an older engine) */ else console.warn('sculpt data out of date for', id, D.head.sig, sig); }
       if (!mesh) { const so = RPC.SCULPT_LIVE ? {} : { voxel: Math.max(spec.voxel, 0.0042), targetTris: Math.min(spec.targetTris, 26000) }; const hs = ch._aiMade ? hingeSplit(ch, spec) : null; /* the shipped cast (Meno, Klora...) keeps its own jaws exactly */ let done = false;
-        if (hs) { try { const r1 = RPC.sculpt.build(ch, hs.main, so); const r2 = RPC.sculpt.build(ch, hs.hinge, { ...so, targetTris: so.targetTris ? Math.max(2000, Math.round(so.targetTris * 0.2)) : undefined }); mesh = mergeMeshes(r1.mesh, r2.mesh); ch.sculptStats = { ...r1.stats, tris: r1.stats.tris + r2.stats.tris, verts: r1.stats.verts + r2.stats.verts, hinge: { parts: hs.ids, tris: r2.stats.tris } }; ch.hingeParts = hs.ids; done = true; } catch (e) { console.warn('[hinge] separate jaw sculpt failed, using one skin', id, e); } }
+        if (hs) { try { const r1 = RPC.sculpt.build(ch, hs.main, so); const r2 = RPC.sculpt.build(ch, hs.hinge, { ...so, targetTris: so.targetTris ? Math.max(2000, Math.round(so.targetTris * 0.2)) : undefined }); mesh = mergeMeshes(r1.mesh, softenHinge(ch, r2.mesh, hs.ids)); ch.sculptStats = { ...r1.stats, tris: r1.stats.tris + r2.stats.tris, verts: r1.stats.verts + r2.stats.verts, hinge: { parts: hs.ids, tris: r2.stats.tris } }; ch.hingeParts = hs.ids; done = true; } catch (e) { console.warn('[hinge] separate jaw sculpt failed, using one skin', id, e); } }
         if (!done) { const r = RPC.sculpt.build(ch, spec, so); mesh = r.mesh; ch.sculptStats = r.stats; } }
       RPC.sculpt.apply(ch, spec, mesh); ch.sculptSpec = spec;
       // the pose the limbs were sculpted and weight-painted in (arms/flippers/wings out, legs apart), listed right after the rest pose

@@ -874,7 +874,7 @@ let CLASSIC_DATA = null;
    separate iris and pupil that roll as they look - placed and sized from where their printed eyes and pupils were. Spondo's bead eyes are
    already real 3D eyes and stay. */
 const CLASSIC_FACE = {
-  spondo: { mouth: { at: [0, 0.4515, 0.1008], width: 0.052, philtrum: 0.4722, teeth: false, jaw_max: 8 }, hide: /Mouth_Drawn/ }, /* philtrum: a shallow stitched-plush groove from the bottom of the nose down to the upper lip */
+  spondo: { mouth: { at: [0, 0.4515, 0.1008], width: 0.052, philtrum: 0.4722, teeth: false, jaw_max: 7 }, hide: /Mouth_Drawn/ }, /* philtrum: a shallow stitched-plush groove from the bottom of the nose down to the upper lip */
   rozy: { mouth: { at: [0, 0.556, 0.077], width: 0.054, gap: 0.0016, teeth: false, jaw_max: 14 }, hide: /Mouth_Drawn|Eye_Whites|Pupils|Eyelids_Drawn/, eyes: { iris: '#3b2a4a', pupil: '#0b0b10', lashes: 4, lashColor: '#1b1024' } },
   /* Klora and Meno keep their printed 2D eyes: their heads curve, so the drawn eyes wrap around them naturally (and they already look, blink and emote) */
   klora: {}, meno: {} };
@@ -3135,9 +3135,9 @@ function mouth3dStep(dt) { for (const c of CAST.CASTS) { const M = c._mouth3d; i
     const jawOff = (p0, f) => { if (!f) return new THREE.Vector3(); const rel = p0.clone().sub(M.J.position).applyQuaternion(M.J.quaternion); return M.J.position.clone().add(rel).sub(p0).multiplyScalar(f); };
     const jq = (f) => new THREE.Quaternion().slerp(M.J.quaternion, f);
     const carvedR = M.cornerK !== undefined && M.cornerK < 1; /* a carved mouth opens as a round O: the upper lip arches up in the middle (its sides follow 60%) and the corners draw in */
-    const shapeU = new THREE.Vector3().addScaledVector(M.uL, mw * ((carvedR ? 0.14 : 0.035) * C.open - 0.025 * C.press)).addScaledVector(M.fL, mw * 0.07 * C.round);
+    const shapeU = new THREE.Vector3().addScaledVector(M.uL, mw * ((carvedR ? 0.11 : 0.035) * C.open - 0.025 * C.press)).addScaledVector(M.fL, mw * 0.07 * C.round);
     const shapeL = new THREE.Vector3().addScaledVector(M.uL, mw * (0.03 * C.press + 0.05 * C.under)).addScaledVector(M.fL, mw * (0.07 * C.round - 0.05 * C.under));
-    const shapeC = (s) => new THREE.Vector3().addScaledVector(M.sL, s * mw * (0.12 * C.wide * (M.cornerK ?? 1) - 0.16 * C.round - (carvedR ? 0.28 * C.open : 0))) /* a carved mouth's corners ease inward as it opens: a rounded oval, not a box */.addScaledVector(M.fL, mw * 0.05 * C.round).addScaledVector(M.uL, mw * 0.02 * C.wide);
+    const shapeC = (s) => new THREE.Vector3().addScaledVector(M.sL, s * mw * (0.12 * C.wide * (M.cornerK ?? 1) - 0.16 * C.round - (carvedR ? 0.14 * C.open : 0))) /* a carved mouth's corners ease inward as it opens: a rounded oval, not a box */.addScaledVector(M.fL, mw * 0.05 * C.round).addScaledVector(M.uL, mw * 0.02 * C.wide);
     M.LU.position.copy(M.LU.userData.p0).add(shapeU);
     if (M.lipStyle) { M.LL.position.copy(M.LL.userData.p0).add(jawOff(M.LL.userData.p0, 1)).add(shapeL); M.LL.quaternion.copy(jq(1)); } else M.LL.position.copy(M.LL.userData.p0).add(shapeL);
     const carvedK = M.cornerK !== undefined && M.cornerK < 1; /* a carved mouth tapers into its corners (rounded oval): corners follow the jaw a quarter, the lower sides 70% */

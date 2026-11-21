@@ -2850,6 +2850,12 @@ function mouthPoint(c, o = {}) { if (!(Array.isArray(o.at) && o.at.length === 3)
 // a modelled mouth anywhere across the lower face: scan heights near the expected mouth line
 function detectModelMouth(c, mp, mw) { if (!mp) return null; const lo = mp.ty - mp.H * 0.24, hi2 = mp.ty + mp.H * 0.22; /* the lower face (eyes sit above, and are two holes off the centre line, never one in the middle) */ const dys = []; for (let d = 0; d <= 0.24; d += 0.03) { dys.push(-d); if (d) dys.push(d); } for (const dy of dys) { const y = mp.ty + dy * mp.H; if (y < lo || y > hi2) continue; const f0 = mp.frontAt(y); if (!f0) continue; const f = findModelMouth(f0[0], new THREE.Vector3(mp.cx, y, f0[1].z), mw); if (f) return f; } return null; }
 
+/* the drawn (2D) mouth's shape per speech sound (the same sound keys as RPC.VISEMES): w = half width, h = opening height (0 = a closed line),
+   smile = curve of a closed line, press = pressed lips, round = an O, grin = flat wide top, top / bot = upper / lower teeth showing, bite = top
+   teeth on the lower lip (F, V), tongue / tongueUp = tongue low / raised (L). It was referenced but never defined, so every drawn mouth threw. */
+const MOUTH_SHAPES = { rest: { w: 0.72, h: 0, smile: 0.25 }, AA: { w: 0.8, h: 1, top: true, tongue: true }, EE: { w: 1, h: 0.36, grin: true, top: true, bot: true }, I: { w: 0.86, h: 0.6, top: true, tongue: true },
+  OH: { w: 0.56, h: 0.95, round: true, tongue: true }, OO: { w: 0.38, h: 0.5, round: true }, FV: { w: 0.8, h: 0.2, top: true, bite: true }, MBP: { w: 0.74, h: 0, press: true, smile: 0.05 },
+  L: { w: 0.76, h: 0.55, top: true, tongue: true, tongueUp: true }, S: { w: 0.9, h: 0.22, grin: true, top: true, bot: true } };
 function drawMouth(M, key, open = 1) { const g = M.ctx, W = M.cv.width, H = M.cv.height, st = M.style; const s = MOUTH_SHAPES[key] || MOUTH_SHAPES.rest; g.clearRect(0, 0, W, H);
   const cx = W / 2, cy = H * 0.46, w = s.w * W * 0.44, hh = s.h * H * 0.4 * (0.55 + 0.45 * clamp(open, 0, 1)); const lw = Math.max(3, H * 0.055);
   g.lineCap = g.lineJoin = 'round'; g.strokeStyle = st.ink; g.lineWidth = lw;

@@ -52,12 +52,10 @@
       worker.onerror = function (e) { state = 'failed'; lastErr = String(e && e.message || 'worker error'); emit(); pending.forEach(function (p) { p.rej(new Error(lastErr)); }); pending.clear(); };
       worker.postMessage({ type: 'load', device: dev });
     };
-    // WebGPU only on roomy desktops (its fp32 model is larger); everyone else gets the compact WASM model
+    // The voice model runs on the CPU (compact WASM q8 model, multi-threaded when the page is cross-origin isolated), never on the GPU:
+    // its WebGPU fp32 model took a few hundred MB of GPU memory next to the 3D game's WebGL and could crash the tab once it loaded.
     var forced = (/[?&]nvdevice=(wasm|webgpu)/.exec(location.search) || [])[1]; if (forced) { go(forced); return; } // debug override
-    var roomy = !(navigator.deviceMemory < 8) && !/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
-    if (roomy && navigator.gpu && navigator.gpu.requestAdapter) {
-      navigator.gpu.requestAdapter().then(function (a) { go(a ? 'webgpu' : 'wasm'); }, function () { go('wasm'); });
-    } else go('wasm');
+    go('wasm');
   }
 
   function gen(text, voice, speed, shape) {

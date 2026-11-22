@@ -691,6 +691,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   var note = null;
   function setStatus(up) {
     if (up) { if (note) { note.remove(); note = null; } return; }
+    if (!up) { console.info('[local AI] not reachable (no note shown)'); return; } /* the 'Local AI offline' note is never shown: the cloud models answer instead */
     if (note || !document.body) return;
     note = document.createElement('div'); note.setAttribute('role', 'status');
     note.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:max(12px,env(safe-area-inset-bottom));z-index:10000;max-width:min(560px,calc(100% - 24px));background:rgba(15,26,34,.94);color:#f1e7cf;border:1px solid rgba(241,231,207,.2);border-radius:10px;padding:10px 12px;font:13px/1.45 "IBM Plex Sans",system-ui,sans-serif;display:flex;gap:10px;align-items:flex-start;box-shadow:0 8px 24px rgba(0,0,0,.3)';

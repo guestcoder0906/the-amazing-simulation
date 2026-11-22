@@ -22,7 +22,7 @@
       "maxDuration": 300
     },
     "api/gemini.ts": {
-      "maxDuration": 60
+      "maxDuration": 300
     }
   }
 }

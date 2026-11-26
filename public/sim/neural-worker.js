@@ -315,10 +315,11 @@ function speakMelody(x, sr, text, pr) {
   const end = /\?\s*["')]*\s*$/.test(text) ? '?' : /!\s*["')]*\s*$/.test(text) ? '!' : /(\.\.\.|…)\s*$/.test(text) ? '…' : /[,;:—–-]\s*$/.test(text) ? ',' : '.'; // ',' = the sentence goes on in the next piece
   const acc1 = pr.acc1 ?? 8, acc2 = pr.acc2 ?? 5, decay = pr.decay ?? 0.7, low = pr.low ?? 3, endRise = pr.endRise ?? 8, keep = pr.keep ?? 0.35, decl = pr.decl ?? 1.5;
   // a designed target (semitones from the voice's centre) for every syllable found
-  const tgt = new Float32Array(Kf), ramp = new Float32Array(Kf); let nAcc = pr.cont ? 1 : 0; // a continuing piece does not restart with the opening leap
+  const tgt = new Float32Array(Kf), ramp = new Float32Array(Kf), isAcc = new Uint8Array(Kf); let nAcc = pr.cont ? 1 : 0; // a continuing piece does not restart with the opening leap
   for (let k = 0; k < Kf; k++) {
     const s = syl[Math.min(K - 1, Math.round((k * (K - 1)) / Math.max(1, Kf - 1)))] || { acc: 0 }, dl = decl * (k / Math.max(1, Kf - 1));
-    if (s.acc) { tgt[k] = (nAcc === 0 || s.acc === 2 ? acc1 : acc2 * Math.max(0.55, Math.pow(decay, nAcc - 1))) - dl; nAcc++; } else tgt[k] = -low - dl;
+    const vr = (pr.vary || 0) * (((Math.sin((k + 1) * 12.9898 + K * 78.233) * 43758.5453) % 1 + 1) % 1 * 2 - 1); // seeded per-syllable variety: no two syllables on the same note
+    if (s.acc) { isAcc[k] = 1; tgt[k] = vr + (nAcc === 0 || s.acc === 2 ? acc1 : acc2 * Math.max(0.55, Math.pow(decay, nAcc - 1))) - dl; nAcc++; } else tgt[k] = vr * 0.6 - low - dl;
   }
   if (pr.cont && Kf > 1) { tgt[0] = Math.min(tgt[0], 1); for (let k = 1; k < Math.min(Kf, 3); k++) tgt[k] = Math.min(tgt[k], tgt[0] + 6 * k); } // a continuing piece picks up where the last one ended (no leap at the seam), then opens up
   const L = Kf - 1;
@@ -339,11 +340,18 @@ function speakMelody(x, sr, text, pr) {
     const r = semi[i]; if (r === r) v += keep * (r - mean[k]); return v;
   };
   let sm = 0; const N = x.length;
+  /* SHOWMAN RHYTHM: the voiced core of every accented syllable is drawn out (stretch) and the small words are rushed (squeeze);
+     consonants keep their own length, so the words stay clear. Without it every syllable got the same time: monotone rhythm */
+  const st = Math.max(0.7, Math.min(1.6, +pr.stretch || 1)), sq = Math.max(0.6, Math.min(1.2, +pr.squeeze || 1)), timed = Math.abs(st - 1) > 0.01 || Math.abs(sq - 1) > 0.01;
+  const oF = new Float64Array(nF + 1); for (let i = 0; i < nF; i++) oF[i + 1] = oF[i] + hop * (timed && f[i] > 0 ? (isAcc[segOf[i]] ? st : sq) : 1);
+  const tail = Math.max(0, N - nF * hop), Lo = timed ? Math.max(1, Math.round(oF[nF] + tail)) : N;
+  const mkMap = () => { let fi = 0; return (ts) => { if (!timed) return ts; if (ts >= oF[nF]) return nF * hop + (ts - oF[nF]); while (fi + 1 < nF && oF[fi + 1] <= ts) fi++; while (fi > 0 && oF[fi] > ts) fi--; const span = oF[fi + 1] - oF[fi] || 1; return fi * hop + ((ts - oF[fi]) / span) * hop; }; };
+  const Amap = mkMap(), Amap2 = mkMap(), Amap3 = mkMap();
   const mk = pitchMarks(x, sr, (s) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(s / hop)))]; return v > 0 ? sr / v : 0; });
-  const y = psolaOLA(x, sr, mk, N, (ts) => ts, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(ts / hop)) / 12); sm = sm ? sm * Math.pow(2, Math.max(-1, Math.min(1, 12 * Math.log2(want / sm) * 0.35)) / 12) : want; const own = sr / pa; return Math.max(Math.pow(2, -7 / 12), Math.min(2.15, sm / own)); } /* crack guard: pitch moves at most ~1 semitone per grain, and never more than ~13 semitones up / 7 down from the model's own voice */, mkRnd(Kf * 131 + N), false, pr.tract);
+  const y = psolaOLA(x, sr, mk, Lo, Amap, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(Amap2(ts) / hop)) / 12); sm = sm ? sm * Math.pow(2, Math.max(-1, Math.min(1, 12 * Math.log2(want / sm) * 0.35)) / 12) : want; const own = sr / pa; return Math.max(Math.pow(2, -7 / 12), Math.min(2.15, sm / own)); } /* crack guard: pitch moves at most ~1 semitone per grain, and never more than ~13 semitones up / 7 down from the model's own voice */, mkRnd(Kf * 131 + N), false, pr.tract);
   // showman dynamics: accented syllables are punched louder, small words drop back (volume swings with the melody), smoothly
-  const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < N; i++) { const fr = Math.min(nF - 1, Math.floor(i / hop)), k = segOf[fr]; const want = Math.pow(10, (dyn * Math.max(-1, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < N; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < N; i++) y[i] *= 0.98 / pk; }
-  const fd = Math.min(N >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[N - 1 - i] *= a; }
+  const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < Lo; i++) { const fr = Math.min(nF - 1, Math.floor(Amap3(i) / hop)), k = segOf[fr]; const want = Math.pow(10, (dyn * Math.max(-1, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < Lo; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < Lo; i++) y[i] *= 0.98 / pk; }
+  const fd = Math.min(Lo >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[Lo - 1 - i] *= a; }
   return { pcm: y, f0: med };
 }
 
@@ -405,13 +413,20 @@ const cl01 = (v) => Math.max(0, Math.min(1, +v || 0));
 function voiceFx(x, sr, fx, seed) {
   if (!fx) return x; const br = cl01(fx.breath) * 0.6, ra = cl01(fx.rasp) * 0.6, na = cl01(fx.nasal), mu = cl01(fx.muffle) * 0.75, bri = Math.max(-1, Math.min(1, +fx.bright || 0)), ro = cl01(fx.robot), ech = cl01(fx.echo) * 0.6;
   const eq = Array.isArray(fx.eq) ? fx.eq.slice(0, 8) : null;
-  if (!br && !ra && !na && !mu && !bri && !ro && !ech && !eq) return x;
+  const eff = cl01(fx.effort); // vocal effort: a shouting / projecting voice (flatter, brighter spectrum, pressed and compressed)
+  if (!br && !ra && !na && !mu && !bri && !ro && !ech && !eq && !eff) return x;
   let pk0 = 0; for (let i = 0; i < x.length; i++) pk0 = Math.max(pk0, Math.abs(x[i])); if (!pk0) return x;
   const rnd = mkRnd(seed || 7), y = x;
   if (eq) for (const b of eq) { const [ty, f, g, q] = b; if (!isFinite(f) || !isFinite(g)) continue; biquad(ty === 'lowshelf' ? 'lowshelf' : ty === 'highshelf' ? 'shelf' : ty === 'lp' || ty === 'hp' ? ty : 'peak', sr, Math.max(40, Math.min(9000, f)), q || 0.8, Math.max(-12, Math.min(12, g)))(y); } // a hand-tuned tone curve (a signature voice)
   if (na) { biquad('peak', sr, 1150, 1.6, 7 * na)(y); biquad('peak', sr, 480, 1.4, -5 * na)(y); } // nasal: the nose resonance up, the open-mouth body down
   if (mu) biquad('lp', sr, 7000 - 4600 * mu, 0.7)(y); // speaking through a closed mouth / mask / helmet (never below ~2.4 kHz: words stay clear)
   if (bri) biquad('shelf', sr, 3200, 0.7, 6 * bri)(y); // crisp & airy (+) or dark & mellow (-)
+  if (eff) { // SHOUTING: loud voices put far more energy into 1-4 kHz (the 'edge' of a yell), are pressed (dense, compressed)
+    // and slightly driven; the words stay clear because the extra energy sits in the consonant / vowel-clarity band
+    biquad('peak', sr, 1600, 0.7, 5 * eff)(y); biquad('peak', sr, 3000, 1.0, 3 * eff)(y); biquad('lowshelf', sr, 150, 0.7, -2 * eff)(y);
+    let pk1 = 0; for (let i = 0; i < y.length; i++) pk1 = Math.max(pk1, Math.abs(y[i])); const drv = 1 + 4 * eff, n0 = pk1 || 1;
+    for (let i = 0; i < y.length; i++) y[i] = (Math.tanh((y[i] / n0) * drv) / Math.tanh(drv)) * n0;
+  }
   if (ra) { // rasp / growl: soft drive plus a rough, irregular throat flutter riding on the voice
     let lfo = 0, tgt = 0; const drive = 1 + 5 * ra;
     for (let i = 0; i < y.length; i++) { if (i % 180 === 0) tgt = rnd(); lfo += (tgt - lfo) * 0.02; const v = Math.tanh(y[i] * drive) / Math.tanh(drive); y[i] = (y[i] * (1 - ra) + v * ra) * (1 - ra * 0.45 * lfo); }

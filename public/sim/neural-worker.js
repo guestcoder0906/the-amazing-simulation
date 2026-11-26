@@ -346,7 +346,7 @@ function speakMelody(x, sr, text, pr) {
   const semi = new Float32Array(nF); for (let i = 0; i < nF; i++) semi[i] = f[i] > 0 ? 12 * Math.log2(f[i] / med) : NaN;
   const mean = new Float32Array(Kf); for (let k = 0; k < Kf; k++) { let s = 0, n = 0; for (let i = bF[k]; i < bF[k + 1]; i++) if (f[i] > 0) { s += semi[i]; n++; } mean[k] = n ? s / n : 0; }
   const segOf = new Int32Array(nF); for (let k = 0; k < Kf; k++) for (let i = bF[k]; i < bF[k + 1]; i++) segOf[i] = k; for (let i = bF[Kf]; i < nF; i++) segOf[i] = Kf - 1; // trailing silence belongs to the last syllable
-  const center = med * (+pr.ratio || 1), glide = Math.max(1, Math.round((0.045 * sr) / hop));
+  const center = med * (+pr.ratio || 1), glide = Math.max(1, Math.round(((+pr.glide || 0.045) * sr) / hop));
   const tFrame = (i) => {
     i = Math.min(nF - 1, Math.max(0, i)); const k = segOf[i], a = bF[k], b = bF[k + 1], u = Math.min(1, (i - a) / Math.max(1, b - a));
     let v = tgt[k] + ramp[k] * Math.pow(u, k === Kf - 1 && end === '!' ? 0.7 : 1.4); // an exclamation's final rise starts early, while the vowel is still voiced
@@ -354,6 +354,7 @@ function speakMelody(x, sr, text, pr) {
        small words slide down; the last syllable keeps its punctuation ramp */
     const sw = +pr.swoop || 0; if (sw && k !== Kf - 1) v += isAcc[k] ? sw * (u < 0.15 ? -0.5 + (u / 0.15) * 0.8 : u < 0.8 ? 0.3 : 0.3 - ((u - 0.8) / 0.2) * 1.0) : -sw * 0.35 * u; // key words: a quick lift onto a high, held plateau (like the reference), small words slide down
     if (k > 0 && i - a < glide) { const pv = tgt[k - 1] + ramp[k - 1], e = (i - a) / glide; v = pv + (v - pv) * e * e * (3 - 2 * e); } // smooth glide into each syllable
+    if (pr.vib && isAcc[k] && (b - a) * hop / sr > 0.16 && u > 0.25) v += pr.vib * Math.min(1, (u - 0.25) / 0.3) * Math.sin(2 * Math.PI * 5.3 * (i * hop / sr)); // melodic: a light vibrato blooms on long stressed vowels, like a showman holding a note
     const r = semi[i]; if (r === r) v += keep * (r - mean[k]); return Math.min(v, acc1 + 4); // nothing above the yell height + a small lift (stacked rises asked for impossible notes that broke the voice)
   };
   let sm = 0; const N = x.length;

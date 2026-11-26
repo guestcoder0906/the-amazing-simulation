@@ -361,8 +361,8 @@ def to_gemini(body: dict, model: str) -> dict:
             if t == "text":
                 if str(b.get("text") or "").strip():
                     parts.append({"text": b["text"]})
-            elif t in ("image", "audio") and src.get("data"):
-                parts.append({"inlineData": {"mimeType": src.get("media_type") or ("image/jpeg" if t == "image" else "audio/wav"), "data": src["data"]}})
+            elif t in ("image", "audio", "video") and src.get("data"):
+                parts.append({"inlineData": {"mimeType": src.get("media_type") or {"image": "image/jpeg", "audio": "audio/wav", "video": "video/webm"}[t], "data": src["data"]}})
             elif t == "tool_use":
                 names[b.get("id")] = b.get("name")
                 p = {"functionCall": {"name": b.get("name"), "args": b.get("input") or {}}}

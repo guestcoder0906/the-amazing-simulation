@@ -551,7 +551,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"local": True, **login_status()})
         if path in ("", "/", "/index.html"):
             html = (ROOT / "index.html").read_text(encoding="utf-8")
-            html = html.replace("<head>", "<head><script>window.SIM_LOCAL = true;</script>", 1)
+            html = html.replace("<head>", "<head><script>window.SIM_LOCAL = true;" + ("window.SIM_GEMINI_SERVER = true;" if os.environ.get("GEMINI_API_KEY") else "") + "</script>", 1)
             data = html.encode("utf-8")
             self._headers(200, "text/html; charset=utf-8", len(data))
             return self.wfile.write(data)
@@ -611,6 +611,55 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
 
+KEY_DIR = Path.home() / ".amazing-digital-circus"   # outside the game folder: kept when the game updates
+KEY_FILE, ASKED_FILE = KEY_DIR / "gemini_key.txt", KEY_DIR / "gemini_asked.txt"
+
+
+def gemini_setup():
+    """Optional Gemini key, asked once at the first start (with the link to get one). With it, the characters really LISTEN (Gemini hears tone,
+    emotion and music); without it the game uses its in-browser listener. The key is checked before it is saved, and it stays on this
+    computer only (it is sent to Google's Gemini API and nowhere else)."""
+    if os.environ.get("GEMINI_API_KEY"):
+        return
+    try:
+        if KEY_FILE.exists():
+            k = KEY_FILE.read_text(encoding="utf-8").strip()
+            if k:
+                os.environ["GEMINI_API_KEY"] = k
+                return
+        if ASKED_FILE.exists():
+            return
+    except OSError:
+        return
+    print()
+    print("OPTIONAL - a free Gemini API key lets the characters really hear sounds and voices (tone, emotion, music).")
+    print("  Get one here: https://aistudio.google.com/apikey  (sign in with Google, click 'Create API key', copy it)")
+    for _ in range(3):
+        try:
+            k = input("  Paste your Gemini API key and press Enter (or just press Enter to skip for now): ").strip()
+        except EOFError:
+            k = ""
+        if not k:
+            print("  Skipped: the game uses its built-in listener. You can add a key later with the key button in the game.")
+            print()
+            break
+        r = gemini_check(k)
+        if r.get("ok"):
+            try:
+                KEY_DIR.mkdir(parents=True, exist_ok=True); KEY_FILE.write_text(k, encoding="utf-8")
+            except OSError:
+                pass
+            os.environ["GEMINI_API_KEY"] = k
+            print("  Gemini key works and is saved on this computer.")
+            print()
+            break
+        print("  That key did not work: " + str(r.get("message", "")) + ". Try again, or press Enter to skip.")
+    try:
+        KEY_DIR.mkdir(parents=True, exist_ok=True); ASKED_FILE.write_text("asked", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def setup():
     """First run: install Claude Code (Anthropic's official installer) if it is missing, then sign in with Anthropic's own sign-in."""
     global CLAUDE
@@ -641,6 +690,10 @@ def main():
             setup()
         except (EOFError, KeyboardInterrupt):
             pass
+    try:
+        gemini_setup()   # optional Gemini key: asked once (the saved key is loaded every start)
+    except (EOFError, KeyboardInterrupt):
+        pass
     CLAUDE = find_claude()
     st = login_status()
     if not CLAUDE:

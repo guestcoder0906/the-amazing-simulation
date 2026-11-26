@@ -73,7 +73,10 @@ function shape(x, sr, sh) {
   if (sh.trim) x = trimSilence(x, sr);
   const hop = Math.round(sr * 0.005), f = pitchTrack(x, sr, hop), f0 = median(f) || 0;
   const sing = Array.isArray(sh.notes) && sh.notes.length;
-  if (!sing && !sh.expr && !sh.fry && (!sh.ratio || Math.abs(sh.ratio - 1) < 0.004)) return { pcm: x, f0 };
+  /* character voice design: tract = vocal-tract scale (>1 smaller head / higher formants, <1 bigger body / lower formants), set
+     separately from pitch so a high voice is not a strained low one; tremble = an elderly wobble; robot = a flat, monotone pitch */
+  const tract = Math.max(0.8, Math.min(1.3, +sh.tract || 1)), trem = Math.max(0, Math.min(1, +sh.tremble || 0)), robo = Math.max(0, Math.min(1, +sh.robot || 0));
+  if (!sing && !sh.expr && !sh.fry && Math.abs(tract - 1) < 0.01 && !trem && !robo && (!sh.ratio || Math.abs(sh.ratio - 1) < 0.004)) return { pcm: x, f0 };
   const N = x.length, nF = f.length;
   const voicedF = (i) => f[Math.min(nF - 1, Math.max(0, i))] > 0;
   const per = (i) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(i / hop)))]; return v > 0 ? sr / v : 0; };
@@ -143,13 +146,27 @@ function shape(x, sr, sh) {
       let ratio = sing ? targetHz(ts) / (sr / pa) : sh.ratio;
       if (!sing && sh.expr && f0 > 0) ratio = (ratio || 1) * Math.max(0.72, Math.min(1.3, Math.pow(Math.max(0.6, Math.min(1.7, (sr / pa) / f0)), sh.expr - 1))); /* peaks capped so excitement never jumps up into a thin, nerdy register */ // widen the natural intonation: big theatrical pitch excursions
       const fryOn = !sing && sh.fry && ts > L * 0.72; if (fryOn) ratio = (ratio || 1) * 0.8; // frustration: the line drops low into gravelly fry
+      if (!sing && robo && f0 > 0) { const flat = (f0 * (sh.ratio || 1)) / (sr / pa); ratio = Math.pow(ratio || 1, 1 - robo) * Math.pow(flat, robo); } // machine voice: the melody flattens toward one note
+      if (!sing && trem) { const tt2 = ts / sr; ratio = (ratio || 1) * Math.pow(2, (trem * (55 * Math.sin(2 * Math.PI * 2.1 * tt2) + 14 * Math.sin(2 * Math.PI * 5.6 * tt2 + 1.3))) / 1200); } // old voice: a slow steady ~2 Hz wobble plus a faint tremor (not random, which sounds drunk)
       ratio = Math.max(0.5, Math.min(2.2, ratio || 1));
       /* real voices are never machine-perfect: ~0.5% cycle-to-cycle timing jitter and ~2% loudness shimmer while singing */
-      step = (pa / ratio) * (sing ? 1 + (rnd() - 0.5) * 0.01 : fryOn ? 1 + (rnd() - 0.5) * 0.35 : 1); const half = Math.round(pa), w0 = Math.min(1, step / pa) * (sing ? 1 + (rnd() - 0.5) * 0.04 : fryOn ? (rnd() < 0.5 ? 0.55 : 1.15) : 1), d0 = Math.round(ts);
-      for (let k = -half; k <= half; k++) {
-        const di = d0 + k; if (di < 0 || di >= y.length) continue;
-        const a0 = m0 + k, a1 = m1 + k; const v0 = a0 >= 0 && a0 < N ? x[a0] : 0, v1 = a1 >= 0 && a1 < N ? x[a1] : 0;
-        y[di] += (v0 * (1 - fr) + v1 * fr) * w0 * (0.5 + 0.5 * Math.cos((Math.PI * k) / half));
+      step = (pa / ratio) * (sing ? 1 + (rnd() - 0.5) * 0.01 : fryOn ? 1 + (rnd() - 0.5) * 0.35 : 1); const d0 = Math.round(ts);
+      if (Math.abs(tract - 1) < 0.01) {
+        const half = Math.round(pa), w0 = Math.min(1, step / pa) * (sing ? 1 + (rnd() - 0.5) * 0.04 : fryOn ? (rnd() < 0.5 ? 0.55 : 1.15) : 1);
+        for (let k = -half; k <= half; k++) {
+          const di = d0 + k; if (di < 0 || di >= y.length) continue;
+          const a0 = m0 + k, a1 = m1 + k; const v0 = a0 >= 0 && a0 < N ? x[a0] : 0, v1 = a1 >= 0 && a1 < N ? x[a1] : 0;
+          y[di] += (v0 * (1 - fr) + v1 * fr) * w0 * (0.5 + 0.5 * Math.cos((Math.PI * k) / half));
+        }
+      } else {
+        /* formant shift: each grain (one glottal pulse filtered by the vocal tract) is read faster or slower, which scales the
+           tract's resonances by `tract` while the grain spacing above still sets the pitch: a different-sized speaker, same words */
+        const half = Math.max(8, Math.round(pa / tract)), w0 = Math.min(1, step / half) * (fryOn ? (rnd() < 0.5 ? 0.55 : 1.15) : 1);
+        const rd = (a) => { const i0 = Math.floor(a), f2 = a - i0; return i0 >= 0 && i0 + 1 < N ? x[i0] + (x[i0 + 1] - x[i0]) * f2 : 0; };
+        for (let k = -half; k <= half; k++) {
+          const di = d0 + k; if (di < 0 || di >= y.length) continue;
+          y[di] += (rd(m0 + k * tract) * (1 - fr) + rd(m1 + k * tract) * fr) * w0 * (0.5 + 0.5 * Math.cos((Math.PI * k) / half));
+        }
       }
     } else {
       const half = Math.round(sr * 0.005); step = half; // unvoiced (s, f, t...): copied at its own pace
@@ -293,10 +310,96 @@ self.fetch = (input, init) => {
 function allowCustom(t) {
   if (t._cvPatched) return;
   const orig = t._validate_voice.bind(t);
-  t._validate_voice = (v) => (/^cv_/.test(v) ? 'a' : orig(v)); // custom voices speak American English
+  t._validate_voice = (v) => (/^cv_/.test(v) ? (CUSTOM_LANG.get(v) || 'a') : orig(v)); // custom voices read with the accent of their main ingredients
   t._cvPatched = true;
 }
 
+// ---------------------------------------------------------------- voice colour (after the words are spoken clearly)
+// Every effect is gentle and capped: the words always stay easy to understand. RBJ biquads + shaped noise.
+function biquad(type, sr, f, q, gainDb) {
+  const A = Math.pow(10, (gainDb || 0) / 40), w = (2 * Math.PI * Math.min(f, sr * 0.45)) / sr, cs = Math.cos(w), sn = Math.sin(w), al = sn / (2 * (q || 0.707));
+  let b0, b1, b2, a0, a1, a2;
+  if (type === 'lp') { b0 = (1 - cs) / 2; b1 = 1 - cs; b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
+  else if (type === 'hp') { b0 = (1 + cs) / 2; b1 = -(1 + cs); b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
+  else if (type === 'peak') { b0 = 1 + al * A; b1 = -2 * cs; b2 = 1 - al * A; a0 = 1 + al / A; a1 = -2 * cs; a2 = 1 - al / A; }
+  else { const s2 = 2 * Math.sqrt(A) * al; /* high shelf */ b0 = A * ((A + 1) + (A - 1) * cs + s2); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - s2); a0 = (A + 1) - (A - 1) * cs + s2; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - s2; }
+  const c = [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0];
+  return (x) => { let x1 = 0, x2 = 0, y1 = 0, y2 = 0; for (let i = 0; i < x.length; i++) { const v = x[i], o = c[0] * v + c[1] * x1 + c[2] * x2 - c[3] * y1 - c[4] * y2; x2 = x1; x1 = v; y2 = y1; y1 = o; x[i] = o; } return x; };
+}
+const cl01 = (v) => Math.max(0, Math.min(1, +v || 0));
+function voiceFx(x, sr, fx, seed) {
+  if (!fx) return x; const br = cl01(fx.breath) * 0.6, ra = cl01(fx.rasp) * 0.6, na = cl01(fx.nasal), mu = cl01(fx.muffle) * 0.75, bri = Math.max(-1, Math.min(1, +fx.bright || 0)), ro = cl01(fx.robot), ech = cl01(fx.echo) * 0.6;
+  if (!br && !ra && !na && !mu && !bri && !ro && !ech) return x;
+  let pk0 = 0; for (let i = 0; i < x.length; i++) pk0 = Math.max(pk0, Math.abs(x[i])); if (!pk0) return x;
+  const rnd = mkRnd(seed || 7), y = x;
+  if (na) { biquad('peak', sr, 1150, 1.6, 7 * na)(y); biquad('peak', sr, 480, 1.4, -5 * na)(y); } // nasal: the nose resonance up, the open-mouth body down
+  if (mu) biquad('lp', sr, 7000 - 4600 * mu, 0.7)(y); // speaking through a closed mouth / mask / helmet (never below ~2.4 kHz: words stay clear)
+  if (bri) biquad('shelf', sr, 3200, 0.7, 6 * bri)(y); // crisp & airy (+) or dark & mellow (-)
+  if (ra) { // rasp / growl: soft drive plus a rough, irregular throat flutter riding on the voice
+    let lfo = 0, tgt = 0; const drive = 1 + 5 * ra;
+    for (let i = 0; i < y.length; i++) { if (i % 180 === 0) tgt = rnd(); lfo += (tgt - lfo) * 0.02; const v = Math.tanh(y[i] * drive) / Math.tanh(drive); y[i] = (y[i] * (1 - ra) + v * ra) * (1 - ra * 0.45 * lfo); }
+  }
+  if (br) { // breath: air noise that follows the voice's own loudness (louder vowels = more air), kept above 1.8 kHz
+    const n = new Float32Array(y.length); for (let i = 0; i < n.length; i++) n[i] = rnd() * 2 - 1; biquad('hp', sr, 1800, 0.7)(n); biquad('lp', sr, 7500, 0.7)(n);
+    let env = 0; for (let i = 0; i < y.length; i++) { env = Math.max(Math.abs(y[i]), env * 0.9985); y[i] = y[i] * (1 - br * 0.25) + n[i] * env * br * 0.55; }
+  }
+  if (ro) { // machine: a metallic comb plus a light ring modulation
+    const d = Math.round(sr * 0.0035), buf = new Float32Array(d); let bi = 0; const fb = 0.45 * ro, f = 2 * Math.PI * 70 / sr;
+    for (let i = 0; i < y.length; i++) { const dl = buf[bi]; const o = y[i] + dl * fb; buf[bi] = o; bi = (bi + 1) % d; y[i] = o * (1 - 0.35 * ro + 0.35 * ro * Math.sin(f * i)); }
+  }
+  if (ech) { // big hollow body / cave: a short slap-back
+    const d = Math.round(sr * 0.085), src = y.slice(0); for (let i = d; i < y.length; i++) y[i] += src[i - d] * ech * 0.45;
+  }
+  let pk = 0; for (let i = 0; i < y.length; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk) { const g = pk0 / pk; for (let i = 0; i < y.length; i++) y[i] *= g; }
+  return y;
+}
+
+// ---------------------------------------------------------------- mumble speech (no words: a creature's own babble)
+// Procedural source-filter voice (after UnitOfTime's NPC "mumble speech"): the line's own text drives it, so the same words always
+// make the same sounds. Typewriter timing (letters ~33 ms, commas 3x, sentence ends 6x), one syllable per vowel group, six vowels
+// built from a glottal buzz + breath through three formant resonators (scaled by the speaker's tract size), a swell-sustain-taper
+// envelope, micro-jitter, and punctuation-driven melody: declining clauses that reset after commas, a rise on a question's last word,
+// a higher start on "!", a fade on "...", louder ALL CAPS, and an optional slow ~2 Hz wobble for an old voice.
+const MUMBLE_V = { A: [730, 1090, 2440], E: [530, 1840, 2480], I: [270, 2290, 3010], O: [570, 840, 2410], OO: [300, 870, 2240], U: [640, 1190, 2390] };
+function mumbleVowel(cl) { cl = cl.toLowerCase(); if (/oo|ou|ew|ue/.test(cl)) return 'OO'; if (/ee|ea|ie|ey|^y$|^i$/.test(cl)) return 'I'; const c = cl[0]; return c === 'a' ? 'A' : c === 'e' ? 'E' : c === 'i' ? 'I' : c === 'o' ? 'O' : c === 'u' ? 'U' : 'E'; }
+function mumble(text, sr, p) {
+  text = String(text || '').slice(0, 600); const f0 = Math.max(60, Math.min(700, +p.f0 || 160)), tract = Math.max(0.6, Math.min(1.8, +p.tract || 1)), rate = Math.max(0.5, Math.min(2, +p.speed || 1));
+  const breath = cl01(p.breath ?? 0.12), wob = cl01(p.tremble), seedR = mkRnd(2166136261 ^ text.length * 977 ^ Math.round(f0 * 13)); const ev = [];
+  let t = 0.03, clause = 0, words = text.split(/\s+/); const lastWordStart = text.search(/\S+\s*$/);
+  const qLine = /\?\s*$/.test(text), exLine = /!\s*$/.test(text), fadeLine = /(\.\.\.|…)\s*$/.test(text);
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]; let d = 0.033;
+    if (/[,;:]/.test(ch)) { d *= 3; clause = 0; } else if (/[.!?…]/.test(ch)) { d *= 6; clause = 0; } else if (ch === ' ') d *= 1.1;
+    if (/[aeiouy]/i.test(ch) && !(i > 0 && /[aeiouy]/i.test(text[i - 1]))) {
+      let j = i; while (j < text.length && /[aeiouy]/i.test(text[j])) j++;
+      const wsI = text.lastIndexOf(' ', i) + 1, wEnd = (text.slice(i).search(/[\s,.;:!?]/) + 1 || text.length - i + 1) + i - 1, word = text.slice(wsI, wEnd);
+      const caps = word.length > 1 && word === word.toUpperCase() && /[A-Z]/.test(word);
+      let semi = -clause * 0.45 + (exLine ? 2.5 : 0) + (seedR() - 0.5) * 1.2; // declination + variety
+      if (qLine && i >= lastWordStart) semi += 4 + 3 * ((i - lastWordStart) / Math.max(1, text.length - lastWordStart));
+      ev.push({ t, v: mumbleVowel(text.slice(i, j)), semi, amp: (caps ? 1.45 : 1), fade: fadeLine ? 1 - 0.6 * (i / text.length) : 1 });
+      clause++;
+    }
+    t += d / rate;
+  }
+  const L = Math.round((t + 0.25) * sr), y = new Float32Array(L); const gap = 0.1 / rate;
+  for (let k = 0; k < ev.length; k++) {
+    const e = ev[k], nextT = k + 1 < ev.length ? ev[k + 1].t : e.t + gap, dur = Math.min(0.32, Math.max(0.07, (nextT - e.t) * 1.25)); // a little overlap: one stream of speech
+    const F = MUMBLE_V[e.v].map((f) => f * tract), BW = [80, 100, 130].map((b) => b * Math.sqrt(tract));
+    const R = F.map((f, i2) => { const r = Math.exp((-Math.PI * BW[i2]) / sr), th = (2 * Math.PI * f) / sr; return { a1: 2 * r * Math.cos(th), a2: -r * r, g: (1 - r) * [1, 0.7, 0.4][i2], y1: 0, y2: 0 }; });
+    const s0 = Math.round(e.t * sr), n = Math.round(dur * sr); let ph = 0;
+    for (let i = 0; i < n && s0 + i < L; i++) {
+      const tt = (s0 + i) / sr, a = i / n; const env = a < 0.2 ? Math.sin((a / 0.2) * Math.PI / 2) : a < 0.65 ? 1 : Math.cos(((a - 0.65) / 0.35) * Math.PI / 2); // swell, sustain, taper
+      const hz = f0 * Math.pow(2, e.semi / 12) * (1 + (seedR() - 0.5) * 0.012) * (1 + (wob ? 0.035 * wob * Math.sin(2 * Math.PI * 2 * tt) : 0)); // micro-jitter + old-age wobble
+      ph += hz / sr; if (ph >= 1) ph -= 1; const glot = ph < 0.6 ? Math.sin(Math.PI * ph / 0.6) ** 2 : 0; // Rosenberg-style glottal pulse
+      const src = (glot - 0.3) * (1 - breath) + (seedR() * 2 - 1) * breath * 0.6;
+      let out = 0; for (const r of R) { const v = r.g * src + r.a1 * r.y1 + r.a2 * r.y2; r.y2 = r.y1; r.y1 = v; out += v; }
+      y[s0 + i] += out * env * e.amp * e.fade;
+    }
+  }
+  let pk = 0; for (let i = 0; i < L; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk) for (let i = 0; i < L; i++) y[i] *= 0.6 / pk;
+  return y;
+}
+const CUSTOM_LANG = new Map(); // cv_name -> 'a' (American) or 'b' (British): the accent the blended voice reads with
 let chain = Promise.resolve();
 self.onmessage = (ev) => {
   const msg = ev.data || {};
@@ -314,11 +417,18 @@ self.onmessage = (ev) => {
     return;
   }
   if (msg.type === 'gen') {
+    if (msg.mode === 'mumble') { // a creature's babble needs no speech model: made at once, even while the model is still downloading
+      try { const sr = 24000; let pcm = mumble(msg.text, sr, Object.assign({ speed: msg.speed }, msg.mumble || {})); pcm = voiceFx(pcm, sr, msg.fx, msg.seed); postMessage({ type: 'audio', id: msg.id, pcm, sr, f0: (msg.mumble && msg.mumble.f0) || 0, starts: null, failed: false }, [pcm.buffer]); }
+      catch (e) { postMessage({ type: 'error', id: msg.id, text: String((e && e.message) || e) }); }
+      return;
+    }
     chain = chain.then(async () => {
       try {
         const t = await load(msg.device);
         allowCustom(t);
-        if (msg.mix && /^cv_/.test(msg.voice || '')) await makeVoice(msg.voice, msg.mix, msg.seed || 1, msg.vary);
+        if (msg.mix && /^cv_/.test(msg.voice || '')) { await makeVoice(msg.voice, msg.mix, msg.seed || 1, msg.vary); if (msg.lang) CUSTOM_LANG.set(msg.voice, msg.lang); }
+        if (msg.fx && msg.shape && !msg.shape.phrase && !Array.isArray(msg.shape.notes)) msg.shape = Object.assign({}, msg.shape, { tract: msg.fx.tract, tremble: msg.fx.tremble, robot: msg.fx.robot });
+        else if (msg.fx && !msg.shape && (msg.fx.tract || msg.fx.tremble || msg.fx.robot)) msg.shape = { ratio: 1, tract: msg.fx.tract, tremble: msg.fx.tremble, robot: msg.fx.robot };
         const out = await t.generate(String(msg.text || '').slice(0, 900), { voice: msg.voice || 'af_heart', speed: msg.speed || 1 });
         let pcm = out.audio instanceof Float32Array ? out.audio : new Float32Array(out.audio);
         const sr = out.sampling_rate || 24000;
@@ -326,6 +436,7 @@ self.onmessage = (ev) => {
         let starts = null, failed = false;
         if (msg.shape && msg.shape.phrase) { const r = singPhrase(pcm, sr, msg.shape); if (r) { pcm = r.pcm; f0 = r.f0; starts = r.starts; } else failed = true; }
         else if (msg.shape) { const r = shape(pcm, sr, msg.shape); pcm = r.pcm; f0 = r.f0; }
+        if (msg.fx) pcm = voiceFx(pcm, sr, msg.fx, msg.seed);
         postMessage({ type: 'audio', id: msg.id, pcm, sr, f0, starts, failed }, [pcm.buffer]);
       } catch (e) {
         postMessage({ type: 'error', id: msg.id, text: String((e && (e.stack || e.message)) || e).slice(0, 600) });

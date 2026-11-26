@@ -322,6 +322,7 @@ function biquad(type, sr, f, q, gainDb) {
   if (type === 'lp') { b0 = (1 - cs) / 2; b1 = 1 - cs; b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
   else if (type === 'hp') { b0 = (1 + cs) / 2; b1 = -(1 + cs); b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
   else if (type === 'peak') { b0 = 1 + al * A; b1 = -2 * cs; b2 = 1 - al * A; a0 = 1 + al / A; a1 = -2 * cs; a2 = 1 - al / A; }
+  else if (type === 'lowshelf') { const s2 = 2 * Math.sqrt(A) * al; b0 = A * ((A + 1) - (A - 1) * cs + s2); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - s2); a0 = (A + 1) + (A - 1) * cs + s2; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - s2; }
   else { const s2 = 2 * Math.sqrt(A) * al; /* high shelf */ b0 = A * ((A + 1) + (A - 1) * cs + s2); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - s2); a0 = (A + 1) - (A - 1) * cs + s2; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - s2; }
   const c = [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0];
   return (x) => { let x1 = 0, x2 = 0, y1 = 0, y2 = 0; for (let i = 0; i < x.length; i++) { const v = x[i], o = c[0] * v + c[1] * x1 + c[2] * x2 - c[3] * y1 - c[4] * y2; x2 = x1; x1 = v; y2 = y1; y1 = o; x[i] = o; } return x; };
@@ -329,9 +330,11 @@ function biquad(type, sr, f, q, gainDb) {
 const cl01 = (v) => Math.max(0, Math.min(1, +v || 0));
 function voiceFx(x, sr, fx, seed) {
   if (!fx) return x; const br = cl01(fx.breath) * 0.6, ra = cl01(fx.rasp) * 0.6, na = cl01(fx.nasal), mu = cl01(fx.muffle) * 0.75, bri = Math.max(-1, Math.min(1, +fx.bright || 0)), ro = cl01(fx.robot), ech = cl01(fx.echo) * 0.6;
-  if (!br && !ra && !na && !mu && !bri && !ro && !ech) return x;
+  const eq = Array.isArray(fx.eq) ? fx.eq.slice(0, 8) : null;
+  if (!br && !ra && !na && !mu && !bri && !ro && !ech && !eq) return x;
   let pk0 = 0; for (let i = 0; i < x.length; i++) pk0 = Math.max(pk0, Math.abs(x[i])); if (!pk0) return x;
   const rnd = mkRnd(seed || 7), y = x;
+  if (eq) for (const b of eq) { const [ty, f, g, q] = b; if (!isFinite(f) || !isFinite(g)) continue; biquad(ty === 'lowshelf' ? 'lowshelf' : ty === 'highshelf' ? 'shelf' : ty === 'lp' || ty === 'hp' ? ty : 'peak', sr, Math.max(40, Math.min(9000, f)), q || 0.8, Math.max(-12, Math.min(12, g)))(y); } // a hand-tuned tone curve (a signature voice)
   if (na) { biquad('peak', sr, 1150, 1.6, 7 * na)(y); biquad('peak', sr, 480, 1.4, -5 * na)(y); } // nasal: the nose resonance up, the open-mouth body down
   if (mu) biquad('lp', sr, 7000 - 4600 * mu, 0.7)(y); // speaking through a closed mouth / mask / helmet (never below ~2.4 kHz: words stay clear)
   if (bri) biquad('shelf', sr, 3200, 0.7, 6 * bri)(y); // crisp & airy (+) or dark & mellow (-)

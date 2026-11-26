@@ -76,7 +76,7 @@ function shape(x, sr, sh) {
   /* character voice design: tract = vocal-tract scale (>1 smaller head / higher formants, <1 bigger body / lower formants), set
      separately from pitch so a high voice is not a strained low one; tremble = an elderly wobble; robot = a flat, monotone pitch */
   const tract = Math.max(0.8, Math.min(1.3, +sh.tract || 1)), trem = Math.max(0, Math.min(1, +sh.tremble || 0)), robo = Math.max(0, Math.min(1, +sh.robot || 0));
-  if (!sing && !sh.expr && !sh.fry && Math.abs(tract - 1) < 0.01 && !trem && !robo && (!sh.ratio || Math.abs(sh.ratio - 1) < 0.004)) return { pcm: x, f0 };
+  if (!sing && !sh.expr && !sh.fry && !sh.arc && Math.abs(tract - 1) < 0.01 && !trem && !robo && (!sh.ratio || Math.abs(sh.ratio - 1) < 0.004)) return { pcm: x, f0 };
   const N = x.length, nF = f.length;
   const voicedF = (i) => f[Math.min(nF - 1, Math.max(0, i))] > 0;
   const per = (i) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(i / hop)))]; return v > 0 ? sr / v : 0; };
@@ -147,6 +147,7 @@ function shape(x, sr, sh) {
       if (!sing && sh.expr && f0 > 0) ratio = (ratio || 1) * Math.max(0.72, Math.min(1.3, Math.pow(Math.max(0.6, Math.min(1.7, (sr / pa) / f0)), sh.expr - 1))); /* peaks capped so excitement never jumps up into a thin, nerdy register */ // widen the natural intonation: big theatrical pitch excursions
       const fryOn = !sing && sh.fry && ts > L * 0.72; if (fryOn) ratio = (ratio || 1) * 0.8; // frustration: the line drops low into gravelly fry
       if (!sing && robo && f0 > 0) { const flat = (f0 * (sh.ratio || 1)) / (sr / pa); ratio = Math.pow(ratio || 1, 1 - robo) * Math.pow(flat, robo); } // machine voice: the melody flattens toward one note
+      if (!sing && sh.arc) { const u = ts / L, a0 = +sh.arc.start || 0, a1 = +sh.arc.end || 0; const st0 = u < 0.28 ? a0 * Math.sin(Math.PI * Math.min(1, u / 0.28)) : 0, st1 = u > 0.72 ? a1 * Math.pow((u - 0.72) / 0.28, 1.6) : 0; ratio = (ratio || 1) * Math.pow(2, (st0 + st1) / 12); } // announcer flourish: the opening word lifts, the last word swoops up
       if (!sing && trem) { const tt2 = ts / sr; ratio = (ratio || 1) * Math.pow(2, (trem * (55 * Math.sin(2 * Math.PI * 2.1 * tt2) + 14 * Math.sin(2 * Math.PI * 5.6 * tt2 + 1.3))) / 1200); } // old voice: a slow steady ~2 Hz wobble plus a faint tremor (not random, which sounds drunk)
       ratio = Math.max(0.5, Math.min(2.2, ratio || 1));
       /* real voices are never machine-perfect: ~0.5% cycle-to-cycle timing jitter and ~2% loudness shimmer while singing */

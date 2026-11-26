@@ -293,25 +293,38 @@ function textSyllables(text) {
   });
   return out;
 }
-function syllableBounds(x, sr, f, hop, K) {
-  const N = x.length, nF = f.length; if (K < 1 || nF < 4) return null;
+function syllableBounds(x, sr, f, hop, K, syl) {
+  /* Syllables are placed by the TEXT and snapped to the SOUND: the spoken span (silence before / after excluded) is shared out
+     among the line's syllables (stressed ones a little longer), then each boundary moves to the deepest loudness dip near its
+     expected place. Pure peak-picking drifted (a silent start counted as a syllable, soft syllables were missed), which put
+     accents on the wrong words */
+  const N = x.length, nF = f.length; if (K < 1 || nF < 8) return null;
   const env = new Float32Array(nF); for (let i = 0; i < nF; i++) { const c = i * hop, w = Math.round(sr * 0.0125); let s = 0, n = 0; for (let k = Math.max(0, c - w); k < Math.min(N, c + w); k++) { s += x[k] * x[k]; n++; } env[i] = n ? Math.sqrt(s / n) : 0; }
-  const sm = new Float32Array(nF); for (let i = 0; i < nF; i++) { let s = 0, n = 0; for (let k = i - 3; k <= i + 3; k++) if (k >= 0 && k < nF) { s += env[k]; n++; } sm[i] = s / n; }
-  const peaks = []; const minGap = Math.round(0.06 * sr / hop); let gmax = 0; for (let i = 0; i < nF; i++) gmax = Math.max(gmax, sm[i]);
-  for (let i = 1; i < nF - 1; i++) if (f[i] > 0 && sm[i] >= sm[i - 1] && sm[i] > sm[i + 1] && sm[i] > gmax * 0.1) { if (peaks.length && i - peaks[peaks.length - 1] < minGap) { if (sm[i] > sm[peaks[peaks.length - 1]]) peaks[peaks.length - 1] = i; } else peaks.push(i); }
-  if (peaks.length < Math.max(1, Math.ceil(K * 0.5))) return null;
-  const dip = (a, b) => { let m = a, mv = Infinity; for (let i = a; i <= b; i++) if (sm[i] < mv) { mv = sm[i]; m = i; } return { m, mv }; };
-  while (peaks.length > K) { let bi = 0, bs = -Infinity; for (let i = 0; i + 1 < peaks.length; i++) { const d = dip(peaks[i], peaks[i + 1]).mv / Math.min(sm[peaks[i]], sm[peaks[i + 1]]); if (d > bs) { bs = d; bi = i; } } const keep = sm[peaks[bi]] >= sm[peaks[bi + 1]] ? peaks[bi] : peaks[bi + 1]; peaks.splice(bi, 2, keep); }
-  const bF = [0]; for (let i = 0; i + 1 < peaks.length; i++) bF.push(dip(peaks[i], peaks[i + 1]).m); bF.push(nF);
-  while (bF.length - 1 < K) { // gliding syllables with no dip between them: split the longest voiced stretch at its weakest point
-    let bi = -1, bl = 0; for (let k = 0; k + 1 < bF.length; k++) { let v = 0; for (let i = bF[k]; i < bF[k + 1]; i++) if (f[i] > 0) v++; if (v > bl) { bl = v; bi = k; } }
-    if (bi < 0 || bl < 6) break; const a = bF[bi], b = bF[bi + 1]; let m = a + ((b - a) >> 1), mv = Infinity; for (let i = a + 3; i < b - 3; i++) if (f[i] > 0 && sm[i] < mv) { mv = sm[i]; m = i; } bF.splice(bi + 1, 0, m);
+  const sm = new Float32Array(nF); for (let i = 0; i < nF; i++) { let s = 0, n = 0; for (let k = i - 4; k <= i + 4; k++) if (k >= 0 && k < nF) { s += env[k]; n++; } sm[i] = s / n; }
+  let gmax = 0; for (let i = 0; i < nF; i++) gmax = Math.max(gmax, sm[i]); if (!gmax) return null;
+  let s0 = 0; while (s0 < nF - 1 && sm[s0] < gmax * 0.06) s0++; let e0 = nF - 1; while (e0 > s0 && sm[e0] < gmax * 0.06) e0--;
+  const span = e0 - s0 + 1, minL = Math.max(4, Math.round(0.05 * sr / hop)); if (span < K * minL * 0.6) return null;
+  const wts = []; for (let k = 0; k < K; k++) wts.push(syl && syl[k] && syl[k].acc ? 1.3 : 0.9); const tw = wts.reduce((a, b) => a + b, 0);
+  const bF = [0]; let acc = 0, prev = s0;
+  for (let k = 0; k < K - 1; k++) {
+    acc += wts[k]; const ideal = s0 + (acc / tw) * span, avg = span / K, r = Math.max(2, Math.round(avg * 0.4));
+    let best = Math.round(ideal), bv = Infinity;
+    for (let i = Math.max(prev + minL, Math.round(ideal - r)); i <= Math.min(e0 - minL * (K - 1 - k), Math.round(ideal + r)); i++) { const v = sm[i] * (1 + 0.6 * Math.abs(i - ideal) / r); if (v < bv) { bv = v; best = i; } }
+    best = Math.max(prev + minL, Math.min(best, e0 - minL * (K - 1 - k))); bF.push(best); prev = best;
   }
+  bF.push(Math.min(nF, e0 + Math.round(minL / 2) + 1));
   return bF;
 }
 function speakMelody(x, sr, text, pr) {
   const hop = Math.round(sr * 0.005), f = pitchTrack(x, sr, hop), nF = f.length, med = median(f) || 0; if (!med) return null;
-  const syl = textSyllables(text), K = syl.length; if (!K) return null; const bF = syllableBounds(x, sr, f, hop, K); if (!bF) return null; const Kf = bF.length - 1;
+  /* voiced sound the tracker missed (a quiet line start, a soft consonant-vowel join) would be copied UNSHIFTED at the model's raw
+     pitch - a flat, low island inside a lively line (heard as monotone, or as a crack). Fill those frames from the nearest tracked
+     pitch when they carry real energy, so every voiced moment follows the melody */
+  { const en = new Float32Array(nF); for (let i = 0; i < nF; i++) { let s = 0; const c = i * hop; for (let k = c; k < Math.min(x.length, c + hop * 2); k++) s += x[k] * x[k]; en[i] = s; }
+    const ve = []; for (let i = 0; i < nF; i++) if (f[i] > 0) ve.push(en[i]); ve.sort((a, b) => a - b); const eRef = ve.length ? ve[ve.length >> 1] : 0;
+    const zc = (i) => { const c = i * hop; let z = 0, n = 0; for (let k = c + 1; k < Math.min(x.length, c + hop * 2); k++) { n++; if ((x[k] >= 0) !== (x[k - 1] >= 0)) z++; } return n ? z / n : 1; }; // hiss (s, f, sh, k bursts) crosses zero very often; voice does not
+    for (let i = 0; i < nF; i++) if (!(f[i] > 0) && en[i] > eRef * 0.015 && zc(i) < 0.12) { let best = 0; for (let d = 1; d <= 30 && !best; d++) { if (i - d >= 0 && f[i - d] > 0 && !f[i - d].filled) best = f[i - d]; else if (i + d < nF && f[i + d] > 0) best = f[i + d]; } if (best) f[i] = best; } }
+  const syl = textSyllables(text), K = syl.length; if (!K) return null; const bF = syllableBounds(x, sr, f, hop, K, syl); if (!bF) return null; const Kf = bF.length - 1;
   const end = /\?\s*["')]*\s*$/.test(text) ? '?' : /!\s*["')]*\s*$/.test(text) ? '!' : /(\.\.\.|…)\s*$/.test(text) ? '…' : /[,;:—–-]\s*$/.test(text) ? ',' : '.'; // ',' = the sentence goes on in the next piece
   const acc1 = pr.acc1 ?? 8, acc2 = pr.acc2 ?? 5, decay = pr.decay ?? 0.7, low = pr.low ?? 3, endRise = pr.endRise ?? 8, keep = pr.keep ?? 0.35, decl = pr.decl ?? 1.5;
   // a designed target (semitones from the voice's centre) for every syllable found
@@ -319,9 +332,10 @@ function speakMelody(x, sr, text, pr) {
   for (let k = 0; k < Kf; k++) {
     const s = syl[Math.min(K - 1, Math.round((k * (K - 1)) / Math.max(1, Kf - 1)))] || { acc: 0 }, dl = decl * (k / Math.max(1, Kf - 1));
     const vr = (pr.vary || 0) * (((Math.sin((k + 1) * 12.9898 + K * 78.233) * 43758.5453) % 1 + 1) % 1 * 2 - 1); // seeded per-syllable variety: no two syllables on the same note
-    if (s.acc) { isAcc[k] = 1; tgt[k] = vr + (nAcc === 0 || s.acc === 2 ? acc1 : acc2 * Math.max(0.55, Math.pow(decay, nAcc - 1))) - dl; nAcc++; } else tgt[k] = vr * 0.6 - low - dl;
+    if (s.acc) { isAcc[k] = 1; const zz = nAcc > 0 && s.acc !== 2 && nAcc % 2 === 1 ? 1 - (pr.zig || 0) : 1; /* zigzag: every other key word leaps less, so the line goes high-low-high instead of plateauing */ tgt[k] = vr + (nAcc === 0 || s.acc === 2 ? acc1 : acc2 * zz * Math.max(0.55, Math.pow(decay, nAcc - 1))) - dl; nAcc++; } else tgt[k] = vr * 0.6 - low - dl;
   }
   if (pr.cont && Kf > 1) { tgt[0] = Math.min(tgt[0], 1); for (let k = 1; k < Math.min(Kf, 3); k++) tgt[k] = Math.min(tgt[k], tgt[0] + 6 * k); } // a continuing piece picks up where the last one ended (no leap at the seam), then opens up
+  if (end === '!' && pr.finalYell) { let la = -1; for (let k = Kf - 1; k >= 0; k--) if (isAcc[k]) { la = k; break; } if (la > 0) { const yv = acc1 * pr.finalYell; for (let k = la; k < Kf; k++) tgt[k] = Math.max(tgt[k], yv); } } // the last key word of an exclamation is YELLED, and the line stays up there to the end
   const L = Kf - 1;
   if (end === '!') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise; }
   else if (end === '?') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise * 0.8; }
@@ -331,13 +345,16 @@ function speakMelody(x, sr, text, pr) {
   // the model's own micro-melody around each syllable's mean is kept a little (natural, human movement inside a syllable)
   const semi = new Float32Array(nF); for (let i = 0; i < nF; i++) semi[i] = f[i] > 0 ? 12 * Math.log2(f[i] / med) : NaN;
   const mean = new Float32Array(Kf); for (let k = 0; k < Kf; k++) { let s = 0, n = 0; for (let i = bF[k]; i < bF[k + 1]; i++) if (f[i] > 0) { s += semi[i]; n++; } mean[k] = n ? s / n : 0; }
-  const segOf = new Int32Array(nF); for (let k = 0; k < Kf; k++) for (let i = bF[k]; i < bF[k + 1]; i++) segOf[i] = k;
+  const segOf = new Int32Array(nF); for (let k = 0; k < Kf; k++) for (let i = bF[k]; i < bF[k + 1]; i++) segOf[i] = k; for (let i = bF[Kf]; i < nF; i++) segOf[i] = Kf - 1; // trailing silence belongs to the last syllable
   const center = med * (+pr.ratio || 1), glide = Math.max(1, Math.round((0.045 * sr) / hop));
   const tFrame = (i) => {
-    i = Math.min(nF - 1, Math.max(0, i)); const k = segOf[i], a = bF[k], b = bF[k + 1], u = (i - a) / Math.max(1, b - a);
-    let v = tgt[k] + ramp[k] * Math.pow(u, 1.4);
+    i = Math.min(nF - 1, Math.max(0, i)); const k = segOf[i], a = bF[k], b = bF[k + 1], u = Math.min(1, (i - a) / Math.max(1, b - a));
+    let v = tgt[k] + ramp[k] * Math.pow(u, k === Kf - 1 && end === '!' ? 0.7 : 1.4); // an exclamation's final rise starts early, while the vowel is still voiced
+    /* MOVEMENT INSIDE THE SYLLABLE (a showman never holds a flat note): key words scoop up into a peak and fall away (a 'hat'),
+       small words slide down; the last syllable keeps its punctuation ramp */
+    const sw = +pr.swoop || 0; if (sw && k !== Kf - 1) v += isAcc[k] ? sw * (u < 0.15 ? -0.5 + (u / 0.15) * 0.8 : u < 0.8 ? 0.3 : 0.3 - ((u - 0.8) / 0.2) * 1.0) : -sw * 0.35 * u; // key words: a quick lift onto a high, held plateau (like the reference), small words slide down
     if (k > 0 && i - a < glide) { const pv = tgt[k - 1] + ramp[k - 1], e = (i - a) / glide; v = pv + (v - pv) * e * e * (3 - 2 * e); } // smooth glide into each syllable
-    const r = semi[i]; if (r === r) v += keep * (r - mean[k]); return v;
+    const r = semi[i]; if (r === r) v += keep * (r - mean[k]); return Math.min(v, acc1 + 4); // nothing above the yell height + a small lift (stacked rises asked for impossible notes that broke the voice)
   };
   let sm = 0; const N = x.length;
   /* SHOWMAN RHYTHM: the voiced core of every accented syllable is drawn out (stretch) and the small words are rushed (squeeze);
@@ -348,7 +365,11 @@ function speakMelody(x, sr, text, pr) {
   const mkMap = () => { let fi = 0; return (ts) => { if (!timed) return ts; if (ts >= oF[nF]) return nF * hop + (ts - oF[nF]); while (fi + 1 < nF && oF[fi + 1] <= ts) fi++; while (fi > 0 && oF[fi] > ts) fi--; const span = oF[fi + 1] - oF[fi] || 1; return fi * hop + ((ts - oF[fi]) / span) * hop; }; };
   const Amap = mkMap(), Amap2 = mkMap(), Amap3 = mkMap();
   const mk = pitchMarks(x, sr, (s) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(s / hop)))]; return v > 0 ? sr / v : 0; });
-  const y = psolaOLA(x, sr, mk, Lo, Amap, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(Amap2(ts) / hop)) / 12); sm = sm ? sm * Math.pow(2, Math.max(-1, Math.min(1, 12 * Math.log2(want / sm) * 0.35)) / 12) : want; const own = sr / pa; return Math.max(Math.pow(2, -7 / 12), Math.min(2.15, sm / own)); } /* crack guard: pitch moves at most ~1 semitone per grain, and never more than ~13 semitones up / 7 down from the model's own voice */, mkRnd(Kf * 131 + N), false, pr.tract);
+  const y = psolaOLA(x, sr, mk, Lo, Amap, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(Amap2(ts) / hop)) / 12); sm = sm ? sm * Math.pow(2, Math.max(-1, Math.min(1, 12 * Math.log2(want / sm) * 0.35)) / 12) : want; const own = sr / pa; return Math.max(Math.pow(2, -7 / 12), Math.min(2, sm / own)); } /* crack guard: pitch moves at most ~1 semitone per grain, and never more than an octave up / 7 down (beyond about 2x the voice breaks into noise: measured) from the model's own voice */, mkRnd(Kf * 131 + N), false, pr.tract);
+  /* TONE FOLLOWS THE MELODY: when a showman goes up and loud his voice gets brighter and harder (more 1.5-3.5 kHz 'edge'); on
+     the low, small words it relaxes. A fixed tone at every pitch was part of what sounded monotone */
+  const hb = +pr.heat || 0; if (hb) { const yb = y.slice(0); biquad('peak', sr, 1900, 0.8, 9 * hb)(yb); biquad('peak', sr, 3300, 1.0, 5 * hb)(yb); let rm0 = 0, rm1 = 0; for (let i = 0; i < Lo; i++) { rm0 += y[i] * y[i]; rm1 += yb[i] * yb[i]; } const nrm = Math.sqrt(rm0 / (rm1 || 1)); let h = 0; const Amap4 = mkMap();
+    for (let i = 0; i < Lo; i++) { const fr = Math.min(nF - 1, Math.floor(Amap4(i) / hop)), k = segOf[fr]; const want = Math.max(0, Math.min(1, (tgt[k] + ramp[k] * 0.5 + low) / Math.max(1, acc1 + low))); h += (want - h) * 0.003; y[i] = y[i] * (1 - h) + yb[i] * nrm * h; } }
   // showman dynamics: accented syllables are punched louder, small words drop back (volume swings with the melody), smoothly
   const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < Lo; i++) { const fr = Math.min(nF - 1, Math.floor(Amap3(i) / hop)), k = segOf[fr]; const want = Math.pow(10, (dyn * Math.max(-1, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < Lo; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < Lo; i++) y[i] *= 0.98 / pk; }
   const fd = Math.min(Lo >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[Lo - 1 - i] *= a; }
@@ -424,7 +445,7 @@ function voiceFx(x, sr, fx, seed) {
   if (eff) { // SHOUTING: loud voices put far more energy into 1-4 kHz (the 'edge' of a yell), are pressed (dense, compressed)
     // and slightly driven; the words stay clear because the extra energy sits in the consonant / vowel-clarity band
     biquad('peak', sr, 1600, 0.7, 5 * eff)(y); biquad('peak', sr, 3000, 1.0, 3 * eff)(y); biquad('lowshelf', sr, 150, 0.7, -2 * eff)(y);
-    let pk1 = 0; for (let i = 0; i < y.length; i++) pk1 = Math.max(pk1, Math.abs(y[i])); const drv = 1 + 4 * eff, n0 = pk1 || 1;
+    let pk1 = 0; for (let i = 0; i < y.length; i++) pk1 = Math.max(pk1, Math.abs(y[i])); const drv = 1 + 1.5 * eff, n0 = pk1 || 1;
     for (let i = 0; i < y.length; i++) y[i] = (Math.tanh((y[i] / n0) * drv) / Math.tanh(drv)) * n0;
   }
   if (ra) { // rasp / growl: soft drive plus a rough, irregular throat flutter riding on the voice

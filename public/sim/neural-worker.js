@@ -339,6 +339,8 @@ function speakMelody(x, sr, text, pr) {
   let sm = 0; const N = x.length;
   const mk = pitchMarks(x, sr, (s) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(s / hop)))]; return v > 0 ? sr / v : 0; });
   const y = psolaOLA(x, sr, mk, N, (ts) => ts, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(ts / hop)) / 12); sm = sm ? sm + (want - sm) * 0.35 : want; return sm / (sr / pa); }, mkRnd(Kf * 131 + N), false, pr.tract);
+  // showman dynamics: accented syllables are punched louder, small words drop back (volume swings with the melody), smoothly
+  const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < N; i++) { const fr = Math.min(nF - 1, Math.floor(i / hop)), k = segOf[fr]; const want = Math.pow(10, (dyn * Math.max(-1, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < N; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < N; i++) y[i] *= 0.98 / pk; }
   const fd = Math.min(N >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[N - 1 - i] *= a; }
   return { pcm: y, f0: med };
 }

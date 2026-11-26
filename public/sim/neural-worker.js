@@ -449,7 +449,7 @@ function voiceFx(x, sr, fx, seed) {
     // and slightly driven; the words stay clear because the extra energy sits in the consonant / vowel-clarity band
     biquad('peak', sr, 1600, 0.7, 5 * eff)(y); biquad('peak', sr, 3000, 1.0, 3 * eff)(y); biquad('lowshelf', sr, 150, 0.7, -2 * eff)(y);
     let pk1 = 0; for (let i = 0; i < y.length; i++) pk1 = Math.max(pk1, Math.abs(y[i])); const drv = 1 + 1.5 * eff, n0 = pk1 || 1;
-    for (let i = 0; i < y.length; i++) y[i] = (Math.tanh((y[i] / n0) * drv) / Math.tanh(drv)) * n0;
+    if (fx.drive) for (let i = 0; i < y.length; i++) y[i] = (Math.tanh((y[i] / n0) * drv) / Math.tanh(drv)) * n0; // saturation only when asked for (it made voices crackly): the shout comes from the yell-band tone
   }
   if (ra) { // rasp / growl: soft drive plus a rough, irregular throat flutter riding on the voice
     let lfo = 0, tgt = 0; const drive = 1 + 5 * ra;

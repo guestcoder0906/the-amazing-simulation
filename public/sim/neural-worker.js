@@ -336,6 +336,7 @@ function speakMelody(x, sr, text, pr) {
   }
   if (pr.cont && Kf > 1) { tgt[0] = Math.min(tgt[0], 1); for (let k = 1; k < Math.min(Kf, 3); k++) tgt[k] = Math.min(tgt[k], tgt[0] + 6 * k); } // a continuing piece picks up where the last one ended (no leap at the seam), then opens up
   if (end === '!' && pr.finalYell) { let la = -1; for (let k = Kf - 1; k >= 0; k--) if (isAcc[k]) { la = k; break; } if (la > 0) { const yv = acc1 * pr.finalYell; for (let k = la; k < Kf; k++) tgt[k] = Math.max(tgt[k], yv); } } // the last key word of an exclamation is YELLED, and the line stays up there to the end
+  if (pr.endDrop && Kf > 3 && end !== ',') for (let k = Math.floor(Kf * 0.7); k < Kf; k++) tgt[k] -= pr.endDrop * Math.min(1, (k - Kf * 0.7 + 1) / (Kf * 0.3)); // lines settle LOWER toward their end (calmer, deeper finish)
   const L = Kf - 1;
   if (end === '!') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise; }
   else if (end === '?') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise * 0.8; }
@@ -372,7 +373,7 @@ function speakMelody(x, sr, text, pr) {
   const hb = +pr.heat || 0; if (hb) { const yb = y.slice(0); biquad('peak', sr, 1900, 0.8, 9 * hb)(yb); biquad('peak', sr, 3300, 1.0, 5 * hb)(yb); let rm0 = 0, rm1 = 0; for (let i = 0; i < Lo; i++) { rm0 += y[i] * y[i]; rm1 += yb[i] * yb[i]; } const nrm = Math.sqrt(rm0 / (rm1 || 1)); let h = 0; const Amap4 = mkMap();
     for (let i = 0; i < Lo; i++) { const fr = Math.min(nF - 1, Math.floor(Amap4(i) / hop)), k = segOf[fr]; const want = Math.max(0, Math.min(1, (tgt[k] + ramp[k] * 0.5 + low) / Math.max(1, acc1 + low))); h += (want - h) * 0.003; y[i] = y[i] * (1 - h) + yb[i] * nrm * h; } }
   // showman dynamics: accented syllables are punched louder, small words drop back (volume swings with the melody), smoothly
-  const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < Lo; i++) { const fr = Math.min(nF - 1, Math.floor(Amap3(i) / hop)), k = segOf[fr]; const want = Math.pow(10, (dyn * Math.max(-1, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < Lo; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < Lo; i++) y[i] *= 0.98 / pk; }
+  const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < Lo; i++) { const fr = Math.min(nF - 1, Math.floor(Amap3(i) / hop)), k = segOf[fr]; const want0 = Math.pow(10, (dyn * Math.max(-0.45, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); const want = k >= Kf * 0.7 ? Math.max(want0, 0.9) : want0; /* the lowered ending keeps its natural loudness (every last word stays audible) */ g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < Lo; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < Lo; i++) y[i] *= 0.98 / pk; }
   const fd = Math.min(Lo >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[Lo - 1 - i] *= a; }
   return { pcm: y, f0: med };
 }

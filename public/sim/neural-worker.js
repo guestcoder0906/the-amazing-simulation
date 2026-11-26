@@ -312,17 +312,19 @@ function syllableBounds(x, sr, f, hop, K) {
 function speakMelody(x, sr, text, pr) {
   const hop = Math.round(sr * 0.005), f = pitchTrack(x, sr, hop), nF = f.length, med = median(f) || 0; if (!med) return null;
   const syl = textSyllables(text), K = syl.length; if (!K) return null; const bF = syllableBounds(x, sr, f, hop, K); if (!bF) return null; const Kf = bF.length - 1;
-  const end = /\?\s*["')]*\s*$/.test(text) ? '?' : /!\s*["')]*\s*$/.test(text) ? '!' : /(\.\.\.|…)\s*$/.test(text) ? '…' : '.';
+  const end = /\?\s*["')]*\s*$/.test(text) ? '?' : /!\s*["')]*\s*$/.test(text) ? '!' : /(\.\.\.|…)\s*$/.test(text) ? '…' : /[,;:—–-]\s*$/.test(text) ? ',' : '.'; // ',' = the sentence goes on in the next piece
   const acc1 = pr.acc1 ?? 8, acc2 = pr.acc2 ?? 5, decay = pr.decay ?? 0.7, low = pr.low ?? 3, endRise = pr.endRise ?? 8, keep = pr.keep ?? 0.35, decl = pr.decl ?? 1.5;
   // a designed target (semitones from the voice's centre) for every syllable found
-  const tgt = new Float32Array(Kf), ramp = new Float32Array(Kf); let nAcc = 0;
+  const tgt = new Float32Array(Kf), ramp = new Float32Array(Kf); let nAcc = pr.cont ? 1 : 0; // a continuing piece does not restart with the opening leap
   for (let k = 0; k < Kf; k++) {
     const s = syl[Math.min(K - 1, Math.round((k * (K - 1)) / Math.max(1, Kf - 1)))] || { acc: 0 }, dl = decl * (k / Math.max(1, Kf - 1));
-    if (s.acc) { tgt[k] = (nAcc === 0 || s.acc === 2 ? acc1 : acc2 * Math.pow(decay, nAcc - 1)) - dl; nAcc++; } else tgt[k] = -low - dl;
+    if (s.acc) { tgt[k] = (nAcc === 0 || s.acc === 2 ? acc1 : acc2 * Math.max(0.55, Math.pow(decay, nAcc - 1))) - dl; nAcc++; } else tgt[k] = -low - dl;
   }
+  if (pr.cont && Kf > 1) { tgt[0] = Math.min(tgt[0], 1); for (let k = 1; k < Math.min(Kf, 3); k++) tgt[k] = Math.min(tgt[k], tgt[0] + 6 * k); } // a continuing piece picks up where the last one ended (no leap at the seam), then opens up
   const L = Kf - 1;
   if (end === '!') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise; }
   else if (end === '?') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise * 0.8; }
+  else if (end === ',') { tgt[L] = Math.max(tgt[L], -1); ramp[L] = 2; } // mid-sentence: a small lift that carries into the next piece
   else if (end === '…') { tgt[L] = -low - 1; ramp[L] = -2; }
   else { tgt[L] = Math.min(tgt[L], -low - 1); ramp[L] = -3; }
   // the model's own micro-melody around each syllable's mean is kept a little (natural, human movement inside a syllable)
@@ -338,7 +340,7 @@ function speakMelody(x, sr, text, pr) {
   };
   let sm = 0; const N = x.length;
   const mk = pitchMarks(x, sr, (s) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(s / hop)))]; return v > 0 ? sr / v : 0; });
-  const y = psolaOLA(x, sr, mk, N, (ts) => ts, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(ts / hop)) / 12); sm = sm ? sm + (want - sm) * 0.35 : want; return sm / (sr / pa); }, mkRnd(Kf * 131 + N), false, pr.tract);
+  const y = psolaOLA(x, sr, mk, N, (ts) => ts, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(ts / hop)) / 12); sm = sm ? sm * Math.pow(2, Math.max(-1, Math.min(1, 12 * Math.log2(want / sm) * 0.35)) / 12) : want; const own = sr / pa; return Math.max(Math.pow(2, -7 / 12), Math.min(2.15, sm / own)); } /* crack guard: pitch moves at most ~1 semitone per grain, and never more than ~13 semitones up / 7 down from the model's own voice */, mkRnd(Kf * 131 + N), false, pr.tract);
   // showman dynamics: accented syllables are punched louder, small words drop back (volume swings with the melody), smoothly
   const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < N; i++) { const fr = Math.min(nF - 1, Math.floor(i / hop)), k = segOf[fr]; const want = Math.pow(10, (dyn * Math.max(-1, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < N; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < N; i++) y[i] *= 0.98 / pk; }
   const fd = Math.min(N >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[N - 1 - i] *= a; }

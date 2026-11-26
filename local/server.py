@@ -616,8 +616,9 @@ def setup():
     global CLAUDE
     CLAUDE = find_claude()
     if not CLAUDE:
-        ans = input("Claude Code is not installed. Install it now with Anthropic's official installer? [Y/n] ").strip().lower()
-        if ans in ("", "y", "yes"):
+        # the player chose to play this way, so it is set up without asking (Anthropic's official installer; no admin rights needed)
+        print("Claude Code is not installed yet: installing it now with Anthropic's official installer (first time only)...", flush=True)
+        if True:
             if os.name == "nt":
                 subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"])
             else:

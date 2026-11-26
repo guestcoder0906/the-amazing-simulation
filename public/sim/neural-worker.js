@@ -258,20 +258,89 @@ function pitchMarks(x, sr, per) {
   return { marks, mper };
 }
 // overlap-add: blend of the two analysis periods around the read position (continuous, no buzz/ring), natural jitter + shimmer
-function psolaOLA(x, sr, mk, L, A, ratioAt, rnd, human) {
+function psolaOLA(x, sr, mk, L, A, ratioAt, rnd, human, tract) {
   const { marks, mper } = mk, N = x.length, y = new Float32Array(L + 4096); let mi = 0;
+  tract = tract && Math.abs(tract - 1) >= 0.01 ? Math.max(0.8, Math.min(1.3, tract)) : 1; const rd = (a) => { const i0 = Math.floor(a), f2 = a - i0; return i0 >= 0 && i0 + 1 < N ? x[i0] + (x[i0 + 1] - x[i0]) * f2 : 0; };
   for (let ts = 0; ts < L;) {
     const ta = A(ts); while (mi + 1 < marks.length && marks[mi + 1] <= ta) mi++; while (mi > 0 && marks[mi] > ta) mi--;
     const m0 = marks[mi], p0 = mper[mi], m1 = mi + 1 < marks.length ? marks[mi + 1] : m0, p1 = mi + 1 < marks.length ? mper[mi + 1] : p0; let step;
     if (p0 && p1) {
       const fr = m1 > m0 ? Math.max(0, Math.min(1, (ta - m0) / (m1 - m0))) : 0, pa = p0 + (p1 - p0) * fr;
       const ratio = Math.max(0.5, Math.min(2.2, ratioAt(ts, pa) || 1));
-      step = (pa / ratio) * (human ? 1 + (rnd() - 0.5) * 0.01 : 1); const half = Math.round(pa), w0 = Math.min(1, step / pa) * (human ? 1 + (rnd() - 0.5) * 0.04 : 1), d0 = Math.round(ts);
-      for (let k = -half; k <= half; k++) { const di = d0 + k; if (di < 0 || di >= y.length) continue; const a0 = m0 + k, a1 = m1 + k; const v0 = a0 >= 0 && a0 < N ? x[a0] : 0, v1 = a1 >= 0 && a1 < N ? x[a1] : 0; y[di] += (v0 * (1 - fr) + v1 * fr) * w0 * (0.5 + 0.5 * Math.cos((Math.PI * k) / half)); }
+      step = (pa / ratio) * (human ? 1 + (rnd() - 0.5) * 0.01 : 1); const half = Math.max(8, Math.round(pa / tract)), w0 = Math.min(1, step / half) * (human ? 1 + (rnd() - 0.5) * 0.04 : 1), d0 = Math.round(ts);
+      for (let k = -half; k <= half; k++) { const di = d0 + k; if (di < 0 || di >= y.length) continue; y[di] += (rd(m0 + k * tract) * (1 - fr) + rd(m1 + k * tract) * fr) * w0 * (0.5 + 0.5 * Math.cos((Math.PI * k) / half)); }
     } else { const half = Math.round(sr * 0.005); step = half; for (let k = -half; k <= half; k++) { const si = Math.round(ta) + k, di = Math.round(ts) + k; if (si < 0 || si >= N || di < 0 || di >= y.length) continue; y[di] += x[si] * (0.5 + 0.5 * Math.cos((Math.PI * k) / half)); } }
     ts += Math.max(8, step);
   }
   return y.slice(0, L);
+}
+
+// ---------------------------------------------------------------- melody rewriting (intonation by design, not just bent)
+// The model decides a sentence's melody when it reads the words; scaling that melody can only exaggerate it. Here the melody is
+// REWRITTEN syllable by syllable: the line's syllables are found in the recording (loud voiced nuclei between consonant dips, like
+// the singing detector), each gets a designed target pitch from the TEXT (accented words leap up, small words sit low, the line
+// ends the way its punctuation says), and a little of the model's own micro-melody is kept on top so it still sounds spoken by a
+// person. Timing is untouched (every consonant and vowel keeps its length), so pronunciation stays exactly the model's.
+// Every character can have its own melody style; Caine's is fitted to his reference recording.
+const FUNC_W = new Set('a an the my your his her its our their to of in on at by for with and or but so if is am are was were be been do does did i you he she it we they me him us them this that these those as from up not no just than then too very can will would shall should could has have had oh uh um'.split(' '));
+function textSyllables(text) {
+  const out = []; const words = String(text || '').match(/[A-Za-z']+/g) || [];
+  words.forEach((w, wi) => {
+    const lw = w.toLowerCase(); let g = lw.match(/[aeiouy]+/g) || ['x'];
+    if (g.length > 1 && /[^aeiouy]e$/.test(lw) && !/[^aeiouy]le$/.test(lw)) g = g.slice(0, -1); // silent final e (make, time), not -le (little)
+    const content = !FUNC_W.has(lw.replace(/'.*/, '')), caps = w.length > 1 && w === w.toUpperCase();
+    g.forEach((_, si) => out.push({ w: wi, acc: content && si === 0 ? (caps ? 2 : 1) : 0 }));
+  });
+  return out;
+}
+function syllableBounds(x, sr, f, hop, K) {
+  const N = x.length, nF = f.length; if (K < 1 || nF < 4) return null;
+  const env = new Float32Array(nF); for (let i = 0; i < nF; i++) { const c = i * hop, w = Math.round(sr * 0.0125); let s = 0, n = 0; for (let k = Math.max(0, c - w); k < Math.min(N, c + w); k++) { s += x[k] * x[k]; n++; } env[i] = n ? Math.sqrt(s / n) : 0; }
+  const sm = new Float32Array(nF); for (let i = 0; i < nF; i++) { let s = 0, n = 0; for (let k = i - 3; k <= i + 3; k++) if (k >= 0 && k < nF) { s += env[k]; n++; } sm[i] = s / n; }
+  const peaks = []; const minGap = Math.round(0.06 * sr / hop); let gmax = 0; for (let i = 0; i < nF; i++) gmax = Math.max(gmax, sm[i]);
+  for (let i = 1; i < nF - 1; i++) if (f[i] > 0 && sm[i] >= sm[i - 1] && sm[i] > sm[i + 1] && sm[i] > gmax * 0.1) { if (peaks.length && i - peaks[peaks.length - 1] < minGap) { if (sm[i] > sm[peaks[peaks.length - 1]]) peaks[peaks.length - 1] = i; } else peaks.push(i); }
+  if (peaks.length < Math.max(1, Math.ceil(K * 0.5))) return null;
+  const dip = (a, b) => { let m = a, mv = Infinity; for (let i = a; i <= b; i++) if (sm[i] < mv) { mv = sm[i]; m = i; } return { m, mv }; };
+  while (peaks.length > K) { let bi = 0, bs = -Infinity; for (let i = 0; i + 1 < peaks.length; i++) { const d = dip(peaks[i], peaks[i + 1]).mv / Math.min(sm[peaks[i]], sm[peaks[i + 1]]); if (d > bs) { bs = d; bi = i; } } const keep = sm[peaks[bi]] >= sm[peaks[bi + 1]] ? peaks[bi] : peaks[bi + 1]; peaks.splice(bi, 2, keep); }
+  const bF = [0]; for (let i = 0; i + 1 < peaks.length; i++) bF.push(dip(peaks[i], peaks[i + 1]).m); bF.push(nF);
+  while (bF.length - 1 < K) { // gliding syllables with no dip between them: split the longest voiced stretch at its weakest point
+    let bi = -1, bl = 0; for (let k = 0; k + 1 < bF.length; k++) { let v = 0; for (let i = bF[k]; i < bF[k + 1]; i++) if (f[i] > 0) v++; if (v > bl) { bl = v; bi = k; } }
+    if (bi < 0 || bl < 6) break; const a = bF[bi], b = bF[bi + 1]; let m = a + ((b - a) >> 1), mv = Infinity; for (let i = a + 3; i < b - 3; i++) if (f[i] > 0 && sm[i] < mv) { mv = sm[i]; m = i; } bF.splice(bi + 1, 0, m);
+  }
+  return bF;
+}
+function speakMelody(x, sr, text, pr) {
+  const hop = Math.round(sr * 0.005), f = pitchTrack(x, sr, hop), nF = f.length, med = median(f) || 0; if (!med) return null;
+  const syl = textSyllables(text), K = syl.length; if (!K) return null; const bF = syllableBounds(x, sr, f, hop, K); if (!bF) return null; const Kf = bF.length - 1;
+  const end = /\?\s*["')]*\s*$/.test(text) ? '?' : /!\s*["')]*\s*$/.test(text) ? '!' : /(\.\.\.|…)\s*$/.test(text) ? '…' : '.';
+  const acc1 = pr.acc1 ?? 8, acc2 = pr.acc2 ?? 5, decay = pr.decay ?? 0.7, low = pr.low ?? 3, endRise = pr.endRise ?? 8, keep = pr.keep ?? 0.35, decl = pr.decl ?? 1.5;
+  // a designed target (semitones from the voice's centre) for every syllable found
+  const tgt = new Float32Array(Kf), ramp = new Float32Array(Kf); let nAcc = 0;
+  for (let k = 0; k < Kf; k++) {
+    const s = syl[Math.min(K - 1, Math.round((k * (K - 1)) / Math.max(1, Kf - 1)))] || { acc: 0 }, dl = decl * (k / Math.max(1, Kf - 1));
+    if (s.acc) { tgt[k] = (nAcc === 0 || s.acc === 2 ? acc1 : acc2 * Math.pow(decay, nAcc - 1)) - dl; nAcc++; } else tgt[k] = -low - dl;
+  }
+  const L = Kf - 1;
+  if (end === '!') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise; }
+  else if (end === '?') { tgt[L] = Math.max(tgt[L], 0); ramp[L] = endRise * 0.8; }
+  else if (end === '…') { tgt[L] = -low - 1; ramp[L] = -2; }
+  else { tgt[L] = Math.min(tgt[L], -low - 1); ramp[L] = -3; }
+  // the model's own micro-melody around each syllable's mean is kept a little (natural, human movement inside a syllable)
+  const semi = new Float32Array(nF); for (let i = 0; i < nF; i++) semi[i] = f[i] > 0 ? 12 * Math.log2(f[i] / med) : NaN;
+  const mean = new Float32Array(Kf); for (let k = 0; k < Kf; k++) { let s = 0, n = 0; for (let i = bF[k]; i < bF[k + 1]; i++) if (f[i] > 0) { s += semi[i]; n++; } mean[k] = n ? s / n : 0; }
+  const segOf = new Int32Array(nF); for (let k = 0; k < Kf; k++) for (let i = bF[k]; i < bF[k + 1]; i++) segOf[i] = k;
+  const center = med * (+pr.ratio || 1), glide = Math.max(1, Math.round((0.045 * sr) / hop));
+  const tFrame = (i) => {
+    i = Math.min(nF - 1, Math.max(0, i)); const k = segOf[i], a = bF[k], b = bF[k + 1], u = (i - a) / Math.max(1, b - a);
+    let v = tgt[k] + ramp[k] * Math.pow(u, 1.4);
+    if (k > 0 && i - a < glide) { const pv = tgt[k - 1] + ramp[k - 1], e = (i - a) / glide; v = pv + (v - pv) * e * e * (3 - 2 * e); } // smooth glide into each syllable
+    const r = semi[i]; if (r === r) v += keep * (r - mean[k]); return v;
+  };
+  let sm = 0; const N = x.length;
+  const mk = pitchMarks(x, sr, (s) => { const v = f[Math.min(nF - 1, Math.max(0, Math.round(s / hop)))]; return v > 0 ? sr / v : 0; });
+  const y = psolaOLA(x, sr, mk, N, (ts) => ts, (ts, pa) => { const want = center * Math.pow(2, tFrame(Math.round(ts / hop)) / 12); sm = sm ? sm + (want - sm) * 0.35 : want; return sm / (sr / pa); }, mkRnd(Kf * 131 + N), false, pr.tract);
+  const fd = Math.min(N >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[N - 1 - i] *= a; }
+  return { pcm: y, f0: med };
 }
 
 // one request at a time (the model is not re-entrant); requests queue in order
@@ -439,6 +508,7 @@ self.onmessage = (ev) => {
         let f0 = 0;
         let starts = null, failed = false;
         if (msg.shape && msg.shape.phrase) { const r = singPhrase(pcm, sr, msg.shape); if (r) { pcm = r.pcm; f0 = r.f0; starts = r.starts; } else failed = true; }
+        else if (msg.shape && msg.shape.melody) { const r = speakMelody(pcm, sr, msg.text, Object.assign({ ratio: msg.shape.ratio, tract: msg.shape.tract }, msg.shape.melody)); if (r) { pcm = r.pcm; f0 = r.f0; } else { const r2 = shape(pcm, sr, msg.shape); pcm = r2.pcm; f0 = r2.f0; } }
         else if (msg.shape) { const r = shape(pcm, sr, msg.shape); pcm = r.pcm; f0 = r.f0; }
         if (msg.fx) pcm = voiceFx(pcm, sr, msg.fx, msg.seed);
         postMessage({ type: 'audio', id: msg.id, pcm, sr, f0, starts, failed }, [pcm.buffer]);

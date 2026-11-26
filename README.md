@@ -97,7 +97,21 @@ Devices that can't run it smoothly automatically use the best browser voices ins
 `vercel.json` sends cross-origin isolation headers (COOP same-origin + COEP credentialless) so the model can use
 all CPU cores on devices without WebGPU.
 
-## Run the website locally
+## Play on your own computer (your Claude Code login, no API key)
+
+Double-click **`play-local.bat`** (Windows), or run `./play-local.sh` (Mac / Linux). It needs Python 3.
+
+- **First run:** if Claude Code is missing, it offers to install it with Anthropic's official installer. Then it opens Anthropic's sign-in page in your browser so you can sign in to your Claude account.
+- **Every run:** the game opens at `http://127.0.0.1:8137/`. Close the window to stop it.
+
+How it works:
+- `local/server.py` serves the site the same way Vercel does.
+- It answers the game's Claude requests through the official Claude Code app on your computer (`claude -p`), signed in with your own account. Your login stays inside Claude Code.
+- Usage counts against your Claude plan.
+- This is for your own use on your own computer: the deployed site cannot use your login, and it must not be shared with other people.
+- Gemini is not set up locally, so the game uses Claude (Haiku) for its quick checks and listens in the browser.
+
+## Run the website locally (development)
 
 ```
 npm install

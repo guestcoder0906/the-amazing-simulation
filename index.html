@@ -228,9 +228,9 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   async function callClaude(body, signal, purpose) {
     var last = null;
     for (var attempt = 0; attempt < 5; attempt++) {
-      var r, own = !!CLAUDE_KEY;
+      var r, own = !!CLAUDE_KEY && !window.SIM_LOCAL; /* running on your own computer: always your Claude Code login (local/server.py), never a key */
       /* per-attempt time limit: a request that hangs (network stall, proxy cut off) is abandoned and retried, never waited on forever */
-      var tc = new AbortController(), timedOut = false, tm = setTimeout(function () { timedOut = true; tc.abort(); }, own ? 240000 : 290000);
+      var tc = new AbortController(), timedOut = false, tm = setTimeout(function () { timedOut = true; tc.abort(); }, window.SIM_LOCAL ? 1500000 : own ? 240000 : 290000);
       var onUser = function () { tc.abort(); }; if (signal) { if (signal.aborted) tc.abort(); else signal.addEventListener('abort', onUser, { once: true }); }
       try {
         r = own ? await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: claudeHeaders(CLAUDE_KEY), body: JSON.stringify(body), signal: tc.signal })
@@ -241,6 +241,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
       var msg = 'Claude ' + r.status + ': ' + t.slice(0, 300); try { var j = JSON.parse(t); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) { /* ok */ }
       var noKey = r.status === 401 || r.status === 403 || (!own && (r.status === 503 || r.status === 404 || r.status === 405));
+      if (noKey && window.SIM_LOCAL) throw err('not_granted', msg); /* local: the server says what to do (sign in to Claude Code) - no key prompt */
       if (noKey) {
         if (!keyPromptShown) { keyPromptShown = true; promptKey(own ? 'Your Claude API key was not accepted (' + r.status + '). Check it or enter another.' : 'This site\'s shared Claude key is not available right now. Enter your own Claude API key to keep going.'); }
         throw err('not_granted', own ? 'Your Claude API key was not accepted. Enter a valid key (the key button, bottom left).' : 'Claude is not connected yet: enter your Claude API key (the key button, bottom left).');
@@ -253,7 +254,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       }
       throw err('api_error', msg);
     }
-    if (last && last.code === 'rate_limited' && !CLAUDE_KEY && !keyPromptShown) { keyPromptShown = true; promptKey('The shared Claude key is busy (usage limit). Enter your own Claude API key for unlimited use.'); }
+    if (last && last.code === 'rate_limited' && !CLAUDE_KEY && !keyPromptShown && !window.SIM_LOCAL) { keyPromptShown = true; promptKey('The shared Claude key is busy (usage limit). Enter your own Claude API key for unlimited use.'); }
     throw last;
   }
 
@@ -296,7 +297,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   window.__openClaudeKeyModal = function () { promptKey(); };
   // a small key button, always reachable (bottom left)
   function keyButton() {
-    if (PROVIDER !== 'claude' || document.getElementById('ckBtn')) return;
+    if (window.SIM_LOCAL || PROVIDER !== 'claude' || document.getElementById('ckBtn')) return; /* local: Claude Code login, no key */
     var b = document.createElement('button'); b.id = 'ckBtn'; b.type = 'button'; b.title = 'Claude API key'; b.setAttribute('aria-label', 'Claude API key'); b.textContent = '🔑';
     b.style.cssText = 'position:fixed;left:max(10px,env(safe-area-inset-left));bottom:max(10px,env(safe-area-inset-bottom));z-index:60;width:36px;height:36px;border-radius:50%;border:1px solid rgba(241,231,207,.25);background:rgba(15,26,34,.88);color:#f1e7cf;font-size:16px;cursor:pointer';
     b.onclick = function () { promptKey(); };

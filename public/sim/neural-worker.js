@@ -375,7 +375,8 @@ function speakMelody(x, sr, text, pr) {
   // showman dynamics: accented syllables are punched louder, small words drop back (volume swings with the melody), smoothly
   const dyn = +pr.dyn || 0; if (dyn) { let g = 1; for (let i = 0; i < Lo; i++) { const fr = Math.min(nF - 1, Math.floor(Amap3(i) / hop)), k = segOf[fr]; const want0 = Math.pow(10, (dyn * Math.max(-0.45, Math.min(1.2, (tgt[k] + ramp[k] * 0.5) / Math.max(1, acc1)))) / 20); const want = k >= Kf * 0.7 ? Math.max(want0, 0.9) : want0; /* the lowered ending keeps its natural loudness (every last word stays audible) */ g += (want - g) * 0.002; y[i] *= g; } let pk = 0; for (let i = 0; i < Lo; i++) pk = Math.max(pk, Math.abs(y[i])); if (pk > 0.98) for (let i = 0; i < Lo; i++) y[i] *= 0.98 / pk; }
   const fd = Math.min(Lo >> 2, Math.round(sr * 0.008)); for (let i = 0; i < fd; i++) { const a = i / fd; y[i] *= a; y[Lo - 1 - i] *= a; }
-  return { pcm: y, f0: med };
+  let outF0 = 0; try { const yf = pitchTrack(y, sr, hop * 2); outF0 = median(yf) || 0; } catch (e) { /* ok */ } // what the line REALLY came out at (the engine corrects the next lines toward the design)
+  return { pcm: y, f0: med, outF0 };
 }
 
 // one request at a time (the model is not re-entrant); requests queue in order
@@ -548,12 +549,13 @@ self.onmessage = (ev) => {
         let pcm = out.audio instanceof Float32Array ? out.audio : new Float32Array(out.audio);
         const sr = out.sampling_rate || 24000;
         let f0 = 0;
-        let starts = null, failed = false;
+        let starts = null, failed = false, outF0 = 0;
         if (msg.shape && msg.shape.phrase) { const r = singPhrase(pcm, sr, msg.shape); if (r) { pcm = r.pcm; f0 = r.f0; starts = r.starts; } else failed = true; }
-        else if (msg.shape && msg.shape.melody) { const r = speakMelody(pcm, sr, msg.text, Object.assign({ ratio: msg.shape.ratio, tract: msg.shape.tract }, msg.shape.melody)); if (r) { pcm = r.pcm; f0 = r.f0; } else { const r2 = shape(pcm, sr, msg.shape); pcm = r2.pcm; f0 = r2.f0; } }
+        else if (msg.shape && msg.shape.melody) { const r = speakMelody(pcm, sr, msg.text, Object.assign({ ratio: msg.shape.ratio, tract: msg.shape.tract }, msg.shape.melody)); if (r) { pcm = r.pcm; f0 = r.f0; outF0 = r.outF0 || 0; } else { const r2 = shape(pcm, sr, msg.shape); pcm = r2.pcm; f0 = r2.f0; } }
         else if (msg.shape) { const r = shape(pcm, sr, msg.shape); pcm = r.pcm; f0 = r.f0; }
         if (msg.fx) pcm = voiceFx(pcm, sr, msg.fx, msg.seed);
-        postMessage({ type: 'audio', id: msg.id, pcm, sr, f0, starts, failed }, [pcm.buffer]);
+        if (!outF0 && f0 && msg.shape && msg.shape.ratio && !msg.shape.melody && !msg.shape.phrase && !Array.isArray(msg.shape.notes)) outF0 = f0 * msg.shape.ratio;
+        postMessage({ type: 'audio', id: msg.id, pcm, sr, f0, outF0, starts, failed }, [pcm.buffer]);
       } catch (e) {
         postMessage({ type: 'error', id: msg.id, text: String((e && (e.stack || e.message)) || e).slice(0, 600) });
       }

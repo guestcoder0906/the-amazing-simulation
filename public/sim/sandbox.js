@@ -2835,10 +2835,22 @@ SBX.playerSays = playerSays;
    listens to them; Ollo / Caine and every character mind then know what music and sounds are around them */
 let SIM_HEARD = '';
 window.__simEarsWanted = () => !!(BR.on || (typeof MINDS !== 'undefined' && MINDS.size)) && !VOICE.speaking;
-window.__onSimHeard = (j) => { try { if (!j) return; const parts = []; if (j.sounds) parts.push(String(j.sounds)); if (j.summary) parts.push(String(j.summary)); if (j.emotion) parts.push('mood: ' + j.emotion);
+/* game sound: the decision model first decides whether anyone would react to what was just heard (a bird's wing flap usually not);
+   only on yes is the sound analysed and the listeners react, so ambient sound never spams requests */
+window.__simHearGate = async (j) => { try {
+  if (!SAMPLE) { try { SAMPLE = await window.claude?.use?.('sample'); } catch (e) { SAMPLE = null; } }
+  const heard = [j.summary, j.sounds && 'sounds: ' + j.sounds, j.transcript && `words: "${String(j.transcript).slice(0, 200)}"`].filter(Boolean).join(' — ');
+  const who = [BR.on ? (typeof ALT !== 'undefined' && ALT.on ? 'Caine' : 'Ollo') : '', ...[...(typeof MINDS !== 'undefined' ? MINDS.values() : [])].map((m) => m.c.ch.name || m.c.id)].filter(Boolean);
+  if (!who.length) return false;
+  const recent = [...BR.log.slice(-6).map((e) => e.who + ': ' + e.text), ...[...(typeof MINDS !== 'undefined' ? MINDS.values() : [])].flatMap((m) => m.log.slice(-3).map((e) => (m.c.ch.name || m.c.id) + ' log, ' + e.who + ': ' + e.text))].slice(-12).join('\n');
+  const ctx = `Listeners: ${who.join(', ')}. Player: ${playerName()}.\nWhat was just heard (live sound in the world, picked up on this device): ${heard}\nRecent events:\n${recent || '(nothing)'}`;
+  return await aiGate(`Would any of the listeners (${who.join(', ')}) naturally react to or comment on this sound right now? Yes for things that stand out or matter to them (someone speaking, a song starting, a crash, a scream, something new or surprising); no for ordinary background sound they would ignore (wind, a wing flap, steady ambience, music that was already playing, their own voices).`, ctx, 0.5);
+} catch (e) { return false; } };
+window.__onSimHeard = (j, react) => { try { if (!j) return; const parts = []; if (j.sounds) parts.push(String(j.sounds)); if (j.summary) parts.push(String(j.summary)); if (j.emotion) parts.push('mood: ' + j.emotion);
   const s = parts.join(' — ').slice(0, 400); if (!s || s === SIM_HEARD) return; SIM_HEARD = s;
   const note = 'you hear around you right now (live sound your ears picked up): ' + s + (j.transcript ? ` (words in it: "${String(j.transcript).slice(0, 200)}")` : '');
-  if (BR.on) brainLog('event', note); for (const m of (typeof MINDS !== 'undefined' ? MINDS.values() : [])) { try { mindLog(m, 'event', note); } catch (e) { /* ok */ } } } catch (e) { /* ok */ } };
+  if (BR.on) brainLog('event', note); for (const m of (typeof MINDS !== 'undefined' ? MINDS.values() : [])) { try { mindLog(m, 'event', note); } catch (e) { /* ok */ } }
+  if (react) { /* the decision model said yes: they react to it now */ if (BR.on && !BR.busy) think('sound'); for (const m of (typeof MINDS !== 'undefined' ? MINDS.values() : [])) { try { if (!m.busy) mindThink(m, 'sound'); } catch (e) { /* ok */ } } } } catch (e) { /* ok */ } };
 // voice chat: dictation (start must run straight from the click, so the namespace is fetched when Smart Ollo turns on)
 let DICT = null, dictOn = false, dictBuf = '', dictTimer = 0, dictMeta = null;
 async function loadDict() { if (DICT) return DICT; try { DICT = await window.claude?.use?.('dictation'); } catch (e) { DICT = null; } if (!DICT) { micBtn.hidden = true; return null; }

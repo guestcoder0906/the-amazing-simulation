@@ -5,8 +5,8 @@ local/server.py - runs the whole game on your own computer, with Claude through 
   * /api/claude: every Claude request of the game goes to the official Claude Code app on this computer (`claude -p`),
     signed in with your own Claude account through Anthropic's own sign-in (`claude auth login`). Your login never leaves
     Claude Code: this server only starts it and reads its answer. For your own use on this computer only.
-  * /api/gemini: answered "not set up" - the game then uses Claude (Haiku) for its quick checks instead, as it already does
-    whenever Gemini is unavailable.
+  * /api/gemini: Gemini with YOUR Gemini key (the key button in the game saves it in your browser; or GEMINI_API_KEY here).
+    Without a key it answers "not set up": listening then runs in the browser and Claude (Haiku) does the quick checks.
 
 Start it with play-local.bat (Windows) or ./play-local.sh (Mac / Linux), or:  python local/server.py  [--port 8137]
 Standard library only (Python 3.9+).
@@ -323,6 +323,207 @@ def run_claude(body: dict) -> tuple[int, dict]:
                            "cache_read_input_tokens": int(u.get("cache_read_input_tokens") or 0)}}
 
 
+# ---------------------------------------------------------------------------------------------- Gemini (your own key)
+# The key comes from the game (key button, saved in your browser) with each request, or from GEMINI_API_KEY on this computer.
+# Same conversion as api/gemini.ts (Messages format <-> Gemini), so the game code is unchanged. Without a key: 503, and the game
+# listens in the browser and uses Claude for quick work instead.
+import random as _random
+import urllib.error
+import urllib.request
+
+GEM_DEFAULT = "gemini-3.5-flash-lite"
+GEM_MODELS = {
+    "gemini-3.5-flash-lite": {"levels": ["minimal", "low", "medium", "high"], "maxOut": 8192},
+    "gemini-3.8-flash": {"levels": ["low", "medium", "high"], "maxOut": 32768},
+    "gemini-4-hydrogen": {"levels": ["low", "medium", "high", "xhigh"], "maxOut": 32768},
+}
+GEM_BASE = "https://generativelanguage.googleapis.com/v1beta/"
+
+
+def gem_level(model: str, want) -> str:
+    lv = GEM_MODELS[model]["levels"]
+    w = str(want or ("minimal" if model == GEM_DEFAULT else "medium")).lower()
+    if w in lv:
+        return w
+    return lv[0] if w == "minimal" else "medium"
+
+
+def to_gemini(body: dict, model: str) -> dict:
+    names, contents = {}, []
+    for m in body.get("messages") or []:
+        c = m.get("content")
+        blocks = [{"type": "text", "text": c}] if isinstance(c, str) else (c or [])
+        parts = []
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            t, src = b.get("type"), b.get("source") or {}
+            if t == "text":
+                if str(b.get("text") or "").strip():
+                    parts.append({"text": b["text"]})
+            elif t in ("image", "audio") and src.get("data"):
+                parts.append({"inlineData": {"mimeType": src.get("media_type") or ("image/jpeg" if t == "image" else "audio/wav"), "data": src["data"]}})
+            elif t == "tool_use":
+                names[b.get("id")] = b.get("name")
+                p = {"functionCall": {"name": b.get("name"), "args": b.get("input") or {}}}
+                if b.get("_gsig"):
+                    p["thoughtSignature"] = b["_gsig"]
+                parts.append(p)
+            elif t == "tool_result":
+                rc = b.get("content")
+                txt = "\n".join(x.get("text", "") for x in rc if isinstance(x, dict)) if isinstance(rc, list) else str(rc if rc is not None else "")
+                parts.append({"functionResponse": {"name": names.get(b.get("tool_use_id"), "tool"), "response": {"result": txt}}})
+        if not parts:
+            parts.append({"text": "(continue)"})
+        role = "model" if m.get("role") == "assistant" else "user"
+        if contents and contents[-1]["role"] == role:
+            contents[-1]["parts"].extend(parts)
+        else:
+            contents.append({"role": role, "parts": parts})
+    sysv = body.get("system")
+    if isinstance(sysv, list):
+        sysv = "\n".join(x.get("text", "") for x in sysv if isinstance(x, dict))
+    req = {"contents": contents, "generationConfig": {"maxOutputTokens": min(int(body.get("max_tokens") or 4096), GEM_MODELS[model]["maxOut"]),
+                                                       "thinkingConfig": {"thinkingLevel": gem_level(model, body.get("thinking"))}}}
+    if sysv:
+        req["systemInstruction"] = {"parts": [{"text": str(sysv)}]}
+    tools = [t for t in body.get("tools") or [] if isinstance(t, dict) and t.get("name") and not t.get("type")]
+    if tools:
+        req["tools"] = [{"functionDeclarations": [{"name": t["name"], "description": str(t.get("description") or ""),
+                                                    "parametersJsonSchema": t.get("input_schema") or {"type": "object", "properties": {}}} for t in tools]}]
+        req["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+    return req
+
+
+def from_gemini(g: dict, model: str) -> dict:
+    cand = (g.get("candidates") or [{}])[0] or {}
+    content, calls = [], 0
+    for p in (cand.get("content") or {}).get("parts") or []:
+        if p.get("thought"):
+            continue
+        if isinstance(p.get("text"), str) and p["text"]:
+            content.append({"type": "text", "text": p["text"]})
+        elif p.get("functionCall"):
+            calls += 1
+            b = {"type": "tool_use", "id": "toolu_g" + uuid.uuid4().hex[:12], "name": p["functionCall"].get("name"), "input": p["functionCall"].get("args") or {}}
+            if p.get("thoughtSignature"):
+                b["_gsig"] = p["thoughtSignature"]
+            content.append(b)
+    if not content:
+        content.append({"type": "text", "text": ""})
+    u = g.get("usageMetadata") or {}
+    return {"id": "msg_g" + uuid.uuid4().hex[:12], "type": "message", "role": "assistant", "model": model, "content": content,
+            "stop_reason": "tool_use" if calls else ("max_tokens" if cand.get("finishReason") == "MAX_TOKENS" else "end_turn"), "stop_sequence": None,
+            "usage": {"input_tokens": max(0, int(u.get("promptTokenCount") or 0) - int(u.get("cachedContentTokenCount") or 0)),
+                      "output_tokens": int(u.get("candidatesTokenCount") or 0) + int(u.get("thoughtsTokenCount") or 0),
+                      "cache_read_input_tokens": int(u.get("cachedContentTokenCount") or 0)}}
+
+
+def gem_http(url: str, key: str, payload: dict | None = None, timeout: int = 120) -> tuple[int, str]:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    rq = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET",
+                                headers={"content-type": "application/json", "x-goog-api-key": key})
+    try:
+        with urllib.request.urlopen(rq, timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+
+
+def gem_message(text: str) -> str:
+    try:
+        j = json.loads(text)
+        if isinstance(j, list) and j:  # the Interactions API wraps its error in a list
+            j = j[0]
+        return j["error"]["message"]
+    except Exception:
+        return text[:400]
+
+
+def gemini_check(key: str) -> dict:
+    """Instant key check: lists the models with the key (costs nothing)."""
+    key = (key or "").strip()
+    if not key:
+        return {"ok": False, "message": "no key given"}
+    try:
+        code, text = gem_http(GEM_BASE + "models?pageSize=1", key, None, timeout=20)
+    except Exception as e:
+        return {"ok": False, "message": "could not reach Gemini (" + str(e) + ")"}
+    return {"ok": True} if code == 200 else {"ok": False, "message": gem_message(text) + f" ({code})"}
+
+
+def run_gemini(body: dict, key: str) -> tuple[int, dict]:
+    key = (key or os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not key:
+        return 503, {"error": {"code": "not_granted", "message": "No Gemini key yet (key button, bottom left): listening runs in the browser and Claude answers quick work"}}
+    try:
+        if body.get("decision"):
+            d = body["decision"]
+            if d.get("type") == "choice" and isinstance(d.get("options"), dict) and len(d["options"]) >= 2:
+                q = {"type": "choice", "instructions": str(d.get("question") or "")[:4000], "criteria": {str(k): str(v) for k, v in d["options"].items()}}
+            else:
+                q = {"type": "noul", "instructions": str(d.get("question") or "")[:4000]}
+                if d.get("true_description") or d.get("false_description"):
+                    q["criteria"] = {k: v for k, v in (("true_description", d.get("true_description")), ("false_description", d.get("false_description"))) if v}
+            inp = str(d.get("input") or "")[:200000]
+            if d.get("audio"):  # the clip itself: the decision model listens to it
+                inp = ([{"type": "text", "text": inp}] if inp else []) + [{"type": "audio", "data": d["audio"], "mime_type": d.get("mime_type") or "audio/wav"}]
+            elif not inp:
+                inp = str(d.get("question") or "")
+            code, text = gem_http(GEM_BASE + "decisions", key, {"model": "gemini-decision-1", "input": inp, "questions": {"q": q}}, timeout=60)
+            if code != 200:
+                return (429 if code == 429 else 410 if code == 404 else 529 if code >= 500 else code), {"error": {"code": "model_unavailable" if code == 404 else "api_error", "message": "Gemini decisions: " + gem_message(text)}}
+            a = (json.loads(text).get("answers") or {}).get("q") or {}
+            if q["type"] == "choice":
+                return 200, {"model": "gemini-decision-1", "choice": a.get("choice"), "probabilities": a.get("probabilities") or {}, "confidence": float(a.get("confidence") or 0)}
+            p = float(a.get("noul") or 0)
+            return 200, {"model": "gemini-decision-1", "yes": p >= 0.5, "p": p, "confidence": float(a.get("confidence") or max(p, 1 - p))}
+        if not isinstance(body.get("messages"), list) or not body["messages"]:
+            return 400, {"error": {"code": "invalid_request", "message": "messages array is required"}}
+        model = body.get("model") if body.get("model") in GEM_MODELS else GEM_DEFAULT
+        payload = to_gemini(body, model)
+        url = GEM_BASE + f"models/{model}:generateContent"
+        started = time.time()
+        code, text = gem_http(url, key, payload)
+        for a in range(3):
+            spent = code == 429 and re.search(r"quota|per day|billing|free.?tier|retry in \d+h", text, re.I)
+            if code not in (429, 500, 503) or spent:
+                break
+            wait = 1.2 * 2 ** a
+            if time.time() - started + wait > 40:
+                break
+            time.sleep(wait)
+            code, text = gem_http(url, key, payload)
+        if code != 200:
+            return (429 if code == 429 else 410 if code == 404 else 529 if code >= 500 else code), {"error": {"code": "rate_limited" if code == 429 else "model_unavailable" if code == 404 else "api_error", "message": f"Gemini ({model}): " + gem_message(text)}}
+        return 200, from_gemini(json.loads(text), model)
+    except Exception as e:
+        return 502, {"error": {"code": "api_error", "message": "Failed to reach Gemini: " + str(e)}}
+
+
+def run_transcribe(body: dict, key: str) -> tuple[int, dict]:
+    """Gemini 3.5 Transcribe (Interactions API): the words of a speech clip."""
+    key = (key or os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not key:
+        return 503, {"error": {"code": "not_granted", "message": "No Gemini key yet"}}
+    if not body.get("audio"):
+        return 400, {"error": {"code": "invalid_request", "message": "audio is required"}}
+    req = {"model": "models/gemini-3.5-transcribe", "input": [{"type": "audio", "data": body["audio"], "mime_type": body.get("mime_type") or "audio/wav"}]}
+    if body.get("language_codes"):
+        req["generation_config"] = {"transcription_config": {"language_codes": list(body["language_codes"])}}
+    try:
+        code, text = gem_http(GEM_BASE + "interactions", key, req, timeout=120)
+        if code != 200:
+            return (429 if code == 429 else 410 if code == 404 else 529 if code >= 500 else code), {"error": {"code": "api_error", "message": "Gemini Transcribe: " + gem_message(text)}}
+        j = json.loads(text)
+        parts = [c.get("text", "") for s in j.get("steps") or [] for c in (s.get("content") or []) if isinstance(c, dict) and c.get("type") == "text"]
+        if not parts:
+            parts = [o.get("text", "") for o in j.get("outputs") or [] if isinstance(o, dict) and o.get("type") == "text"]
+        return 200, {"model": "gemini-3.5-transcribe", "text": " ".join(p for p in parts if p).strip()}
+    except Exception as e:
+        return 502, {"error": {"code": "api_error", "message": "Failed to reach Gemini Transcribe: " + str(e)}}
+
+
 # ---------------------------------------------------------------------------------------------- the web server
 class Handler(BaseHTTPRequestHandler):
     server_version = "AmazingSimLocal/1"
@@ -381,8 +582,32 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(code, obj)
             except (BrokenPipeError, ConnectionResetError):
                 return None  # the page stopped waiting (Stop pressed)
-        if path == "/api/gemini":  # not set up locally: the game uses Claude for these checks instead
-            return self._json(503, {"error": {"message": "Gemini is not set up on this computer (Claude answers instead)"}})
+        if path == "/api/gemini-transcribe":  # Gemini 3.5 Transcribe with your own key
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                return self._json(400, {"error": {"code": "invalid_request", "message": "bad JSON"}})
+            code, obj = run_transcribe(body, self.headers.get("x-gemini-key", ""))
+            try:
+                return self._json(code, obj)
+            except (BrokenPipeError, ConnectionResetError):
+                return None
+        if path == "/api/gemini-check":  # the key dialog's instant check
+            try:
+                k = (json.loads(raw or b"{}") or {}).get("key", "")
+            except Exception:
+                k = ""
+            return self._json(200, gemini_check(k))
+        if path == "/api/gemini":  # Gemini with your own key (key button); without one: 503, the game listens in the browser
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                return self._json(400, {"error": {"code": "invalid_request", "message": "bad JSON"}})
+            code, obj = run_gemini(body, self.headers.get("x-gemini-key", ""))
+            try:
+                return self._json(code, obj)
+            except (BrokenPipeError, ConnectionResetError):
+                return None
         self._json(404, {"error": "not found"})
 
 

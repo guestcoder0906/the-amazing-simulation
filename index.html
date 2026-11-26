@@ -191,6 +191,8 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   var DOWN = {}; // models that answered "not available" this session are skipped
 
   var GEMINI_COOL = 0; var GEMINI_COOLS = {}; /* per Gemini model: until when it is skipped after a quota / rate limit */ /* Gemini said 'too many requests': until then the quick chain goes straight to the next model instead of waiting */
+  var GEMINI_KEY = (function () { try { return localStorage.getItem('sbx_gemini_api_key') || ''; } catch (e) { return ''; } })(); /* your own Gemini key (key button, bottom left): the local server uses it for Gemini */
+  function gemHdr(hd) { if (GEMINI_KEY) hd['x-gemini-key'] = GEMINI_KEY; return hd; }
   var GEMINI_OFF = false; // set when this deployment has no GEMINI_API_KEY: quick tasks then use Claude Haiku 5.5
   var QUICK = function () { return GEMINI_OFF ? HAIKU : GEMINI; };
   var CLAUDE_KEY = (function () { try { return localStorage.getItem('sbx_claude_api_key') || ''; } catch (e) { return ''; } })();
@@ -294,10 +296,68 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     q('ckClose').onclick = function () { box.remove(); };
     setTimeout(function () { try { inp.focus(); } catch (e) { /* ok */ } }, 30);
   }
-  window.__openClaudeKeyModal = function () { promptKey(); };
+  // ---- Gemini key (on your own computer): Gemini listens to audio itself; without a key, listening runs in the browser
+  function useGeminiKey(k) {
+    GEMINI_KEY = k; try { if (k) localStorage.setItem('sbx_gemini_api_key', k); else localStorage.removeItem('sbx_gemini_api_key'); } catch (e) { /* ok */ }
+    GEMINI_OFF = !k; GEMINI_COOLS = {}; GEMINI_COOL = 0; [GEMINI, HYDROGEN, FLASH38, DECIDER].forEach(function (m) { delete DOWN[m]; });
+    var b = document.getElementById('ckBtn'); if (b) b.style.borderColor = k ? '#4ade80' : 'rgba(241,231,207,.25)';
+  }
+  async function checkGeminiKey(k) {
+    try { var r = await fetch('/api/gemini-check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: k }) }); var j = await r.json().catch(function () { return {}; }); return j && j.ok ? '' : (j && j.message) || ('not accepted (' + r.status + ')'); }
+    catch (e) { return 'could not reach Gemini (' + (e.message || e) + ')'; }
+  }
+  function promptGeminiKey() {
+    if (document.getElementById('ckBox')) return;
+    var box = document.createElement('div'); box.id = 'ckBox';
+    box.style.cssText = 'position:fixed;inset:0;z-index:10001;display:grid;place-items:center;background:rgba(10,16,22,.55);padding:16px;font:14px/1.45 "IBM Plex Sans",system-ui,sans-serif';
+    box.innerHTML = '<div role="dialog" aria-modal="true" aria-labelledby="ckT" style="width:min(460px,100%);background:#fff;color:#0f1a24;border-radius:14px;padding:22px 20px;box-shadow:0 16px 40px rgba(0,0,0,.35)">' +
+      '<h2 id="ckT" style="margin:0 0 6px;font:700 18px Bungee,\'Arial Black\',sans-serif">Connect Gemini</h2>' +
+      '<p style="margin:0 0 12px;color:#33424f;font-size:13.5px">Optional: with your own Gemini API key, Gemini listens to voice chat and game sound itself (Claude cannot hear audio). Without a key, listening runs in your browser instead. Claude keeps using your Claude Code login.</p>' +
+      '<button id="ckConnect" type="button" style="width:100%;background:#1a73e8;color:#fff;border:0;border-radius:99px;padding:11px 16px;font:600 14px system-ui;cursor:pointer;margin-bottom:6px">Get a Gemini API key</button>' +
+      '<p style="margin:0 0 12px;color:#55636f;font-size:12.5px">Opens Google AI Studio. Create a key, copy it, then press <b>Paste key</b>. The key stays in this browser and your own computer.</p>' +
+      '<div style="display:flex;gap:8px"><input id="ckIn" type="password" autocomplete="off" spellcheck="false" placeholder="AIza..." aria-label="Gemini API key" style="flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid rgba(22,33,43,.25);background:#fff;color:#0f1a24;color-scheme:light;font:13px ui-monospace,Menlo,monospace">' +
+      '<button id="ckPaste" type="button" style="background:#eef2f5;color:#0f1a24;border:1px solid rgba(22,33,43,.2);border-radius:10px;padding:0 12px;font:600 13px system-ui;cursor:pointer">Paste key</button></div>' +
+      '<p id="ckMsg" role="status" style="margin:10px 0 0;font-size:13px;min-height:1.3em"></p>' +
+      '<button id="ckSave" type="button" style="width:100%;margin-top:6px;background:#16212b;color:#fff;border:0;border-radius:99px;padding:10px 16px;font:600 14px system-ui;cursor:pointer">Use this key</button>' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px"><button id="ckForget" type="button" style="background:none;border:0;color:#9a3412;text-decoration:underline;cursor:pointer;font-size:12.5px">Forget my key</button>' +
+      '<button id="ckClose" type="button" style="background:none;border:0;color:#2a5b86;text-decoration:underline;cursor:pointer;font-size:12.5px">Close</button></div></div>';
+    document.documentElement.appendChild(box);
+    var q = function (id) { return box.querySelector('#' + id); }, msg = q('ckMsg'), inp = q('ckIn'), seq = 0;
+    var say = function (t, c) { msg.style.color = c || '#2a3946'; msg.textContent = t; };
+    say(GEMINI_KEY ? 'A working Gemini key is saved: Gemini is listening.' : 'No Gemini key: listening runs in your browser.');
+    if (GEMINI_KEY) inp.value = GEMINI_KEY;
+    /* instant check: as soon as a key is typed or pasted it is tested, and saved when it works */
+    var test = async function (save) {
+      var k = String(inp.value || '').trim(); var my = ++seq;
+      if (!k) { say('Paste a Gemini API key first.', '#9a3412'); return; }
+      say('Checking the key…');
+      var bad = await checkGeminiKey(k); if (my !== seq) return;
+      if (bad) { say('This key does not work: ' + bad, '#9a3412'); return; }
+      useGeminiKey(k); say('This key works and is saved: Gemini now listens to audio.', '#166534');
+      if (save) setTimeout(function () { box.remove(); }, 900);
+    };
+    var tmr = 0; inp.addEventListener('input', function () { clearTimeout(tmr); tmr = setTimeout(function () { test(false); }, 500); });
+    inp.addEventListener('keydown', function (e) { e.stopPropagation(); if (e.key === 'Enter') test(true); }, true);
+    q('ckConnect').onclick = function () { window.open('https://aistudio.google.com/apikey', '_blank', 'noopener'); say('Create a key on that page, copy it, then press Paste key here.'); };
+    q('ckPaste').onclick = async function () { try { var t = await navigator.clipboard.readText(); if (String(t || '').trim()) { inp.value = String(t).trim(); test(false); } else say('The clipboard is empty: copy the key first.', '#9a3412'); } catch (e) { say('The browser did not allow reading the clipboard: paste the key into the box instead.', '#9a3412'); inp.focus(); } };
+    q('ckSave').onclick = function () { test(true); };
+    q('ckForget').onclick = function () { useGeminiKey(''); inp.value = ''; say('Key removed: listening runs in your browser.'); };
+    q('ckClose').onclick = function () { box.remove(); };
+    setTimeout(function () { try { inp.focus(); } catch (e) { /* ok */ } }, 30);
+  }
+  function geminiKeyButton() {
+    if (document.getElementById('ckBtn')) return;
+    var b = document.createElement('button'); b.id = 'ckBtn'; b.type = 'button'; b.title = 'Gemini API key (listening)'; b.setAttribute('aria-label', 'Gemini API key'); b.textContent = '🔑';
+    b.style.cssText = 'position:fixed;left:max(10px,env(safe-area-inset-left));bottom:max(10px,env(safe-area-inset-bottom));z-index:60;width:36px;height:36px;border-radius:50%;border:1px solid ' + (GEMINI_KEY ? '#4ade80' : 'rgba(241,231,207,.25)') + ';background:rgba(15,26,34,.88);color:#f1e7cf;font-size:16px;cursor:pointer';
+    b.onclick = function () { promptGeminiKey(); };
+    document.body.appendChild(b);
+  }
+  window.__openGeminiKeyModal = function () { promptGeminiKey(); };
+  window.__openClaudeKeyModal = function () { if (window.SIM_LOCAL) promptGeminiKey(); else promptKey(); };
   // a small key button, always reachable (bottom left)
   function keyButton() {
-    if (window.SIM_LOCAL || PROVIDER !== 'claude' || document.getElementById('ckBtn')) return; /* local: Claude Code login, no key */
+    if (window.SIM_LOCAL) { geminiKeyButton(); return; } /* local: Claude uses your Claude Code login; the key button is for Gemini (listening) */
+    if (PROVIDER !== 'claude' || document.getElementById('ckBtn')) return;
     var b = document.createElement('button'); b.id = 'ckBtn'; b.type = 'button'; b.title = 'Claude API key'; b.setAttribute('aria-label', 'Claude API key'); b.textContent = '🔑';
     b.style.cssText = 'position:fixed;left:max(10px,env(safe-area-inset-left));bottom:max(10px,env(safe-area-inset-bottom));z-index:60;width:36px;height:36px;border-radius:50%;border:1px solid rgba(241,231,207,.25);background:rgba(15,26,34,.88);color:#f1e7cf;font-size:16px;cursor:pointer';
     b.onclick = function () { promptKey(); };
@@ -308,7 +368,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var last = null;
     for (var attempt = 0; attempt < 4; attempt++) {
       var r;
-      try { r = await fetch('/api/gemini', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal }); }
+      try { r = await fetch('/api/gemini', { method: 'POST', headers: gemHdr({ 'content-type': 'application/json' }), body: JSON.stringify(body), signal: signal }); }
       catch (e) { if (e && e.name === 'AbortError') throw e; last = err('api_error', 'Could not reach Gemini: ' + (e.message || e)); if (attempt >= 1) throw last; await new Promise(function (res) { setTimeout(res, 600); }); continue; }
       if (r.ok) { var jg = await r.json(); noteUsage(jg, body.model, purpose); return jg; }
       var t = ''; try { t = await r.text(); } catch (e) { /* ok */ }
@@ -357,7 +417,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   async function decide(question, input, opt) {
     opt = opt || {};
     if (!GEMINI_OFF && !DOWN[DECIDER]) {
-      try { var r = await fetch('/api/gemini', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decision: { question: question, input: input || question, true_description: opt.yes, false_description: opt.no } }), signal: opt.signal });
+      try { var r = await fetch('/api/gemini', { method: 'POST', headers: gemHdr({ 'content-type': 'application/json' }), body: JSON.stringify({ decision: { question: question, input: input || question, true_description: opt.yes, false_description: opt.no } }), signal: opt.signal });
         if (r.ok) { var d = await r.json(); noteUsage(d, DECIDER, opt.purpose); if (typeof d.p === 'number' && isFinite(d.p)) return { yes: !!d.yes, p: d.p, confidence: d.confidence, model: DECIDER }; }
         else if (r.status === 503) GEMINI_OFF = true; else if (r.status === 410 || r.status === 404) DOWN[DECIDER] = true;
       } catch (e) { if (e && e.name === 'AbortError') throw e; }
@@ -475,7 +535,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     var out = await new Promise(function (res, rej) { LISTEN.pend.set(id, { res: res, rej: rej }); w.postMessage({ type: 'listen', id: id, pcm: pcm, speech: A.voicedShare > 0.1 || A.syllPerSec > 0.5, device: navigator.gpu ? 'webgpu' : 'wasm' }, [pcm.buffer]); setTimeout(function () { if (LISTEN.pend.has(id)) { LISTEN.pend.delete(id); rej(new Error('listening timed out')); } }, 60000); });
     var res = interpret(A, out.text, out.tags || []);
     // best judgement: when Claude is reachable, it reads the measurements + words + sounds and settles emotion / tone
-    if (PROVIDER === 'claude') {
+    if (false && PROVIDER === 'claude') { /* off: Claude cannot hear audio; its "I can't hear it" replies were passed to the characters as what they heard */
       try {
         var r = await callClaude.listen({ model: HAIKU, max_tokens: 300, messages: [{ role: 'user', content: [{ type: 'text', text:
           'You judge how an audio clip sounds from measurements (you cannot hear it). Reply with ONLY one JSON object with keys emotion, tone, energy, voice, sounds, summary (same meaning as in the draft). Keep what the evidence supports; correct what it contradicts.\n'
@@ -489,13 +549,74 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
     return res;
   }
   window.__listen = { local: localHear, auto: function (b, c) { return hearAudio(b, c); } }; // for checking listening from the console
+  /* Google MediaPipe Audio Classifier with YAMNet (521 sound classes: speech, music, animals, effects, silence...): runs free in this
+     browser, in real time. Nothing goes to Gemini or Claude unless YAMNet hears something real first. */
+  var MP_VER = '1.2.2', YAM = { p: null, failUntil: 0 };
+  function yamnet() {
+    if (YAM.p) return YAM.p;
+    if (Date.now() < YAM.failUntil) return Promise.reject(new Error('YAMNet unavailable'));
+    YAM.p = (async function () {
+      var m = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@' + MP_VER + '/audio_bundle.mjs');
+      var fs = await m.FilesetResolver.forAudioTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@' + MP_VER + '/wasm');
+      return m.AudioClassifier.createFromOptions(fs, { baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite' }, maxResults: 6, scoreThreshold: 0.1 });
+    })().catch(function (e) { YAM.p = null; YAM.failUntil = Date.now() + 60000; console.info('[listen] YAMNet could not load (' + (e && e.message) + ')'); throw e; });
+    return YAM.p;
+  }
+  /* what YAMNet hears in a piece of audio: the strongest classes over all its ~1 s windows; heard = anything but silence */
+  async function yamDetect(pcm, sr) {
+    var c = await yamnet(); var res = c.classify(pcm, sr) || [], best = {};
+    res.forEach(function (r) { ((r.classifications && r.classifications[0] && r.classifications[0].categories) || []).forEach(function (k) { var n = k.categoryName || k.displayName; if (n && (!(n in best) || best[n] < k.score)) best[n] = k.score; }); });
+    var cats = Object.keys(best).map(function (n) { return { label: n, score: +best[n].toFixed(3) }; }).sort(function (a, b) { return b.score - a.score; });
+    var real = cats.filter(function (k) { return k.label !== 'Silence' && k.score >= 0.2; });
+    return { heard: real.length > 0, cats: cats.slice(0, 8), real: real };
+  }
+  window.__yamnet = { detect: yamDetect, load: yamnet }; // for checking from the console
+  /* Gemini Decision 1 listens to the clip and sorts it (one call, probabilities only, no text) */
+  async function audioKind(w64, hint) {
+    var r = await fetch('/api/gemini', { method: 'POST', headers: gemHdr({ 'content-type': 'application/json' }), body: JSON.stringify({ decision: { type: 'choice', audio: w64, mime_type: 'audio/wav', input: hint || '',
+      question: 'Listen to this short audio clip from a live 3D game (the microphone or the game\'s own sound). What does it distinctly contain?',
+      options: { speech: 'Only speech: someone talking, whispering, shouting or singing words, with no other distinct sound.', other: 'Only other sound: music, sound effects, noises, ambience - no distinct speech.', both: 'Distinct speech AND distinct other sound (music, effects, noises) together.', none: 'Nothing distinct: silence, faint hum or room noise.' } } }) });
+    if (!r.ok) { if (r.status === 503) GEMINI_OFF = true; throw err('api_error', 'Gemini decision ' + r.status); }
+    var d = await r.json(); noteUsage(d, DECIDER, 'listen'); return d && d.choice ? String(d.choice) : null;
+  }
+  /* Gemini 3.5 Transcribe: the words only (speech audio) */
+  async function transcribeAudio(w64) {
+    var r = await fetch('/api/gemini-transcribe', { method: 'POST', headers: gemHdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: w64, mime_type: 'audio/wav' }) });
+    if (!r.ok) throw err('api_error', 'Gemini Transcribe ' + r.status);
+    var d = await r.json(); return String((d && d.text) || '');
+  }
   async function hearAudio(blob, context) {
+    var yamHint = '';
+    if (PROVIDER !== 'local') {
+      try { var yd = await yamDetect(await toPcm16k(blob), 16000); if (!yd.heard) return null; /* YAMNet: only silence -> nothing is sent */
+        yamHint = 'An on-device sound classifier (YAMNet) heard: ' + yd.real.map(function (k) { return k.label + ' ' + Math.round(k.score * 100) + '%'; }).join(', ') + '.'; }
+      catch (e) { /* YAMNet unavailable: the next step decides */ }
+    }
     if (PROVIDER === 'local') {
       await resolveUrl(); var r0 = await fetch(AI_URL + '/hear', { method: 'POST', headers: hdr({ 'content-type': 'application/json' }), body: JSON.stringify({ audio: await b64(blob), context: context || undefined }) });
       setStatus(r0.ok); return r0.ok ? r0.json() : null;
     }
-    if (GEMINI_OFF) return localHear(blob, context);
+    if (GEMINI_OFF || (window.SIM_LOCAL && !GEMINI_KEY)) return localHear(blob, context); /* no Gemini key: listening in the browser */
     var wav = await toWav(blob), res;
+    /* on your own computer with a Gemini key: Gemini Decision 1 first sorts the clip (speech / other sound / both / nothing, one cheap
+       call); nothing -> no further request; speech only -> Gemini 3.5 Transcribe (cheaper; the measured voice gives the tone);
+       other sound -> Gemini 3.5 Flash-Lite listens (and, when speech is in it too, Transcribe writes the words) */
+    if (window.SIM_LOCAL) {
+      var w64 = await b64(wav), kind = null;
+      try { kind = await audioKind(w64, yamHint); } catch (e) { if (e && e.name === 'AbortError') throw e; kind = null; }
+      if (kind === 'none') return null;
+      if (kind === 'speech') {
+        try { var words = await transcribeAudio(w64); if (!String(words || '').trim()) return null; var sp = interpret(acoustics(await toPcm16k(wav), 16000), words, []); sp.heard_by = 'Gemini 3.5 Transcribe'; return sp; }
+        catch (e) { console.info('[listen] Transcribe unavailable (' + (e && e.message) + '): Flash-Lite listens instead'); }
+      }
+      var wordsP = kind === 'both' ? transcribeAudio(w64).catch(function () { return null; }) : Promise.resolve(null);
+      var fl = null; try { fl = await callGemini.listen({ model: GEMINI, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: w64 } }, { type: 'text', text: HEAR_PROMPT + (context ? '\nContext: ' + context : '') }] }] }); }
+      catch (e) { console.info('[listen] Gemini unavailable (' + (e && e.message) + '): listening in the browser'); return localHear(blob, context); }
+      var ft = (fl.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
+      var fa = ft.indexOf('{'), fb = ft.lastIndexOf('}'), out; try { out = JSON.parse(fa >= 0 && fb > fa ? ft.slice(fa, fb + 1) : ft); } catch (e) { out = { transcript: ft.trim() }; }
+      var exact = await wordsP; if (exact && String(exact).trim()) out.transcript = String(exact).trim();
+      out.heard_by = kind === 'both' ? 'Gemini 3.5 Flash-Lite + Gemini 3.5 Transcribe' : 'Gemini 3.5 Flash-Lite'; return out;
+    }
     try { res = await callGemini.listen({ model: GEMINI, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: await b64(wav) } }, { type: 'text', text: HEAR_PROMPT + (context ? '\nContext: ' + context : '') }] }] }); }
     catch (e) { console.info('[listen] Gemini unavailable (' + (e && e.message) + '): listening in the browser'); return localHear(blob, context); }
     var txt = (res.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
@@ -634,7 +755,7 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
   var TAPS = new Map();
   function tapFor(ctx) {
     var t = TAPS.get(ctx); if (t) return t;
-    try { var out = ctx.createMediaStreamDestination(), an = ctx.createAnalyser(); an.fftSize = 1024; t = { out: out, an: an }; TAPS.set(ctx, t); return t; } catch (e) { return null; }
+    try { var out = ctx.createMediaStreamDestination(), an = ctx.createAnalyser(); an.fftSize = 32768; /* ~0.7 s of sound for YAMNet's real-time check */ t = { out: out, an: an }; TAPS.set(ctx, t); return t; } catch (e) { return null; }
   }
   (function patchConnect() {
     var AN = window.AudioNode; if (!AN || AN.prototype.__tapped) return; var orig = AN.prototype.connect; AN.prototype.__tapped = true;
@@ -644,12 +765,16 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       return r;
     };
   })();
-  var EARS = { busy: false, last: 0, every: 15000 };
+  var EARS = { busy: false, last: 0, every: 8000, checking: false, go: false };
   function worldLevel() { var best = 0, buf = new Float32Array(1024); TAPS.forEach(function (t, ctx) { if (ctx.state !== 'running') return; t.an.getFloatTimeDomainData(buf); var s = 0; for (var i = 0; i < buf.length; i++) s += buf[i] * buf[i]; best = Math.max(best, Math.sqrt(s / buf.length)); }); return best; }
   setInterval(function () {
     try {
       if (EARS.busy || document.hidden || !window.__simEarsWanted || !window.__simEarsWanted()) return;
-      if (performance.now() - EARS.last < EARS.every || worldLevel() < 0.01) return;
+      if (performance.now() - EARS.last < EARS.every || worldLevel() < 0.003 || EARS.checking) return;
+      var tq = null, cq = null; TAPS.forEach(function (x, ctx) { if (!tq && ctx.state === 'running') { tq = x; cq = ctx; } }); if (!tq) return;
+      var win = new Float32Array(tq.an.fftSize); tq.an.getFloatTimeDomainData(win); EARS.checking = true;
+      yamDetect(win, cq.sampleRate).then(function (yd) { EARS.checking = false; if (yd.heard) EARS.go = true; }, function () { EARS.checking = false; if (worldLevel() >= 0.01) EARS.go = true; /* no YAMNet: loudness decides */ });
+      if (!EARS.go) return; EARS.go = false;
       var t = null; TAPS.forEach(function (x, ctx) { if (!t && ctx.state === 'running') t = x; }); if (!t || !window.MediaRecorder) return;
       EARS.busy = true; EARS.last = performance.now();
       var chunks = [], mr = new MediaRecorder(t.out.stream);
@@ -657,8 +782,15 @@ window.addEventListener('error',function(e){if(done||!e||!e.message||/ResizeObse
       mr.onstop = async function () {
         try {
           var blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-          var j = await hearAudio(blob, 'This is live sound playing inside a 3D game world right now (music, sound effects, character voices, ambience). Describe the music (genre, mood, instruments, tempo) and every sound you can identify.');
-          if (j && window.__onSimHeard) window.__onSimHeard(j);
+          var ctxS = 'This is live sound playing inside a 3D game world right now (music, sound effects, character voices, ambience). Describe the music (genre, mood, instruments, tempo) and every sound you can identify.';
+          var near = null; try { near = GEMINI_KEY && !GEMINI_OFF ? await hearAudio(blob, ctxS) : await localHear(blob, ctxS); } catch (e) { near = null; } /* with your Gemini key: sorted by Gemini Decision 1, then Transcribe or Flash-Lite; without one: on this device */
+          if (near && (String(near.transcript || '').trim() || String(near.sounds || '').trim())) {
+            var go = true; try { go = window.__simHearGate ? await window.__simHearGate(near) : true; } catch (e) { go = true; } /* the decision model: react to this at all? */
+            if (go) {
+              var j = near;
+              if (j && window.__onSimHeard) window.__onSimHeard(j, true);
+            }
+          }
         } catch (e) { /* local AI offline: try again later */ }
         EARS.busy = false;
       };

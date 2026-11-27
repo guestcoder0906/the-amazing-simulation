@@ -274,9 +274,10 @@ def run_claude(body: dict) -> tuple[int, dict]:
     if not sp.exists():
         sp.write_text(sysv, encoding="utf-8")
     web = any(isinstance(t, dict) and str(t.get("type", "")).startswith("web_search") for t in body.get("tools") or [])
+    fetch = any(isinstance(t, dict) and str(t.get("type", "")).startswith("web_fetch") for t in body.get("tools") or [])
     args = [CLAUDE, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--model", model,
-            "--system-prompt-file", str(sp), "--tools", "WebSearch" if web else "", "--no-session-persistence",
-            "--setting-sources", "", "--strict-mcp-config", "--max-turns", "4" if web else "1"]
+            "--system-prompt-file", str(sp), "--tools", ",".join([x for x in (["WebSearch"] if web else []) + (["WebFetch"] if fetch else [])]), "--no-session-persistence",
+            "--setting-sources", "", "--strict-mcp-config", "--max-turns", "10" if (web or fetch) else "1"] + (["--allowedTools", ",".join([x for x in (["WebSearch"] if web else []) + (["WebFetch"] if fetch else [])])] if (web or fetch) else [])
     env = claude_env()
     env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max(4096, min(int(body.get("max_tokens") or 16000), 32000)))
     msg = {"type": "user", "message": {"role": "user", "content": transcript(body)}}
@@ -501,6 +502,73 @@ def run_gemini(body: dict, key: str) -> tuple[int, dict]:
         return 502, {"error": {"code": "api_error", "message": "Failed to reach Gemini: " + str(e)}}
 
 
+
+# One picture from the public web for the game (the AI found it with web search and wants to look at it; the page cannot read pictures
+# from other sites itself). Only https, only public hosts (never this computer's own network), only images, at most 6 MB, 10 s.
+def _private_ip(ip: str) -> bool:
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return a.is_private or a.is_loopback or a.is_link_local or a.is_multicast or a.is_reserved or a.is_unspecified
+
+
+def _public_https(raw: str):
+    import socket
+    try:
+        u = urlparse(raw)
+    except Exception:
+        return None
+    if u.scheme != "https" or not u.hostname or u.username or u.password:
+        return None
+    h = u.hostname
+    if h == "localhost" or h.endswith(".local") or h.endswith(".internal"):
+        return None
+    try:
+        infos = socket.getaddrinfo(h, 443)
+    except Exception:
+        return None
+    if not infos or any(_private_ip(i[4][0]) for i in infos):
+        return None
+    return raw
+
+
+def fetch_image(body: dict) -> tuple[int, dict]:
+    import base64
+    import urllib.request
+    url = _public_https(str((body or {}).get("url") or ""))
+    if not url:
+        return 400, {"error": "only public https image links can be fetched"}
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(NoRedirect)
+    for _ in range(4):
+        req = urllib.request.Request(url, headers={"User-Agent": "AmazingSimulationGame/1.0 (image preview)", "Accept": "image/*"})
+        try:
+            r = opener.open(req, timeout=10)
+        except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400 and e.headers.get("Location"):
+                from urllib.parse import urljoin
+                nxt = _public_https(urljoin(url, e.headers.get("Location")))
+                if not nxt:
+                    return 400, {"error": "redirected somewhere that cannot be fetched"}
+                url = nxt
+                continue
+            return 502, {"error": "the site answered %d" % e.code}
+        except Exception as e:
+            return 502, {"error": "could not fetch it: " + str(e)[:200]}
+        ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not re.match(r"^image/(png|jpe?g|webp|gif)$", ctype):
+            return 415, {"error": "that link is not a picture (%s)" % (ctype or "unknown type")}
+        data = r.read(6 * 1024 * 1024 + 1)
+        if len(data) > 6 * 1024 * 1024:
+            return 413, {"error": "picture too large"}
+        return 200, {"media_type": "image/jpeg" if ctype == "image/jpg" else ctype, "data": base64.b64encode(data).decode("ascii"), "url": url}
+    return 400, {"error": "too many redirects"}
+
 def run_transcribe(body: dict, key: str) -> tuple[int, dict]:
     """Gemini 3.5 Transcribe (Interactions API): the words of a speech clip."""
     key = (key or os.environ.get("GEMINI_API_KEY") or "").strip()
@@ -588,6 +656,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return self._json(400, {"error": {"code": "invalid_request", "message": "bad JSON"}})
             code, obj = run_transcribe(body, self.headers.get("x-gemini-key", ""))
+            try:
+                return self._json(code, obj)
+            except (BrokenPipeError, ConnectionResetError):
+                return None
+        if path == "/api/fetch-image":  # one public picture the AI wants to look at
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                return self._json(400, {"error": "bad JSON"})
+            code, obj = fetch_image(body)
             try:
                 return self._json(code, obj)
             except (BrokenPipeError, ConnectionResetError):

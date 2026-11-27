@@ -516,7 +516,7 @@ function mumble(text, sr, p) {
   return y;
 }
 const CUSTOM_LANG = new Map(); // cv_name -> 'a' (American) or 'b' (British): the accent the blended voice reads with
-let chain = Promise.resolve();
+let chain = Promise.resolve(); const CANCELLED = new Set(); /* lines the page gave up on while they waited: skipped, never made late */
 self.onmessage = (ev) => {
   const msg = ev.data || {};
   if (msg.type === 'load') {
@@ -532,6 +532,7 @@ self.onmessage = (ev) => {
     );
     return;
   }
+  if (msg.type === 'cancel') { CANCELLED.add(msg.id); return; }
   if (msg.type === 'gen') {
     if (msg.mode === 'mumble') { // a creature's babble needs no speech model: made at once, even while the model is still downloading
       try { const sr = 24000; let pcm = mumble(msg.text, sr, Object.assign({ speed: msg.speed }, msg.mumble || {})); pcm = voiceFx(pcm, sr, msg.fx, msg.seed); postMessage({ type: 'audio', id: msg.id, pcm, sr, f0: (msg.mumble && msg.mumble.f0) || 0, starts: null, failed: false }, [pcm.buffer]); }
@@ -539,6 +540,7 @@ self.onmessage = (ev) => {
       return;
     }
     chain = chain.then(async () => {
+      if (CANCELLED.delete(msg.id)) return; postMessage({ type: 'start', id: msg.id }); /* the page times a line from HERE, not from when it was queued */
       try {
         const t = await load(msg.device);
         allowCustom(t);
